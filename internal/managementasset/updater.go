@@ -38,12 +38,14 @@ const (
 const ManagementFileName = managementAssetName
 
 var (
-	lastUpdateCheckMu   sync.Mutex
-	lastUpdateCheckTime time.Time
-	currentConfigPtr    atomic.Pointer[config.Config]
-	schedulerOnce       sync.Once
-	schedulerConfigPath atomic.Value
-	sfGroup             singleflight.Group
+	lastUpdateCheckMu    sync.Mutex
+	lastUpdateCheckTime  time.Time
+	currentConfigPtr     atomic.Pointer[config.Config]
+	schedulerOnce        sync.Once
+	schedulerConfigPath  atomic.Value
+	sfGroup              singleflight.Group
+	fetchLatestAssetFunc = fetchLatestAsset
+	downloadAssetFunc    = downloadAsset
 )
 
 // SetCurrentConfig stores the latest configuration snapshot for management asset decisions.
@@ -128,6 +130,11 @@ type releaseAsset struct {
 
 type releaseResponse struct {
 	Assets []releaseAsset `json:"assets"`
+}
+
+type managementReleaseSource struct {
+	releaseURL    string
+	allowFallback bool
 }
 
 // StaticDir resolves the directory that stores the management control panel asset.
@@ -221,7 +228,11 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 			return nil, nil
 		}
 
-		releaseURL := resolveReleaseURL(panelRepository)
+		releaseSource, err := resolveManagementReleaseSource(panelRepository)
+		if err != nil {
+			log.WithError(err).Warn("failed to resolve management release source")
+			return nil, nil
+		}
 		client := newHTTPClient(proxyURL)
 
 		localHash, err := fileSHA256(localPath)
@@ -232,9 +243,9 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 			localHash = ""
 		}
 
-		asset, remoteHash, err := fetchLatestAsset(ctx, client, releaseURL)
+		asset, remoteHash, err := fetchLatestAssetFunc(ctx, client, releaseSource.releaseURL)
 		if err != nil {
-			if localFileMissing {
+			if localFileMissing && releaseSource.allowFallback {
 				log.WithError(err).Warn("failed to fetch latest management release information, trying fallback page")
 				if ensureFallbackManagementHTML(ctx, client, localPath) {
 					return nil, nil
@@ -250,9 +261,9 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 			return nil, nil
 		}
 
-		data, downloadedHash, err := downloadAsset(ctx, client, asset.BrowserDownloadURL)
+		data, downloadedHash, err := downloadAssetFunc(ctx, client, asset.BrowserDownloadURL)
 		if err != nil {
-			if localFileMissing {
+			if localFileMissing && releaseSource.allowFallback {
 				log.WithError(err).Warn("failed to download management asset, trying fallback page")
 				if ensureFallbackManagementHTML(ctx, client, localPath) {
 					return nil, nil
@@ -282,7 +293,7 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 }
 
 func ensureFallbackManagementHTML(ctx context.Context, client *http.Client, localPath string) bool {
-	data, downloadedHash, err := downloadAsset(ctx, client, defaultManagementFallbackURL)
+	data, downloadedHash, err := downloadAssetFunc(ctx, client, defaultManagementFallbackURL)
 	if err != nil {
 		log.WithError(err).Warn("failed to download fallback management control panel page")
 		return false
@@ -300,36 +311,61 @@ func ensureFallbackManagementHTML(ctx context.Context, client *http.Client, loca
 	return true
 }
 
-func resolveReleaseURL(repo string) string {
+func resolveManagementReleaseSource(repo string) (managementReleaseSource, error) {
 	repo = strings.TrimSpace(repo)
 	if repo == "" {
-		return defaultManagementReleaseURL
+		return managementReleaseSource{
+			releaseURL:    defaultManagementReleaseURL,
+			allowFallback: true,
+		}, nil
 	}
 
 	parsed, err := url.Parse(repo)
 	if err != nil || parsed.Host == "" {
-		return defaultManagementReleaseURL
+		return managementReleaseSource{}, fmt.Errorf("invalid management repository %q", repo)
 	}
 
 	host := strings.ToLower(parsed.Host)
 	parsed.Path = strings.TrimSuffix(parsed.Path, "/")
 
 	if host == "api.github.com" {
-		if !strings.HasSuffix(strings.ToLower(parsed.Path), "/releases/latest") {
-			parsed.Path = parsed.Path + "/releases/latest"
+		parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+		if len(parts) < 3 || !strings.EqualFold(parts[0], "repos") || parts[1] == "" || parts[2] == "" {
+			return managementReleaseSource{}, fmt.Errorf("invalid GitHub API repository %q", repo)
 		}
-		return parsed.String()
+		releaseURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", parts[1], strings.TrimSuffix(parts[2], ".git"))
+		if strings.EqualFold(releaseURL, defaultManagementReleaseURL) {
+			return managementReleaseSource{
+				releaseURL:    defaultManagementReleaseURL,
+				allowFallback: true,
+			}, nil
+		}
+		return managementReleaseSource{
+			releaseURL:    releaseURL,
+			allowFallback: false,
+		}, nil
 	}
 
 	if host == "github.com" {
 		parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
 		if len(parts) >= 2 && parts[0] != "" && parts[1] != "" {
 			repoName := strings.TrimSuffix(parts[1], ".git")
-			return fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", parts[0], repoName)
+			releaseURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", parts[0], repoName)
+			if strings.EqualFold(releaseURL, defaultManagementReleaseURL) {
+				return managementReleaseSource{
+					releaseURL:    defaultManagementReleaseURL,
+					allowFallback: true,
+				}, nil
+			}
+			return managementReleaseSource{
+				releaseURL:    releaseURL,
+				allowFallback: false,
+			}, nil
 		}
+		return managementReleaseSource{}, fmt.Errorf("invalid GitHub repository %q", repo)
 	}
 
-	return defaultManagementReleaseURL
+	return managementReleaseSource{}, fmt.Errorf("unsupported management repository host %q", parsed.Host)
 }
 
 func fetchLatestAsset(ctx context.Context, client *http.Client, releaseURL string) (*releaseAsset, string, error) {
