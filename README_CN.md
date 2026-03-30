@@ -72,6 +72,9 @@ CLIProxyAPI 用户手册： [https://help.router-for.me/](https://help.router-fo
 
 请参见 [MANAGEMENT_API_CN.md](https://help.router-for.me/cn/management/api)
 
+如果你同时维护自己的 `Cli-Proxy-API-Management-Center` fork，可以把 `remote-management.panel-github-repository` 指向该 fork，这样 `/management.html` 默认会下载你自己的 `management.html` 发布产物。
+推荐默认值：`https://github.com/920293630/Cli-Proxy-API-Management-Center`。
+
 ## Amp CLI 支持
 
 CLIProxyAPI 已内置对 [Amp CLI](https://ampcode.com) 和 Amp IDE 扩展的支持，可让你使用自己的 Google/ChatGPT/Claude OAuth 订阅来配合 Amp 编码工具：

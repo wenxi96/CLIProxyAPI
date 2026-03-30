@@ -99,3 +99,16 @@ This repository is configured so that on `main`:
 - Do not resolve upstream conflicts in feature branches unless the conflict is feature-specific.
 - Keep `feature/*` branches short-lived.
 - Treat `master` as "validated fork state", not "latest upstream state".
+
+## Frontend Panel Fork
+
+If you also maintain your own `Cli-Proxy-API-Management-Center` fork, keep that repository on the same `main/master/dev/feature/*` model and point `remote-management.panel-github-repository` at your fork.
+
+Recommended default:
+
+```yaml
+remote-management:
+  panel-github-repository: "https://github.com/920293630/Cli-Proxy-API-Management-Center"
+```
+
+That keeps `/management.html` sourced from your own frontend release pipeline instead of the upstream panel repository.

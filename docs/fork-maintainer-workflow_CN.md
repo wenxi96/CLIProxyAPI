@@ -99,3 +99,16 @@ git push
 - 除非冲突只和某个功能有关，否则不要在 `feature/*` 分支处理上游冲突
 - `feature/*` 分支尽量保持短生命周期
 - 把 `master` 理解为“已验证的 fork 稳定状态”，而不是“最新上游状态”
+
+## 前端管理面板 Fork
+
+如果你同时维护自己的 `Cli-Proxy-API-Management-Center` fork，建议让前端仓库也采用同样的 `main/master/dev/feature/*` 模型，并把 `remote-management.panel-github-repository` 指向你的前端 fork。
+
+推荐默认值：
+
+```yaml
+remote-management:
+  panel-github-repository: "https://github.com/920293630/Cli-Proxy-API-Management-Center"
+```
+
+这样 `/management.html` 的真实来源就会是你自己的前端发布流水线，而不是上游面板仓库。

@@ -72,6 +72,9 @@ CLIProxyAPI Guides: [https://help.router-for.me/](https://help.router-for.me/)
 
 see [MANAGEMENT_API.md](https://help.router-for.me/management/api)
 
+Fork maintainers who publish their own `Cli-Proxy-API-Management-Center` fork can point `remote-management.panel-github-repository` to that fork so `/management.html` downloads their own `management.html` release asset by default.
+Recommended default: `https://github.com/920293630/Cli-Proxy-API-Management-Center`.
+
 ## Amp CLI Support
 
 CLIProxyAPI includes integrated support for [Amp CLI](https://ampcode.com) and Amp IDE extensions, enabling you to use your Google/ChatGPT/Claude OAuth subscriptions with Amp's coding tools:
