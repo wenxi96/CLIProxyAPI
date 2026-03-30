@@ -73,7 +73,8 @@ CLIProxyAPI Guides: [https://help.router-for.me/](https://help.router-for.me/)
 see [MANAGEMENT_API.md](https://help.router-for.me/management/api)
 
 Fork maintainers who publish their own `Cli-Proxy-API-Management-Center` fork can point `remote-management.panel-github-repository` to that fork so `/management.html` downloads their own `management.html` release asset by default.
-Recommended default: `https://github.com/920293630/Cli-Proxy-API-Management-Center`.
+Default for this fork: `https://github.com/920293630/Cli-Proxy-API-Management-Center`.
+If you maintain a different fork, replace it with your own frontend repository.
 
 ## Amp CLI Support
 

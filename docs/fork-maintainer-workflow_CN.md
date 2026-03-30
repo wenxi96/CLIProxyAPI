@@ -104,6 +104,8 @@ git push
 
 如果你同时维护自己的 `Cli-Proxy-API-Management-Center` fork，建议让前端仓库也采用同样的 `main/master/dev/feature/*` 模型，并把 `remote-management.panel-github-repository` 指向你的前端 fork。
 
+对当前这个 fork，默认值指向 `https://github.com/920293630/Cli-Proxy-API-Management-Center`；如果你维护的是其他 fork，请改成你自己的前端仓库。
+
 推荐默认值：
 
 ```yaml

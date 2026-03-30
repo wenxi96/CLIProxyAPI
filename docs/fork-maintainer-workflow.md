@@ -104,6 +104,8 @@ This repository is configured so that on `main`:
 
 If you also maintain your own `Cli-Proxy-API-Management-Center` fork, keep that repository on the same `main/master/dev/feature/*` model and point `remote-management.panel-github-repository` at your fork.
 
+For this fork, the default points to `https://github.com/920293630/Cli-Proxy-API-Management-Center`. If you maintain another fork, replace it with your own frontend repository.
+
 Recommended default:
 
 ```yaml

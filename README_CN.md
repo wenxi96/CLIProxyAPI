@@ -73,7 +73,8 @@ CLIProxyAPI 用户手册： [https://help.router-for.me/](https://help.router-fo
 请参见 [MANAGEMENT_API_CN.md](https://help.router-for.me/cn/management/api)
 
 如果你同时维护自己的 `Cli-Proxy-API-Management-Center` fork，可以把 `remote-management.panel-github-repository` 指向该 fork，这样 `/management.html` 默认会下载你自己的 `management.html` 发布产物。
-推荐默认值：`https://github.com/920293630/Cli-Proxy-API-Management-Center`。
+本 fork 的默认值：`https://github.com/920293630/Cli-Proxy-API-Management-Center`。
+如果你维护的是其他 fork，请改成你自己的前端仓库。
 
 ## Amp CLI 支持
 
