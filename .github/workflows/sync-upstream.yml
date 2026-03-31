@@ -1,0 +1,62 @@
+name: sync-upstream
+
+on:
+  schedule:
+    # GitHub Actions cron uses UTC. 01:17 UTC = 09:17 Asia/Shanghai / Asia/Hong_Kong.
+    - cron: '17 1 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream-main
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout default branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Sync fork from upstream
+        env:
+          UPSTREAM_REPO: router-for-me/CLIProxyAPI
+          TARGET_BRANCH: main
+        run: |
+          set -euo pipefail
+
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git" 2>/dev/null || \
+            git remote set-url upstream "https://github.com/${UPSTREAM_REPO}.git"
+
+          git fetch origin "${TARGET_BRANCH}"
+          git fetch upstream main
+          git checkout -B "${TARGET_BRANCH}" "origin/${TARGET_BRANCH}"
+
+          if [ "$(git rev-parse HEAD)" = "$(git rev-parse "upstream/main")" ]; then
+            echo "Already up to date with upstream/main."
+            exit 0
+          fi
+
+          if git merge-base --is-ancestor HEAD "upstream/main"; then
+            git merge --ff-only "upstream/main"
+            git push origin "HEAD:${TARGET_BRANCH}"
+            exit 0
+          fi
+
+          if git merge-base --is-ancestor "upstream/main" HEAD; then
+            echo "Fork main is ahead of upstream/main; refusing to overwrite fork-only commits."
+            exit 1
+          fi
+
+          echo "Fork main has diverged from upstream/main; manual resolution required."
+          exit 1
