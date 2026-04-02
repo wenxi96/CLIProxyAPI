@@ -3,6 +3,7 @@
 package management
 
 import (
+	"context"
 	"crypto/subtle"
 	"fmt"
 	"net/http"
@@ -39,7 +40,9 @@ type Handler struct {
 	configFilePath      string
 	mu                  sync.Mutex
 	attemptsMu          sync.Mutex
+	batchCheckJobsMu    sync.RWMutex
 	failedAttempts      map[string]*attemptInfo // keyed by client IP
+	batchCheckJobs      map[string]*authFileBatchCheckJob
 	authManager         *coreauth.Manager
 	usageStats          *usage.RequestStatistics
 	tokenStore          coreauth.Store
@@ -48,6 +51,7 @@ type Handler struct {
 	envSecret           string
 	logDir              string
 	postAuthHook        coreauth.PostAuthHook
+	apiCallExecutor     func(context.Context, *coreauth.Auth, apiCallRequest) (apiCallResponse, error)
 }
 
 // NewHandler creates a new management handler instance.
@@ -59,6 +63,7 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 		cfg:                 cfg,
 		configFilePath:      configFilePath,
 		failedAttempts:      make(map[string]*attemptInfo),
+		batchCheckJobs:      make(map[string]*authFileBatchCheckJob),
 		authManager:         manager,
 		usageStats:          usage.GetRequestStatistics(),
 		tokenStore:          sdkAuth.GetTokenStore(),

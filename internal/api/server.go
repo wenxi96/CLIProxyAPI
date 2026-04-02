@@ -622,6 +622,9 @@ func (s *Server) registerManagementRoutes() {
 
 		mgmt.GET("/auth-files", s.mgmt.ListAuthFiles)
 		mgmt.GET("/auth-files/models", s.mgmt.GetAuthFileModels)
+		mgmt.POST("/auth-files/batch-check", s.mgmt.BatchCheckAuthFiles)
+		mgmt.POST("/auth-files/batch-check-jobs", s.mgmt.CreateBatchCheckJob)
+		mgmt.GET("/auth-files/batch-check-jobs/:id", s.mgmt.GetBatchCheckJob)
 		mgmt.GET("/model-definitions/:channel", s.mgmt.GetStaticModelDefinitions)
 		mgmt.GET("/auth-files/download", s.mgmt.DownloadAuthFile)
 		mgmt.POST("/auth-files", s.mgmt.UploadAuthFile)
