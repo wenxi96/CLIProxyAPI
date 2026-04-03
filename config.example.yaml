@@ -68,6 +68,10 @@ error-logs-max-files: 10
 # When false, disable in-memory usage statistics aggregation
 usage-statistics-enabled: false
 
+# Controls how often the in-memory usage snapshot is flushed to logs/usage-statistics.snapshot.
+# Set to 0 to disable periodic flushes; startup restore and shutdown save still remain available.
+usage-statistics-persist-interval-seconds: 30
+
 # Proxy URL. Supports socks5/http/https protocols. Example: socks5://user:pass@192.168.1.1:1080/
 # Per-entry proxy-url also supports "direct" or "none" to bypass both the global proxy-url and environment proxies explicitly.
 proxy-url: ""
