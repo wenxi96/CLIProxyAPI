@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 )
 
@@ -92,6 +93,7 @@ type RequestDetail struct {
 	Timestamp time.Time  `json:"timestamp"`
 	LatencyMs int64      `json:"latency_ms"`
 	Source    string     `json:"source"`
+	ClientIP  string     `json:"client_ip"`
 	AuthIndex string     `json:"auth_index"`
 	Tokens    TokenStats `json:"tokens"`
 	Failed    bool       `json:"failed"`
@@ -201,6 +203,7 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 		Timestamp: timestamp,
 		LatencyMs: normaliseLatency(record.Latency),
 		Source:    record.Source,
+		ClientIP:  resolveClientIP(ctx),
 		AuthIndex: record.AuthIndex,
 		Tokens:    detail,
 		Failed:    failed,
@@ -384,11 +387,12 @@ func dedupKey(apiName, modelName string, detail RequestDetail) string {
 	timestamp := detail.Timestamp.UTC().Format(time.RFC3339Nano)
 	tokens := normaliseTokenStats(detail.Tokens)
 	return fmt.Sprintf(
-		"%s|%s|%s|%s|%s|%t|%d|%d|%d|%d|%d",
+		"%s|%s|%s|%s|%s|%s|%t|%d|%d|%d|%d|%d",
 		apiName,
 		modelName,
 		timestamp,
 		detail.Source,
+		strings.TrimSpace(detail.ClientIP),
 		detail.AuthIndex,
 		detail.Failed,
 		tokens.InputTokens,
@@ -397,6 +401,19 @@ func dedupKey(apiName, modelName string, detail RequestDetail) string {
 		tokens.CachedTokens,
 		tokens.TotalTokens,
 	)
+}
+
+// resolveClientIP 与主 HTTP 日志共用同一套 IP 解析逻辑，
+// 确保 usage 统计里的 client_ip 与日志中展示的客户端 IP 一致。
+func resolveClientIP(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	ginCtx, ok := ctx.Value("gin").(*gin.Context)
+	if !ok || ginCtx == nil || ginCtx.Request == nil {
+		return ""
+	}
+	return logging.ResolveClientIP(ginCtx)
 }
 
 func resolveAPIIdentifier(ctx context.Context, record coreusage.Record) string {

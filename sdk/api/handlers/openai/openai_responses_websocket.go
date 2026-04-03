@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
+	intlogging "github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
@@ -55,14 +56,13 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		return
 	}
 	passthroughSessionID := uuid.NewString()
-	clientRemoteAddr := ""
-	if c != nil && c.Request != nil {
-		clientRemoteAddr = strings.TrimSpace(c.Request.RemoteAddr)
-	}
-	log.Infof("responses websocket: client connected id=%s remote=%s", passthroughSessionID, clientRemoteAddr)
+	log.Infof("responses websocket: client connected id=%s remote=%s", passthroughSessionID, websocketClientAddress(c))
+	downstreamSessionKey := websocketDownstreamSessionKey(c.Request)
 	var wsTerminateErr error
 	var wsBodyLog strings.Builder
+	toolPairState := acquireResponsesWebsocketToolPairState(downstreamSessionKey)
 	defer func() {
+		releaseResponsesWebsocketToolPairState(downstreamSessionKey)
 		if wsTerminateErr != nil {
 			// log.Infof("responses websocket: session closing id=%s reason=%v", passthroughSessionID, wsTerminateErr)
 		} else {
@@ -167,6 +167,8 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 			}
 			continue
 		}
+		requestJSON = repairResponsesWebsocketToolCalls(toolPairState, requestJSON)
+		updatedLastRequest = bytes.Clone(requestJSON)
 		lastRequest = updatedLastRequest
 
 		modelName := gjson.GetBytes(requestJSON, "model").String()
@@ -192,7 +194,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 		}
 		dataChan, _, errChan := h.ExecuteStreamWithAuthManager(cliCtx, h.HandlerType(), modelName, requestJSON, "")
 
-		completedOutput, errForward := h.forwardResponsesWebsocket(c, conn, cliCancel, dataChan, errChan, &wsBodyLog, passthroughSessionID)
+		completedOutput, errForward := h.forwardResponsesWebsocket(c, conn, cliCancel, dataChan, errChan, &wsBodyLog, passthroughSessionID, toolPairState)
 		if errForward != nil {
 			wsTerminateErr = errForward
 			appendWebsocketEvent(&wsBodyLog, "disconnect", []byte(errForward.Error()))
@@ -346,6 +348,13 @@ func normalizeResponseSubsequentRequest(rawJSON []byte, lastRequest []byte, last
 	}
 	normalized, _ = sjson.SetBytes(normalized, "stream", true)
 	return normalized, bytes.Clone(normalized), nil
+}
+
+func websocketClientAddress(c *gin.Context) string {
+	if c == nil || c.Request == nil {
+		return ""
+	}
+	return intlogging.ResolveClientIP(c)
 }
 
 func websocketUpstreamSupportsIncrementalInput(attributes map[string]string, metadata map[string]any) bool {
@@ -610,6 +619,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 	errs <-chan *interfaces.ErrorMessage,
 	wsBodyLog *strings.Builder,
 	sessionID string,
+	toolPairState *websocketToolPairState,
 ) ([]byte, error) {
 	completed := false
 	completedOutput := []byte("[]")
@@ -690,6 +700,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 
 			payloads := websocketJSONPayloadsFromChunk(chunk)
 			for i := range payloads {
+				recordResponsesWebsocketToolCallsFromPayload(toolPairState, payloads[i])
 				eventType := gjson.GetBytes(payloads[i], "type").String()
 				if eventType == wsEventTypeCompleted {
 					completed = true

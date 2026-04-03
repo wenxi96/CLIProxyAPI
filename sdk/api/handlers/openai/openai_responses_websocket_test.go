@@ -3,6 +3,7 @@ package openai
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -25,6 +27,12 @@ import (
 type websocketCaptureExecutor struct {
 	streamCalls int
 	payloads    [][]byte
+}
+
+type websocketCompactionCaptureExecutor struct {
+	mu             sync.Mutex
+	streamPayloads [][]byte
+	compactPayload []byte
 }
 
 type orderedWebsocketSelector struct {
@@ -123,6 +131,52 @@ func (e *websocketCaptureExecutor) CountTokens(context.Context, *coreauth.Auth, 
 }
 
 func (e *websocketCaptureExecutor) HttpRequest(context.Context, *coreauth.Auth, *http.Request) (*http.Response, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (e *websocketCompactionCaptureExecutor) Identifier() string { return "test-provider" }
+
+func (e *websocketCompactionCaptureExecutor) Execute(_ context.Context, _ *coreauth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (coreexecutor.Response, error) {
+	e.mu.Lock()
+	e.compactPayload = bytes.Clone(req.Payload)
+	e.mu.Unlock()
+	if opts.Alt != "responses/compact" {
+		return coreexecutor.Response{}, fmt.Errorf("unexpected non-compact execute alt: %q", opts.Alt)
+	}
+	return coreexecutor.Response{Payload: []byte(`{"id":"cmp-1","object":"response.compaction"}`)}, nil
+}
+
+func (e *websocketCompactionCaptureExecutor) ExecuteStream(_ context.Context, _ *coreauth.Auth, req coreexecutor.Request, _ coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+	e.mu.Lock()
+	callIndex := len(e.streamPayloads)
+	e.streamPayloads = append(e.streamPayloads, bytes.Clone(req.Payload))
+	e.mu.Unlock()
+
+	var payload []byte
+	switch callIndex {
+	case 0:
+		payload = []byte(`{"type":"response.completed","response":{"id":"resp-1","output":[{"type":"function_call","id":"fc-1","call_id":"call-1","name":"tool"}]}}`)
+	case 1:
+		payload = []byte(`{"type":"response.completed","response":{"id":"resp-2","output":[{"type":"message","id":"assistant-1"}]}}`)
+	default:
+		payload = []byte(`{"type":"response.completed","response":{"id":"resp-3","output":[{"type":"message","id":"assistant-2"}]}}`)
+	}
+
+	chunks := make(chan coreexecutor.StreamChunk, 1)
+	chunks <- coreexecutor.StreamChunk{Payload: payload}
+	close(chunks)
+	return &coreexecutor.StreamResult{Chunks: chunks}, nil
+}
+
+func (e *websocketCompactionCaptureExecutor) Refresh(_ context.Context, auth *coreauth.Auth) (*coreauth.Auth, error) {
+	return auth, nil
+}
+
+func (e *websocketCompactionCaptureExecutor) CountTokens(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, errors.New("not implemented")
+}
+
+func (e *websocketCompactionCaptureExecutor) HttpRequest(context.Context, *coreauth.Auth, *http.Request) (*http.Response, error) {
 	return nil, errors.New("not implemented")
 }
 
@@ -390,6 +444,140 @@ func TestSetWebsocketRequestBody(t *testing.T) {
 	}
 }
 
+func TestRepairResponsesWebsocketToolCallsInsertsCachedOutput(t *testing.T) {
+	state := newWebsocketToolPairState()
+
+	warmed := repairResponsesWebsocketToolCalls(state, []byte(`{"previous_response_id":"resp-1","input":[{"type":"function_call_output","call_id":"call-1","output":"ok"}]}`))
+	if gjson.GetBytes(warmed, "input.0.call_id").String() != "call-1" {
+		t.Fatalf("expected warmup output to remain")
+	}
+
+	repaired := repairResponsesWebsocketToolCalls(state, []byte(`{"input":[{"type":"function_call","call_id":"call-1","name":"tool"},{"type":"message","id":"msg-1"}]}`))
+	input := gjson.GetBytes(repaired, "input").Array()
+	if len(input) != 3 {
+		t.Fatalf("repaired input len = %d, want 3", len(input))
+	}
+	if input[0].Get("type").String() != "function_call" || input[0].Get("call_id").String() != "call-1" {
+		t.Fatalf("unexpected first item: %s", input[0].Raw)
+	}
+	if input[1].Get("type").String() != "function_call_output" || input[1].Get("call_id").String() != "call-1" {
+		t.Fatalf("missing inserted output: %s", input[1].Raw)
+	}
+	if input[2].Get("type").String() != "message" || input[2].Get("id").String() != "msg-1" {
+		t.Fatalf("unexpected trailing item: %s", input[2].Raw)
+	}
+}
+
+func TestRepairResponsesWebsocketToolCallsDropsOrphanFunctionCall(t *testing.T) {
+	state := newWebsocketToolPairState()
+
+	repaired := repairResponsesWebsocketToolCalls(state, []byte(`{"input":[{"type":"function_call","call_id":"call-1","name":"tool"},{"type":"message","id":"msg-1"}]}`))
+	input := gjson.GetBytes(repaired, "input").Array()
+	if len(input) != 1 {
+		t.Fatalf("repaired input len = %d, want 1", len(input))
+	}
+	if input[0].Get("type").String() != "message" || input[0].Get("id").String() != "msg-1" {
+		t.Fatalf("unexpected remaining item: %s", input[0].Raw)
+	}
+}
+
+func TestRepairResponsesWebsocketToolCallsInsertsCachedCallForOrphanOutput(t *testing.T) {
+	state := newWebsocketToolPairState()
+	recordResponsesWebsocketToolCallsFromPayload(state, []byte(`{"type":"response.completed","response":{"id":"resp-1","output":[{"type":"function_call","id":"fc-1","call_id":"call-1","name":"tool","arguments":"{}"}]}}`))
+
+	repaired := repairResponsesWebsocketToolCalls(state, []byte(`{"input":[{"type":"function_call_output","call_id":"call-1","output":"ok"},{"type":"message","id":"msg-1"}]}`))
+	input := gjson.GetBytes(repaired, "input").Array()
+	if len(input) != 3 {
+		t.Fatalf("repaired input len = %d, want 3", len(input))
+	}
+	if input[0].Get("type").String() != "function_call" || input[0].Get("call_id").String() != "call-1" {
+		t.Fatalf("missing inserted call: %s", input[0].Raw)
+	}
+	if input[1].Get("type").String() != "function_call_output" || input[1].Get("call_id").String() != "call-1" {
+		t.Fatalf("unexpected output item: %s", input[1].Raw)
+	}
+	if input[2].Get("type").String() != "message" || input[2].Get("id").String() != "msg-1" {
+		t.Fatalf("unexpected trailing item: %s", input[2].Raw)
+	}
+}
+
+func TestRepairResponsesWebsocketToolCallsDropsOrphanOutputWhenCallMissing(t *testing.T) {
+	state := newWebsocketToolPairState()
+
+	repaired := repairResponsesWebsocketToolCalls(state, []byte(`{"input":[{"type":"function_call_output","call_id":"call-1","output":"ok"},{"type":"message","id":"msg-1"}]}`))
+	input := gjson.GetBytes(repaired, "input").Array()
+	if len(input) != 1 {
+		t.Fatalf("repaired input len = %d, want 1", len(input))
+	}
+	if input[0].Get("type").String() != "message" || input[0].Get("id").String() != "msg-1" {
+		t.Fatalf("unexpected remaining item: %s", input[0].Raw)
+	}
+}
+
+func TestRecordResponsesWebsocketToolCallsFromPayload(t *testing.T) {
+	state := newWebsocketToolPairState()
+
+	recordResponsesWebsocketToolCallsFromPayload(state, []byte(`{"type":"response.completed","response":{"id":"resp-1","output":[{"type":"function_call","id":"fc-1","call_id":"call-1","name":"tool","arguments":"{}"}]}}`))
+
+	cached, ok := state.getCall("call-1")
+	if !ok {
+		t.Fatalf("expected cached tool call")
+	}
+	if gjson.GetBytes(cached, "type").String() != "function_call" || gjson.GetBytes(cached, "call_id").String() != "call-1" {
+		t.Fatalf("unexpected cached tool call: %s", cached)
+	}
+}
+
+func TestShouldRepairResponsesWebsocketToolCalls(t *testing.T) {
+	if shouldRepairResponsesWebsocketToolCalls(`[]`) {
+		t.Fatal("expected empty input to skip repair")
+	}
+	if shouldRepairResponsesWebsocketToolCalls(`[{"type":"message","id":"msg-1"}]`) {
+		t.Fatal("expected plain message input to skip repair")
+	}
+	if !shouldRepairResponsesWebsocketToolCalls(`[{"type":"function_call","call_id":"call-1"}]`) {
+		t.Fatal("expected function_call input to require repair")
+	}
+	if !shouldRepairResponsesWebsocketToolCalls(`[{"type":"function_call_output","call_id":"call-1"}]`) {
+		t.Fatal("expected function_call_output input to require repair")
+	}
+}
+
+func TestWebsocketToolPairStateConcurrentAccess(t *testing.T) {
+	state := newWebsocketToolPairState()
+	const workers = 16
+	const iterations = 200
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			<-start
+			for j := 0; j < iterations; j++ {
+				callID := fmt.Sprintf("call-%d", j%8)
+				state.recordCall(callID, json.RawMessage(fmt.Sprintf(`{"type":"function_call","call_id":"%s","name":"tool_%d"}`, callID, worker)))
+				state.recordOutput(callID, json.RawMessage(fmt.Sprintf(`{"type":"function_call_output","call_id":"%s","output":"ok"}`, callID)))
+				_, _ = state.getCall(callID)
+				_, _ = state.getOutput(callID)
+			}
+		}(i)
+	}
+	close(start)
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("concurrent tool pair state access timed out")
+	}
+}
+
 func TestForwardResponsesWebsocketPreservesCompletedEvent(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -425,6 +613,7 @@ func TestForwardResponsesWebsocketPreservesCompletedEvent(t *testing.T) {
 			errCh,
 			&bodyLog,
 			"session-1",
+			newWebsocketToolPairState(),
 		)
 		if err != nil {
 			serverErrCh <- err
@@ -660,5 +849,175 @@ func TestResponsesWebsocketPinsOnlyWebsocketCapableAuth(t *testing.T) {
 
 	if got := executor.AuthIDs(); len(got) != 2 || got[0] != "auth-sse" || got[1] != "auth-ws" {
 		t.Fatalf("selected auth IDs = %v, want [auth-sse auth-ws]", got)
+	}
+}
+
+func TestResponsesWebsocketRepairsOrphanOutputFromSessionState(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	executor := &websocketCompactionCaptureExecutor{}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+	auth := &coreauth.Auth{ID: "auth-sse", Provider: executor.Identifier(), Status: coreauth.StatusActive}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("Register auth: %v", err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "test-model"}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(auth.ID)
+	})
+
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	h := NewOpenAIResponsesAPIHandler(base)
+	router := gin.New()
+	router.GET("/v1/responses/ws", h.ResponsesWebsocket)
+
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses/ws"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer func() {
+		if errClose := conn.Close(); errClose != nil {
+			t.Fatalf("close websocket: %v", errClose)
+		}
+	}()
+
+	first := `{"type":"response.create","model":"test-model","input":[{"type":"message","id":"msg-1"}]}`
+	if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(first)); errWrite != nil {
+		t.Fatalf("write first websocket message: %v", errWrite)
+	}
+	if _, _, errReadMessage := conn.ReadMessage(); errReadMessage != nil {
+		t.Fatalf("read first websocket response: %v", errReadMessage)
+	}
+
+	second := `{"type":"response.create","model":"test-model","input":[{"type":"message","role":"assistant","id":"assistant-compact"},{"type":"function_call_output","call_id":"call-1","output":"ok"},{"type":"message","id":"msg-2"}]}`
+	if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(second)); errWrite != nil {
+		t.Fatalf("write second websocket message: %v", errWrite)
+	}
+	if _, _, errReadMessage := conn.ReadMessage(); errReadMessage != nil {
+		t.Fatalf("read second websocket response: %v", errReadMessage)
+	}
+
+	executor.mu.Lock()
+	defer executor.mu.Unlock()
+
+	if len(executor.streamPayloads) != 2 {
+		t.Fatalf("stream payload count = %d, want 2", len(executor.streamPayloads))
+	}
+	merged := executor.streamPayloads[1]
+	items := gjson.GetBytes(merged, "input").Array()
+	if len(items) != 5 {
+		t.Fatalf("merged input len = %d, want 5: %s", len(items), merged)
+	}
+	if items[0].Get("id").String() != "msg-1" ||
+		items[1].Get("type").String() != "function_call" ||
+		items[1].Get("call_id").String() != "call-1" ||
+		items[2].Get("role").String() != "assistant" ||
+		items[3].Get("type").String() != "function_call_output" ||
+		items[3].Get("call_id").String() != "call-1" ||
+		items[4].Get("id").String() != "msg-2" {
+		t.Fatalf("unexpected repaired input order: %s", merged)
+	}
+}
+
+func TestResponsesWebsocketSharesToolStateAcrossConnectionsWithSameSessionID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	executor := &websocketCompactionCaptureExecutor{}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+	auth := &coreauth.Auth{ID: "auth-sse", Provider: executor.Identifier(), Status: coreauth.StatusActive}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("Register auth: %v", err)
+	}
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "test-model"}})
+	t.Cleanup(func() {
+		registry.GetGlobalRegistry().UnregisterClient(auth.ID)
+	})
+
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	h := NewOpenAIResponsesAPIHandler(base)
+	router := gin.New()
+	router.GET("/v1/responses/ws", h.ResponsesWebsocket)
+
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses/ws"
+	headers := http.Header{}
+	headers.Set("Session_id", "shared-session")
+
+	conn1, _, err := websocket.DefaultDialer.Dial(wsURL, headers)
+	if err != nil {
+		t.Fatalf("dial first websocket: %v", err)
+	}
+	defer func() {
+		if errClose := conn1.Close(); errClose != nil {
+			t.Fatalf("close first websocket: %v", errClose)
+		}
+	}()
+
+	first := `{"type":"response.create","model":"test-model","input":[{"type":"message","id":"msg-1"}]}`
+	if errWrite := conn1.WriteMessage(websocket.TextMessage, []byte(first)); errWrite != nil {
+		t.Fatalf("write first websocket message: %v", errWrite)
+	}
+	if _, _, errReadMessage := conn1.ReadMessage(); errReadMessage != nil {
+		t.Fatalf("read first websocket response: %v", errReadMessage)
+	}
+
+	conn2, _, err := websocket.DefaultDialer.Dial(wsURL, headers)
+	if err != nil {
+		t.Fatalf("dial second websocket: %v", err)
+	}
+	defer func() {
+		if errClose := conn2.Close(); errClose != nil {
+			t.Fatalf("close second websocket: %v", errClose)
+		}
+	}()
+
+	second := `{"type":"response.create","model":"test-model","input":[{"type":"message","role":"assistant","id":"assistant-compact"},{"type":"function_call_output","call_id":"call-1","output":"ok"},{"type":"message","id":"msg-2"}]}`
+	if errWrite := conn2.WriteMessage(websocket.TextMessage, []byte(second)); errWrite != nil {
+		t.Fatalf("write second websocket message: %v", errWrite)
+	}
+	if _, _, errReadMessage := conn2.ReadMessage(); errReadMessage != nil {
+		t.Fatalf("read second websocket response: %v", errReadMessage)
+	}
+
+	executor.mu.Lock()
+	defer executor.mu.Unlock()
+
+	if len(executor.streamPayloads) != 2 {
+		t.Fatalf("stream payload count = %d, want 2", len(executor.streamPayloads))
+	}
+	merged := executor.streamPayloads[1]
+	items := gjson.GetBytes(merged, "input").Array()
+	if len(items) != 4 {
+		t.Fatalf("merged input len = %d, want 4: %s", len(items), merged)
+	}
+	if items[0].Get("role").String() != "assistant" ||
+		items[1].Get("type").String() != "function_call" ||
+		items[1].Get("call_id").String() != "call-1" ||
+		items[2].Get("type").String() != "function_call_output" ||
+		items[2].Get("call_id").String() != "call-1" ||
+		items[3].Get("id").String() != "msg-2" {
+		t.Fatalf("unexpected repaired input order across shared session: %s", merged)
+	}
+}
+
+func TestWebsocketClientAddressUsesClientIP(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	req := httptest.NewRequest(http.MethodGet, "/v1/responses/ws", nil)
+	req.RemoteAddr = "10.0.0.10:4567"
+	req.Header.Set("X-Forwarded-For", "203.0.113.9, 10.0.0.10")
+	c.Request = req
+
+	if got := websocketClientAddress(c); got != "203.0.113.9" {
+		t.Fatalf("websocketClientAddress() = %q, want %q", got, "203.0.113.9")
 	}
 }

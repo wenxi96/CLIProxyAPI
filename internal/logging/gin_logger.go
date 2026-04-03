@@ -70,7 +70,7 @@ func GinLogrusLogger() gin.HandlerFunc {
 		}
 
 		statusCode := c.Writer.Status()
-		clientIP := c.ClientIP()
+		clientIP := ResolveClientIP(c)
 		method := c.Request.Method
 		errorMessage := c.Errors.ByType(gin.ErrorTypePrivate).String()
 

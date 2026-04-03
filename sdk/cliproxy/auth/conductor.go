@@ -163,6 +163,12 @@ type Manager struct {
 	// Auto refresh state
 	refreshCancel    context.CancelFunc
 	refreshSemaphore chan struct{}
+
+	// Async persistence state for high-frequency runtime updates.
+	persistStartOnce sync.Once
+	persistMu        sync.Mutex
+	persistPending   map[string]*Auth
+	persistWake      chan struct{}
 }
 
 // NewManager constructs a manager with optional custom selector and hook.
@@ -1711,6 +1717,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	clearModelQuota := false
 	setModelQuota := false
 	var authSnapshot *Auth
+	var persistSnapshot *Auth
 
 	m.mu.Lock()
 	if auth, ok := m.auths[result.AuthID]; ok && auth != nil {
@@ -1812,12 +1819,21 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			}
 		}
 
-		_ = m.persist(ctx, auth)
-		authSnapshot = auth.Clone()
+		if m.store != nil && !shouldSkipPersist(ctx) {
+			persistSnapshot = auth.Clone()
+		}
+		if persistSnapshot != nil {
+			authSnapshot = persistSnapshot.Clone()
+		} else {
+			authSnapshot = auth.Clone()
+		}
 	}
 	m.mu.Unlock()
 	if m.scheduler != nil && authSnapshot != nil {
 		m.scheduler.upsertAuth(authSnapshot)
+	}
+	if persistSnapshot != nil {
+		m.enqueuePersist(persistSnapshot)
 	}
 
 	if clearModelQuota && result.Model != "" {
