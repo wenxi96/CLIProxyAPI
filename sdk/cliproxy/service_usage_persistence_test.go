@@ -74,10 +74,7 @@ func TestServiceApplyUsagePersistenceConfigChangeRestartsLoopOnIntervalChange(t 
 
 	service.applyUsagePersistenceConfigChange(true, 3*time.Second, newCfg)
 
-	waitForUsagePersistenceFile(t, service.usageStatisticsFilePath(), 2200*time.Millisecond)
-	if stats.HasPendingPersistence() {
-		t.Fatalf("stats should be clean after restarted persistence loop flushes")
-	}
+	waitForUsagePersistenceFlush(t, service.usageStatisticsFilePath(), stats, 2200*time.Millisecond)
 }
 
 func newUsagePersistenceTestService(t *testing.T, stats *internalusage.RequestStatistics, enabled bool, intervalSeconds int) *Service {
@@ -132,5 +129,25 @@ func waitForUsagePersistenceFile(t *testing.T, path string, timeout time.Duratio
 
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("file %s was not created within %s: %v", filepath.Base(path), timeout, err)
+	}
+}
+
+func waitForUsagePersistenceFlush(t *testing.T, path string, stats *internalusage.RequestStatistics, timeout time.Duration) {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		_, err := os.Stat(path)
+		if err == nil && !stats.HasPendingPersistence() {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("file %s was not created within %s: %v", filepath.Base(path), timeout, err)
+	}
+	if stats.HasPendingPersistence() {
+		t.Fatalf("stats should be clean within %s after persistence file is created", timeout)
 	}
 }
