@@ -5,158 +5,134 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
-const websocketToolPairStateMaxEntries = 256
+const (
+	websocketToolOutputCacheMaxPerSession = 256
+	websocketToolOutputCacheTTL           = 30 * time.Minute
+)
 
-var defaultWebsocketToolPairStates = newWebsocketToolPairStateRegistry()
-var defaultWebsocketToolPairRefs = newWebsocketToolPairRefCounter()
+var defaultWebsocketToolOutputCache = newWebsocketToolOutputCache(0, websocketToolOutputCacheMaxPerSession)
+var defaultWebsocketToolCallCache = newWebsocketToolOutputCache(0, websocketToolOutputCacheMaxPerSession)
+var defaultWebsocketToolSessionRefs = newWebsocketToolSessionRefCounter()
 
-type websocketToolPairState struct {
-	mu          sync.RWMutex
-	outputs     map[string]json.RawMessage
-	outputOrder []string
-	calls       map[string]json.RawMessage
-	callOrder   []string
+type websocketToolOutputCache struct {
+	mu            sync.Mutex
+	ttl           time.Duration
+	maxPerSession int
+	sessions      map[string]*websocketToolOutputSession
 }
 
-type websocketToolPairStateRegistry struct {
-	mu     sync.Mutex
-	states map[string]*websocketToolPairState
+type websocketToolOutputSession struct {
+	lastSeen time.Time
+	outputs  map[string]json.RawMessage
+	order    []string
 }
 
-type websocketToolPairRefCounter struct {
-	mu     sync.Mutex
-	counts map[string]int
-}
-
-func newWebsocketToolPairState() *websocketToolPairState {
-	return &websocketToolPairState{
-		outputs: make(map[string]json.RawMessage),
-		calls:   make(map[string]json.RawMessage),
+func newWebsocketToolOutputCache(ttl time.Duration, maxPerSession int) *websocketToolOutputCache {
+	if ttl < 0 {
+		ttl = websocketToolOutputCacheTTL
+	}
+	if maxPerSession <= 0 {
+		maxPerSession = websocketToolOutputCacheMaxPerSession
+	}
+	return &websocketToolOutputCache{
+		ttl:           ttl,
+		maxPerSession: maxPerSession,
+		sessions:      make(map[string]*websocketToolOutputSession),
 	}
 }
 
-func newWebsocketToolPairStateRegistry() *websocketToolPairStateRegistry {
-	return &websocketToolPairStateRegistry{states: make(map[string]*websocketToolPairState)}
-}
-
-func newWebsocketToolPairRefCounter() *websocketToolPairRefCounter {
-	return &websocketToolPairRefCounter{counts: make(map[string]int)}
-}
-
-func (r *websocketToolPairStateRegistry) getOrCreate(sessionKey string) *websocketToolPairState {
+func (c *websocketToolOutputCache) record(sessionKey string, callID string, item json.RawMessage) {
 	sessionKey = strings.TrimSpace(sessionKey)
-	if sessionKey == "" || r == nil {
-		return newWebsocketToolPairState()
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if state, ok := r.states[sessionKey]; ok && state != nil {
-		return state
-	}
-	state := newWebsocketToolPairState()
-	r.states[sessionKey] = state
-	return state
-}
-
-func (r *websocketToolPairStateRegistry) delete(sessionKey string) {
-	sessionKey = strings.TrimSpace(sessionKey)
-	if sessionKey == "" || r == nil {
-		return
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	delete(r.states, sessionKey)
-}
-
-func (c *websocketToolPairRefCounter) acquire(sessionKey string) {
-	sessionKey = strings.TrimSpace(sessionKey)
-	if sessionKey == "" || c == nil {
-		return
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.counts[sessionKey]++
-}
-
-func (c *websocketToolPairRefCounter) release(sessionKey string) bool {
-	sessionKey = strings.TrimSpace(sessionKey)
-	if sessionKey == "" || c == nil {
-		return false
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	count := c.counts[sessionKey]
-	if count <= 1 {
-		delete(c.counts, sessionKey)
-		return true
-	}
-	c.counts[sessionKey] = count - 1
-	return false
-}
-
-func (s *websocketToolPairState) recordOutput(callID string, item json.RawMessage) {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	recordWebsocketToolPairItem(s.outputs, &s.outputOrder, callID, item)
-}
-
-func (s *websocketToolPairState) recordCall(callID string, item json.RawMessage) {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	recordWebsocketToolPairItem(s.calls, &s.callOrder, callID, item)
-}
-
-func (s *websocketToolPairState) getOutput(callID string) (json.RawMessage, bool) {
-	if s == nil {
-		return nil, false
-	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	item, ok := s.outputs[strings.TrimSpace(callID)]
-	if !ok || len(item) == 0 {
-		return nil, false
-	}
-	return append(json.RawMessage(nil), item...), true
-}
-
-func (s *websocketToolPairState) getCall(callID string) (json.RawMessage, bool) {
-	if s == nil {
-		return nil, false
-	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	item, ok := s.calls[strings.TrimSpace(callID)]
-	if !ok || len(item) == 0 {
-		return nil, false
-	}
-	return append(json.RawMessage(nil), item...), true
-}
-
-func recordWebsocketToolPairItem(store map[string]json.RawMessage, order *[]string, callID string, item json.RawMessage) {
 	callID = strings.TrimSpace(callID)
-	if callID == "" || store == nil || order == nil || len(item) == 0 {
+	if sessionKey == "" || callID == "" || c == nil {
 		return
 	}
-	if _, exists := store[callID]; !exists {
-		*order = append(*order, callID)
+
+	now := time.Now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.cleanupLocked(now)
+
+	session, ok := c.sessions[sessionKey]
+	if !ok || session == nil {
+		session = &websocketToolOutputSession{
+			lastSeen: now,
+			outputs:  make(map[string]json.RawMessage),
+		}
+		c.sessions[sessionKey] = session
 	}
-	store[callID] = append(json.RawMessage(nil), item...)
-	for len(*order) > websocketToolPairStateMaxEntries {
-		evict := (*order)[0]
-		*order = (*order)[1:]
-		delete(store, evict)
+	session.lastSeen = now
+
+	if _, exists := session.outputs[callID]; !exists {
+		session.order = append(session.order, callID)
 	}
+	session.outputs[callID] = append(json.RawMessage(nil), item...)
+
+	for len(session.order) > c.maxPerSession {
+		evict := session.order[0]
+		session.order = session.order[1:]
+		delete(session.outputs, evict)
+	}
+}
+
+func (c *websocketToolOutputCache) get(sessionKey string, callID string) (json.RawMessage, bool) {
+	sessionKey = strings.TrimSpace(sessionKey)
+	callID = strings.TrimSpace(callID)
+	if sessionKey == "" || callID == "" || c == nil {
+		return nil, false
+	}
+
+	now := time.Now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.cleanupLocked(now)
+
+	session, ok := c.sessions[sessionKey]
+	if !ok || session == nil {
+		return nil, false
+	}
+	session.lastSeen = now
+	item, ok := session.outputs[callID]
+	if !ok || len(item) == 0 {
+		return nil, false
+	}
+	return append(json.RawMessage(nil), item...), true
+}
+
+func (c *websocketToolOutputCache) cleanupLocked(now time.Time) {
+	if c == nil || c.ttl <= 0 {
+		return
+	}
+
+	for key, session := range c.sessions {
+		if session == nil {
+			delete(c.sessions, key)
+			continue
+		}
+		if now.Sub(session.lastSeen) > c.ttl {
+			delete(c.sessions, key)
+		}
+	}
+}
+
+func (c *websocketToolOutputCache) deleteSession(sessionKey string) {
+	sessionKey = strings.TrimSpace(sessionKey)
+	if sessionKey == "" || c == nil {
+		return
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	delete(c.sessions, sessionKey)
 }
 
 func websocketDownstreamSessionKey(req *http.Request) string {
@@ -177,28 +153,79 @@ func websocketDownstreamSessionKey(req *http.Request) string {
 	return ""
 }
 
-func acquireResponsesWebsocketToolPairState(sessionKey string) *websocketToolPairState {
-	sessionKey = strings.TrimSpace(sessionKey)
-	if sessionKey == "" {
-		return newWebsocketToolPairState()
-	}
-	defaultWebsocketToolPairRefs.acquire(sessionKey)
-	return defaultWebsocketToolPairStates.getOrCreate(sessionKey)
+type websocketToolSessionRefCounter struct {
+	mu     sync.Mutex
+	counts map[string]int
 }
 
-func releaseResponsesWebsocketToolPairState(sessionKey string) {
-	sessionKey = strings.TrimSpace(sessionKey)
-	if sessionKey == "" {
-		return
-	}
-	if !defaultWebsocketToolPairRefs.release(sessionKey) {
-		return
-	}
-	defaultWebsocketToolPairStates.delete(sessionKey)
+func newWebsocketToolSessionRefCounter() *websocketToolSessionRefCounter {
+	return &websocketToolSessionRefCounter{counts: make(map[string]int)}
 }
 
-func repairResponsesWebsocketToolCalls(state *websocketToolPairState, payload []byte) []byte {
-	if state == nil || len(payload) == 0 {
+func (c *websocketToolSessionRefCounter) acquire(sessionKey string) {
+	sessionKey = strings.TrimSpace(sessionKey)
+	if sessionKey == "" || c == nil {
+		return
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.counts[sessionKey]++
+}
+
+func (c *websocketToolSessionRefCounter) release(sessionKey string) bool {
+	sessionKey = strings.TrimSpace(sessionKey)
+	if sessionKey == "" || c == nil {
+		return false
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	count := c.counts[sessionKey]
+	if count <= 1 {
+		delete(c.counts, sessionKey)
+		return true
+	}
+	c.counts[sessionKey] = count - 1
+	return false
+}
+
+func retainResponsesWebsocketToolCaches(sessionKey string) {
+	if defaultWebsocketToolSessionRefs == nil {
+		return
+	}
+	defaultWebsocketToolSessionRefs.acquire(sessionKey)
+}
+
+func releaseResponsesWebsocketToolCaches(sessionKey string) {
+	if defaultWebsocketToolSessionRefs == nil {
+		return
+	}
+	if !defaultWebsocketToolSessionRefs.release(sessionKey) {
+		return
+	}
+
+	if defaultWebsocketToolOutputCache != nil {
+		defaultWebsocketToolOutputCache.deleteSession(sessionKey)
+	}
+	if defaultWebsocketToolCallCache != nil {
+		defaultWebsocketToolCallCache.deleteSession(sessionKey)
+	}
+}
+
+func repairResponsesWebsocketToolCalls(sessionKey string, payload []byte) []byte {
+	return repairResponsesWebsocketToolCallsWithCaches(defaultWebsocketToolOutputCache, defaultWebsocketToolCallCache, sessionKey, payload)
+}
+
+func repairResponsesWebsocketToolCallsWithCache(cache *websocketToolOutputCache, sessionKey string, payload []byte) []byte {
+	return repairResponsesWebsocketToolCallsWithCaches(cache, nil, sessionKey, payload)
+}
+
+func repairResponsesWebsocketToolCallsWithCaches(outputCache, callCache *websocketToolOutputCache, sessionKey string, payload []byte) []byte {
+	sessionKey = strings.TrimSpace(sessionKey)
+	if sessionKey == "" || outputCache == nil || len(payload) == 0 {
 		return payload
 	}
 
@@ -206,12 +233,9 @@ func repairResponsesWebsocketToolCalls(state *websocketToolPairState, payload []
 	if !input.Exists() || !input.IsArray() {
 		return payload
 	}
-	if !shouldRepairResponsesWebsocketToolCalls(input.Raw) {
-		return payload
-	}
 
 	allowOrphanOutputs := strings.TrimSpace(gjson.GetBytes(payload, "previous_response_id").String()) != ""
-	updatedRaw, errRepair := repairResponsesToolCallsArray(state, input.Raw, allowOrphanOutputs)
+	updatedRaw, errRepair := repairResponsesToolCallsArray(outputCache, callCache, sessionKey, input.Raw, allowOrphanOutputs)
 	if errRepair != nil || updatedRaw == "" || updatedRaw == input.Raw {
 		return payload
 	}
@@ -223,15 +247,7 @@ func repairResponsesWebsocketToolCalls(state *websocketToolPairState, payload []
 	return updated
 }
 
-func shouldRepairResponsesWebsocketToolCalls(inputRaw string) bool {
-	inputRaw = strings.TrimSpace(inputRaw)
-	if inputRaw == "" {
-		return false
-	}
-	return strings.Contains(inputRaw, "function_call")
-}
-
-func repairResponsesToolCallsArray(state *websocketToolPairState, rawArray string, allowOrphanOutputs bool) (string, error) {
+func repairResponsesToolCallsArray(outputCache, callCache *websocketToolOutputCache, sessionKey string, rawArray string, allowOrphanOutputs bool) (string, error) {
 	rawArray = strings.TrimSpace(rawArray)
 	if rawArray == "" {
 		return "[]", nil
@@ -242,94 +258,97 @@ func repairResponsesToolCallsArray(state *websocketToolPairState, rawArray strin
 		return "", errUnmarshal
 	}
 
-	outputPresent := make(map[string]json.RawMessage, len(items))
-	callPresent := make(map[string]json.RawMessage, len(items))
+	// First pass: record tool outputs and remember which call_ids have outputs in this payload.
+	outputPresent := make(map[string]struct{}, len(items))
+	callPresent := make(map[string]struct{}, len(items))
 	for _, item := range items {
 		if len(item) == 0 {
 			continue
 		}
-		callID := strings.TrimSpace(gjson.GetBytes(item, "call_id").String())
-		if callID == "" {
-			continue
-		}
-		switch strings.TrimSpace(gjson.GetBytes(item, "type").String()) {
-		case "function_call":
-			if _, exists := callPresent[callID]; !exists {
-				callPresent[callID] = append(json.RawMessage(nil), item...)
-			}
+		itemType := strings.TrimSpace(gjson.GetBytes(item, "type").String())
+		switch itemType {
 		case "function_call_output":
-			if _, exists := outputPresent[callID]; !exists {
-				outputPresent[callID] = append(json.RawMessage(nil), item...)
+			callID := strings.TrimSpace(gjson.GetBytes(item, "call_id").String())
+			if callID == "" {
+				continue
+			}
+			outputPresent[callID] = struct{}{}
+			outputCache.record(sessionKey, callID, item)
+		case "function_call":
+			callID := strings.TrimSpace(gjson.GetBytes(item, "call_id").String())
+			if callID == "" {
+				continue
+			}
+			callPresent[callID] = struct{}{}
+			if callCache != nil {
+				callCache.record(sessionKey, callID, item)
 			}
 		}
 	}
 
-	filtered := make([]json.RawMessage, 0, len(items)+2)
+	filtered := make([]json.RawMessage, 0, len(items))
 	insertedCalls := make(map[string]struct{}, len(items))
-	insertedOutputs := make(map[string]struct{}, len(items))
 	for _, item := range items {
 		if len(item) == 0 {
 			continue
 		}
-
 		itemType := strings.TrimSpace(gjson.GetBytes(item, "type").String())
-		callID := strings.TrimSpace(gjson.GetBytes(item, "call_id").String())
-		switch itemType {
-		case "function_call":
+		if itemType == "function_call_output" {
+			callID := strings.TrimSpace(gjson.GetBytes(item, "call_id").String())
 			if callID == "" {
+				// Upstream rejects tool outputs without a call_id; drop it.
 				continue
 			}
-			if _, exists := outputPresent[callID]; exists {
-				filtered = append(filtered, item)
-				continue
-			}
-			if _, already := insertedOutputs[callID]; already {
-				filtered = append(filtered, item)
-				continue
-			}
-			if cachedOutput, ok := state.getOutput(callID); ok {
-				filtered = append(filtered, item)
-				filtered = append(filtered, cachedOutput)
-				insertedOutputs[callID] = struct{}{}
-			}
-		case "function_call_output":
-			if callID == "" {
-				continue
-			}
+
 			if allowOrphanOutputs {
 				filtered = append(filtered, item)
 				continue
 			}
-			if _, exists := callPresent[callID]; exists {
+
+			if _, ok := callPresent[callID]; ok {
 				filtered = append(filtered, item)
 				continue
 			}
-			if cachedCall, ok := state.getCall(callID); ok {
-				if _, already := insertedCalls[callID]; !already {
-					filtered = append(filtered, cachedCall)
-					insertedCalls[callID] = struct{}{}
-				}
-				filtered = append(filtered, item)
-			}
-		default:
-			filtered = append(filtered, item)
-		}
-	}
 
-	for _, item := range filtered {
-		if len(item) == 0 {
+			if callCache != nil {
+				if cached, ok := callCache.get(sessionKey, callID); ok {
+					if _, already := insertedCalls[callID]; !already {
+						filtered = append(filtered, cached)
+						insertedCalls[callID] = struct{}{}
+						callPresent[callID] = struct{}{}
+					}
+					filtered = append(filtered, item)
+					continue
+				}
+			}
+
+			// Drop orphaned function_call_output items; upstream rejects transcripts with missing calls.
 			continue
 		}
+		if itemType != "function_call" {
+			filtered = append(filtered, item)
+			continue
+		}
+
 		callID := strings.TrimSpace(gjson.GetBytes(item, "call_id").String())
 		if callID == "" {
+			// Upstream rejects tool calls without a call_id; drop it.
 			continue
 		}
-		switch strings.TrimSpace(gjson.GetBytes(item, "type").String()) {
-		case "function_call":
-			state.recordCall(callID, item)
-		case "function_call_output":
-			state.recordOutput(callID, item)
+
+		if _, ok := outputPresent[callID]; ok {
+			filtered = append(filtered, item)
+			continue
 		}
+
+		if cached, ok := outputCache.get(sessionKey, callID); ok {
+			filtered = append(filtered, item)
+			filtered = append(filtered, cached)
+			outputPresent[callID] = struct{}{}
+			continue
+		}
+
+		// Drop orphaned function_call items; upstream rejects transcripts with missing outputs.
 	}
 
 	out, errMarshal := json.Marshal(filtered)
@@ -339,8 +358,13 @@ func repairResponsesToolCallsArray(state *websocketToolPairState, rawArray strin
 	return string(out), nil
 }
 
-func recordResponsesWebsocketToolCallsFromPayload(state *websocketToolPairState, payload []byte) {
-	if state == nil || len(payload) == 0 {
+func recordResponsesWebsocketToolCallsFromPayload(sessionKey string, payload []byte) {
+	recordResponsesWebsocketToolCallsFromPayloadWithCache(defaultWebsocketToolCallCache, sessionKey, payload)
+}
+
+func recordResponsesWebsocketToolCallsFromPayloadWithCache(cache *websocketToolOutputCache, sessionKey string, payload []byte) {
+	sessionKey = strings.TrimSpace(sessionKey)
+	if sessionKey == "" || cache == nil || len(payload) == 0 {
 		return
 	}
 
@@ -359,7 +383,7 @@ func recordResponsesWebsocketToolCallsFromPayload(state *websocketToolPairState,
 			if callID == "" {
 				continue
 			}
-			state.recordCall(callID, json.RawMessage(item.Raw))
+			cache.record(sessionKey, callID, json.RawMessage(item.Raw))
 		}
 	case "response.output_item.added", "response.output_item.done":
 		item := gjson.GetBytes(payload, "item")
@@ -373,6 +397,6 @@ func recordResponsesWebsocketToolCallsFromPayload(state *websocketToolPairState,
 		if callID == "" {
 			return
 		}
-		state.recordCall(callID, json.RawMessage(item.Raw))
+		cache.record(sessionKey, callID, json.RawMessage(item.Raw))
 	}
 }
