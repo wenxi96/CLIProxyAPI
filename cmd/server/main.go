@@ -39,6 +39,7 @@ var (
 	Version           = "dev"
 	Commit            = "none"
 	BuildDate         = "unknown"
+	SourceRepository  = ""
 	DefaultConfigPath = ""
 )
 
@@ -48,6 +49,7 @@ func init() {
 	buildinfo.Version = Version
 	buildinfo.Commit = Commit
 	buildinfo.BuildDate = BuildDate
+	buildinfo.Repository = SourceRepository
 }
 
 // main is the entry point of the application.

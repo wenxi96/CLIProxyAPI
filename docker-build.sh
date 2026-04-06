@@ -156,7 +156,8 @@ case "$choice" in
     docker compose build \
       --build-arg VERSION="${VERSION}" \
       --build-arg COMMIT="${COMMIT}" \
-      --build-arg BUILD_DATE="${BUILD_DATE}"
+      --build-arg BUILD_DATE="${BUILD_DATE}" \
+      --build-arg SOURCE_REPOSITORY="${SOURCE_REPOSITORY:-}"
 
     if [[ "${WITH_USAGE}" == "true" ]]; then
       export_stats

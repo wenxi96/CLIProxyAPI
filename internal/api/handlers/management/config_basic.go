@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
@@ -19,9 +20,37 @@ import (
 )
 
 const (
-	latestReleaseURL       = "https://api.github.com/repos/router-for-me/CLIProxyAPI/releases/latest"
+	defaultLatestReleaseURL = "https://api.github.com/repos/router-for-me/CLIProxyAPI/releases/latest"
 	latestReleaseUserAgent = "CLIProxyAPI"
 )
+
+func resolveLatestReleaseURL(repository string) string {
+	repository = strings.TrimSpace(repository)
+	if repository == "" {
+		return defaultLatestReleaseURL
+	}
+
+	if strings.Contains(repository, "api.github.com/repos/") {
+		if strings.HasSuffix(repository, "/releases/latest") {
+			return repository
+		}
+		repository = strings.TrimSuffix(repository, "/")
+		repository = strings.TrimSuffix(repository, "/releases")
+		return repository + "/releases/latest"
+	}
+
+	repository = strings.TrimPrefix(repository, "https://github.com/")
+	repository = strings.TrimPrefix(repository, "http://github.com/")
+	repository = strings.TrimPrefix(repository, "github.com/")
+	repository = strings.TrimSuffix(repository, ".git")
+	repository = strings.Trim(repository, "/")
+	parts := strings.Split(repository, "/")
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+		return defaultLatestReleaseURL
+	}
+
+	return fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", parts[0], parts[1])
+}
 
 func (h *Handler) GetConfig(c *gin.Context) {
 	if h == nil || h.cfg == nil {
@@ -48,7 +77,12 @@ func (h *Handler) GetLatestVersion(c *gin.Context) {
 		util.SetProxy(sdkCfg, client)
 	}
 
-	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, latestReleaseURL, nil)
+	req, err := http.NewRequestWithContext(
+		c.Request.Context(),
+		http.MethodGet,
+		resolveLatestReleaseURL(buildinfo.Repository),
+		nil,
+	)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "request_create_failed", "message": err.Error()})
 		return

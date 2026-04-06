@@ -14,6 +14,30 @@ try {
     $shortCommit = (git rev-parse --short HEAD).Trim()
     $fullCommit = (git rev-parse HEAD).Trim()
     $buildDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+    $remoteUrl = ""
+    try {
+        $remoteUrl = (git remote get-url origin).Trim()
+    }
+    catch {
+        $remoteUrl = ""
+    }
+
+    $sourceRepository = ""
+    if ($remoteUrl -match '^https?://github\.com/([^/]+)/([^/]+?)(\.git)?$') {
+        $repoName = ($Matches[2] -replace '\.git$', '')
+        $sourceRepository = "https://github.com/$($Matches[1])/$repoName"
+    }
+    elseif ($remoteUrl -match '^git@github\.com:([^/]+)/([^/]+?)(\.git)?$') {
+        $repoName = ($Matches[2] -replace '\.git$', '')
+        $sourceRepository = "https://github.com/$($Matches[1])/$repoName"
+    }
+    elseif ($remoteUrl -match '^[^/]+:([^/]+)/([^/]+?)(\.git)?$') {
+        $repoName = ($Matches[2] -replace '\.git$', '')
+        $sourceRepository = "https://github.com/$($Matches[1])/$repoName"
+    }
+    elseif ($remoteUrl) {
+        $sourceRepository = $remoteUrl -replace '\.git$', ''
+    }
 
     if ($Mode -eq "snapshot") {
         $baseTag = git tag --merged HEAD --list "v*" --sort=-version:refname |
@@ -25,7 +49,7 @@ try {
         }
 
         $baseVersion = $baseTag.Substring(1)
-        $version = "$baseVersion-$forkMark.dev.$shortCommit"
+        $version = "$baseVersion-$forkMark.master.$shortCommit"
 
         [PSCustomObject]@{
             MODE          = $Mode
@@ -37,6 +61,7 @@ try {
             COMMIT        = $shortCommit
             FULL_COMMIT   = $fullCommit
             BUILD_DATE    = $buildDate
+            SOURCE_REPOSITORY = $sourceRepository
         }
     }
     else {
@@ -58,6 +83,7 @@ try {
             COMMIT       = $shortCommit
             FULL_COMMIT  = $fullCommit
             BUILD_DATE   = $buildDate
+            SOURCE_REPOSITORY = $sourceRepository
         }
     }
 }

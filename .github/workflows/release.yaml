@@ -52,6 +52,7 @@ jobs:
           VERSION: ${{ env.VERSION }}
           COMMIT: ${{ env.COMMIT }}
           BUILD_DATE: ${{ env.BUILD_DATE }}
+          SOURCE_REPOSITORY: ${{ env.SOURCE_REPOSITORY }}
 
   master-snapshot:
     if: github.ref == 'refs/heads/master'
@@ -96,6 +97,7 @@ jobs:
           VERSION: ${{ env.VERSION }}
           COMMIT: ${{ env.COMMIT }}
           BUILD_DATE: ${{ env.BUILD_DATE }}
+          SOURCE_REPOSITORY: ${{ env.SOURCE_REPOSITORY }}
       - name: Generate snapshot release notes
         run: |
           {

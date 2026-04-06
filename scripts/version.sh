@@ -26,6 +26,33 @@ resolve_base_tag() {
   printf '%s' "${base_tag}"
 }
 
+resolve_source_repository() {
+  local remote_url
+  remote_url="$(git remote get-url origin 2>/dev/null || true)"
+  remote_url="$(printf '%s' "${remote_url}" | tr -d '\r\n')"
+
+  if [[ -z "${remote_url}" ]]; then
+    return 0
+  fi
+
+  if [[ "${remote_url}" =~ ^https?://github\.com/([^/]+)/([^/]+?)(\.git)?$ ]]; then
+    printf 'https://github.com/%s/%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]%.git}"
+    return 0
+  fi
+
+  if [[ "${remote_url}" =~ ^git@github\.com:([^/]+)/([^/]+?)(\.git)?$ ]]; then
+    printf 'https://github.com/%s/%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]%.git}"
+    return 0
+  fi
+
+  if [[ "${remote_url}" =~ ^[^/]+:([^/]+)/([^/]+?)(\.git)?$ ]]; then
+    printf 'https://github.com/%s/%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]%.git}"
+    return 0
+  fi
+
+  printf '%s' "${remote_url%.git}"
+}
+
 emit() {
   printf '%s=%s\n' "$1" "$2"
 }
@@ -33,12 +60,13 @@ emit() {
 SHORT_COMMIT="$(git rev-parse --short HEAD)"
 FULL_COMMIT="$(git rev-parse HEAD)"
 BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+SOURCE_REPOSITORY="$(resolve_source_repository)"
 
 case "${MODE}" in
   snapshot)
     BASE_TAG="$(resolve_base_tag)"
     BASE_VERSION="${BASE_TAG#v}"
-    VERSION="${BASE_VERSION}-${FORK_MARK}.dev.${SHORT_COMMIT}"
+    VERSION="${BASE_VERSION}-${FORK_MARK}.master.${SHORT_COMMIT}"
     SNAPSHOT_TAG="v${VERSION}"
     SNAPSHOT_NAME="snapshot-${VERSION}"
 
@@ -77,3 +105,6 @@ esac
 emit "COMMIT" "${SHORT_COMMIT}"
 emit "FULL_COMMIT" "${FULL_COMMIT}"
 emit "BUILD_DATE" "${BUILD_DATE}"
+if [[ -n "${SOURCE_REPOSITORY}" ]]; then
+  emit "SOURCE_REPOSITORY" "${SOURCE_REPOSITORY}"
+fi

@@ -12,4 +12,7 @@ var (
 
 	// BuildDate records when the binary was built in UTC.
 	BuildDate = "unknown"
+
+	// Repository points to the GitHub repository that produced this binary.
+	Repository = ""
 )
