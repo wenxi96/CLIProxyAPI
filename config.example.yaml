@@ -31,8 +31,9 @@ remote-management:
 
   # GitHub repository for the management control panel. Accepts a repository URL or releases API URL.
   # The example value below is the default frontend repository for this fork.
+  # Note: the backend fetches the latest release asset from this repository, not the raw master branch file.
   # If you maintain a different fork, replace it with your own frontend repository URL.
-  panel-github-repository: "https://github.com/920293630/Cli-Proxy-API-Management-Center"
+  panel-github-repository: "https://github.com/wenxi96/Cli-Proxy-API-Management-Center"
 
 # Authentication directory (supports ~ for home directory)
 auth-dir: "~/.cli-proxy-api"
