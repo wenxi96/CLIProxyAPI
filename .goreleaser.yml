@@ -15,7 +15,7 @@ builds:
     main: ./cmd/server/
     binary: cli-proxy-api
     ldflags:
-      - -s -w -X 'main.Version={{.Version}}' -X 'main.Commit={{.ShortCommit}}' -X 'main.BuildDate={{.Date}}'
+      - -s -w -X 'main.Version={{ envOrDefault "VERSION" .Version }}' -X 'main.Commit={{ envOrDefault "COMMIT" .ShortCommit }}' -X 'main.BuildDate={{ envOrDefault "BUILD_DATE" .Date }}'
 archives:
   - id: "cli-proxy-api"
     format: tar.gz
@@ -32,7 +32,7 @@ checksum:
   name_template: 'checksums.txt'
 
 snapshot:
-  name_template: "{{ incpatch .Version }}-next"
+  version_template: "{{ envOrDefault \"VERSION\" (printf \"%s-dev.%s\" .Version .ShortCommit) }}"
 
 changelog:
   sort: asc

@@ -30,11 +30,7 @@ jobs:
           cache: true
       - name: Generate Build Metadata
         run: |
-          {
-            echo "VERSION=${GITHUB_REF_NAME}"
-            echo "COMMIT=$(git rev-parse --short HEAD)"
-            echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          } >> "$GITHUB_ENV"
+          bash ./scripts/version.sh release "${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
       - name: Install GoReleaser
         uses: goreleaser/goreleaser-action@v7
         with:
@@ -70,13 +66,7 @@ jobs:
           cache: true
       - name: Generate snapshot metadata
         run: |
-          {
-            echo "SNAPSHOT_TAG=master-${GITHUB_SHA::7}"
-            echo "SNAPSHOT_NAME=master snapshot ${GITHUB_SHA::7}"
-            echo "VERSION=master-${GITHUB_SHA::7}"
-            echo "COMMIT=$(git rev-parse --short HEAD)"
-            echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          } >> "$GITHUB_ENV"
+          bash ./scripts/version.sh snapshot >> "$GITHUB_ENV"
       - name: Install GoReleaser
         uses: goreleaser/goreleaser-action@v7
         with:
@@ -96,6 +86,8 @@ jobs:
             echo "Automated snapshot release for \`master\`."
             echo
             echo "- Branch: \`master\`"
+            echo "- Base Upstream Tag: \`${BASE_TAG}\`"
+            echo "- Snapshot Version: \`${VERSION}\`"
             echo "- Commit: \`${GITHUB_SHA}\`"
             echo "- Workflow Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
             echo

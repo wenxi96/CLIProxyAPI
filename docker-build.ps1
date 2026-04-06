@@ -23,10 +23,10 @@ switch ($choice) {
     "2" {
         Write-Host "--- Building from Source and Running ---"
 
-        # Get Version Information
-        $VERSION = (git describe --tags --always --dirty)
-        $COMMIT  = (git rev-parse --short HEAD)
-        $BUILD_DATE = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+        $versionInfo = & "$PSScriptRoot/scripts/version.ps1" -Mode snapshot
+        $VERSION = $versionInfo.VERSION
+        $COMMIT  = $versionInfo.COMMIT
+        $BUILD_DATE = $versionInfo.BUILD_DATE
 
         Write-Host "Building with the following info:"
         Write-Host "  Version: $VERSION"
