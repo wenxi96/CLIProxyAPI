@@ -65,6 +65,28 @@ type releaseInfo struct {
 	Name    string `json:"name"`
 }
 
+func normalizeReleaseVersion(raw string) string {
+	raw = strings.TrimSpace(raw)
+	raw = strings.TrimPrefix(raw, "v")
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+
+	if idx := strings.LastIndex(raw, "-build."); idx > 0 {
+		raw = raw[:idx]
+	}
+	return strings.TrimSpace(raw)
+}
+
+func resolveReleaseVersion(info releaseInfo) string {
+	version := normalizeReleaseVersion(info.Name)
+	if version != "" {
+		return version
+	}
+	return normalizeReleaseVersion(info.TagName)
+}
+
 // GetLatestVersion returns the latest release version from GitHub without downloading assets.
 func (h *Handler) GetLatestVersion(c *gin.Context) {
 	client := &http.Client{Timeout: 10 * time.Second}
@@ -113,10 +135,7 @@ func (h *Handler) GetLatestVersion(c *gin.Context) {
 		return
 	}
 
-	version := strings.TrimSpace(info.TagName)
-	if version == "" {
-		version = strings.TrimSpace(info.Name)
-	}
+	version := resolveReleaseVersion(info)
 	if version == "" {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "invalid_response", "message": "missing release version"})
 		return

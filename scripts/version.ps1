@@ -5,12 +5,29 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$forkMark = if ($env:CPA_FORK_MARK) { $env:CPA_FORK_MARK } else { "wx" }
 
 $rootDir = (git rev-parse --show-toplevel).Trim()
 Push-Location $rootDir
 
 try {
+    $customMark = "wx"
+    $customVersion = "1"
+    $upstreamTagRegex = '^v\d+\.\d+\.\d+$'
+    $metadataPath = Join-Path $rootDir "release-metadata.env"
+    if (Test-Path $metadataPath) {
+        foreach ($line in Get-Content $metadataPath) {
+            if ([string]::IsNullOrWhiteSpace($line) -or $line.StartsWith("#") -or -not $line.Contains("=")) {
+                continue
+            }
+            $parts = $line -split "=", 2
+            switch ($parts[0]) {
+                "CUSTOM_MARK" { $customMark = $parts[1] }
+                "CUSTOM_VERSION" { $customVersion = $parts[1] }
+                "UPSTREAM_TAG_REGEX" { $upstreamTagRegex = $parts[1] }
+            }
+        }
+    }
+
     $shortCommit = (git rev-parse --short HEAD).Trim()
     $fullCommit = (git rev-parse HEAD).Trim()
     $buildDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
@@ -41,7 +58,7 @@ try {
 
     if ($Mode -eq "snapshot") {
         $baseTag = git tag --merged HEAD --list "v*" --sort=-version:refname |
-            Where-Object { $_ -match '^v\d+\.\d+\.\d+$' } |
+            Where-Object { $_ -match $upstreamTagRegex } |
             Select-Object -First 1
 
         if (-not $baseTag) {
@@ -49,18 +66,21 @@ try {
         }
 
         $baseVersion = $baseTag.Substring(1)
-        $version = "$baseVersion-$forkMark.master.$shortCommit"
+        $version = "$baseVersion-$customMark.$customVersion"
+        $snapshotTag = "v$version-build.$shortCommit"
 
         [PSCustomObject]@{
-            MODE          = $Mode
-            BASE_TAG      = $baseTag
-            BASE_VERSION  = $baseVersion
-            VERSION       = $version
-            SNAPSHOT_TAG  = "v$version"
-            SNAPSHOT_NAME = "snapshot-$version"
-            COMMIT        = $shortCommit
-            FULL_COMMIT   = $fullCommit
-            BUILD_DATE    = $buildDate
+            MODE              = $Mode
+            BASE_TAG          = $baseTag
+            BASE_VERSION      = $baseVersion
+            CUSTOM_MARK       = $customMark
+            CUSTOM_VERSION    = $customVersion
+            VERSION           = $version
+            SNAPSHOT_TAG      = $snapshotTag
+            SNAPSHOT_NAME     = $version
+            COMMIT            = $shortCommit
+            FULL_COMMIT       = $fullCommit
+            BUILD_DATE        = $buildDate
             SOURCE_REPOSITORY = $sourceRepository
         }
     }
@@ -74,15 +94,16 @@ try {
         if (-not $Tag) {
             throw "failed to resolve release tag"
         }
+        $version = $Tag.TrimStart("v") -replace '-build\.[0-9a-f]+$',''
 
         [PSCustomObject]@{
-            MODE         = $Mode
-            RELEASE_TAG  = $Tag
-            RELEASE_NAME = $Tag
-            VERSION      = $Tag.TrimStart("v")
-            COMMIT       = $shortCommit
-            FULL_COMMIT  = $fullCommit
-            BUILD_DATE   = $buildDate
+            MODE              = $Mode
+            RELEASE_TAG       = $Tag
+            RELEASE_NAME      = $version
+            VERSION           = $version
+            COMMIT            = $shortCommit
+            FULL_COMMIT       = $fullCommit
+            BUILD_DATE        = $buildDate
             SOURCE_REPOSITORY = $sourceRepository
         }
     }

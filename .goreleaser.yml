@@ -32,7 +32,7 @@ checksum:
   name_template: 'checksums.txt'
 
 snapshot:
-  version_template: "{{ envOrDefault \"VERSION\" (printf \"%s-master.%s\" .Version .ShortCommit) }}"
+  version_template: "{{ envOrDefault \"VERSION\" (printf \"%s-local.%s\" .Version .ShortCommit) }}"
 
 changelog:
   sort: asc
