@@ -182,6 +182,8 @@ func (s *ObjectTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (s
 		return "", fmt.Errorf("object store: create auth directory: %w", err)
 	}
 
+	cliproxyauth.PrepareMetadataForPersistence(auth)
+
 	switch {
 	case auth.Storage != nil:
 		if err = auth.Storage.SaveTokenToFile(path); err != nil {

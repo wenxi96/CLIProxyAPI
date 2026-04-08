@@ -64,6 +64,12 @@ fi
 
 upstream_notes_url="https://api.github.com/repos/${UPSTREAM_REPO}/releases/tags/${BASE_TAG}"
 upstream_notes="$(fetch_release_field "${upstream_notes_url}" body)"
+upstream_sync_commits=""
+if git rev-parse --verify "${UPSTREAM_REF}" >/dev/null 2>&1 \
+  && git merge-base --is-ancestor "${UPSTREAM_REF}" HEAD >/dev/null 2>&1 \
+  && git merge-base --is-ancestor "${BASE_TAG}" "${UPSTREAM_REF}" >/dev/null 2>&1; then
+  upstream_sync_commits="$(git log --no-merges --pretty=format:'- %h %s' "${BASE_TAG}..${UPSTREAM_REF}" || true)"
+fi
 
 {
   echo "## 我的更新"
@@ -92,10 +98,20 @@ upstream_notes="$(fetch_release_field "${upstream_notes_url}" body)"
   echo
   echo "## 上游更新"
   echo
+  echo "### 上游正式 Release 说明"
+  echo
   if [[ -n "${upstream_notes}" ]]; then
     echo "${upstream_notes}"
   else
     echo "- 未获取到上游 Release 说明。"
+  fi
+  echo
+  echo "### 本次同步包含的未发版上游提交"
+  echo
+  if [[ -n "${upstream_sync_commits}" ]]; then
+    echo "${upstream_sync_commits}"
+  else
+    echo "- 当前同步范围没有额外的未发版上游提交。"
   fi
   echo
   echo "## 构建信息"
