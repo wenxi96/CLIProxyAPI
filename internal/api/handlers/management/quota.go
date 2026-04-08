@@ -16,3 +16,10 @@ func (h *Handler) GetSwitchPreviewModel(c *gin.Context) {
 func (h *Handler) PutSwitchPreviewModel(c *gin.Context) {
 	h.updateBoolField(c, func(v bool) { h.cfg.QuotaExceeded.SwitchPreviewModel = v })
 }
+
+func (h *Handler) GetAutoDisableAuthFileOnZeroQuota(c *gin.Context) {
+	c.JSON(200, gin.H{"auto-disable-auth-file-on-zero-quota": h.cfg.QuotaExceeded.AutoDisableAuthFileOnZeroQuota})
+}
+func (h *Handler) PutAutoDisableAuthFileOnZeroQuota(c *gin.Context) {
+	h.updateBoolField(c, func(v bool) { h.cfg.QuotaExceeded.AutoDisableAuthFileOnZeroQuota = v })
+}

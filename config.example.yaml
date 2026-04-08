@@ -101,6 +101,7 @@ disable-cooling: false
 quota-exceeded:
   switch-project: true # Whether to automatically switch to another project when a quota is exceeded
   switch-preview-model: true # Whether to automatically switch to a preview model when a quota is exceeded
+  auto-disable-auth-file-on-zero-quota: false # Whether to asynchronously confirm zero remaining quota and auto-disable supported auth files
   antigravity-credits: true # Whether to retry Antigravity quota_exhausted 429s once with enabledCreditTypes=["GOOGLE_ONE_AI"]
 
 # Routing strategy for selecting credentials when multiple match.

@@ -200,6 +200,10 @@ type QuotaExceeded struct {
 	// SwitchPreviewModel indicates whether to automatically switch to a preview model when a quota is exceeded.
 	SwitchPreviewModel bool `yaml:"switch-preview-model" json:"switch-preview-model"`
 
+	// AutoDisableAuthFileOnZeroQuota indicates whether file-backed auths with real quota inspection
+	// should be automatically disabled after an async confirmation that remaining quota is zero.
+	AutoDisableAuthFileOnZeroQuota bool `yaml:"auto-disable-auth-file-on-zero-quota" json:"auto-disable-auth-file-on-zero-quota"`
+
 	// AntigravityCredits indicates whether to retry Antigravity quota_exhausted 429s once
 	// on the same credential with enabledCreditTypes=["GOOGLE_ONE_AI"].
 	AntigravityCredits bool `yaml:"antigravity-credits" json:"antigravity-credits"`

@@ -170,6 +170,15 @@ type Manager struct {
 	persistMu        sync.Mutex
 	persistPending   map[string]*Auth
 	persistWake      chan struct{}
+
+	// Async quota check state for auto-disabling exhausted file-backed auths.
+	quotaCheckerMu      sync.RWMutex
+	quotaChecker        QuotaChecker
+	quotaCheckStartOnce sync.Once
+	quotaCheckMu        sync.Mutex
+	quotaCheckPending   map[string]struct{}
+	quotaCheckRunning   map[string]struct{}
+	quotaCheckWake      chan struct{}
 }
 
 // NewManager constructs a manager with optional custom selector and hook.
@@ -2032,6 +2041,9 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	}
 	if persistSnapshot != nil {
 		m.enqueuePersist(persistSnapshot)
+	}
+	if !result.Success {
+		m.tryEnqueueQuotaCheck(result.AuthID)
 	}
 
 	if clearModelQuota && result.Model != "" {
