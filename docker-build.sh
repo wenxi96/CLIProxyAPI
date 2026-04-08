@@ -11,6 +11,7 @@
 
 set -euo pipefail
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATS_DIR="temp/stats"
 STATS_FILE="${STATS_DIR}/.usage_backup.json"
 SECRET_FILE="${STATS_DIR}/.api_secret"
@@ -138,10 +139,9 @@ case "$choice" in
   2)
     echo "--- Building from Source and Running ---"
 
-    # Get Version Information
-    VERSION="$(git describe --tags --always --dirty)"
-    COMMIT="$(git rev-parse --short HEAD)"
-    BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    while IFS='=' read -r key value; do
+      export "${key}=${value}"
+    done < <(bash "${ROOT_DIR}/scripts/version.sh" snapshot)
 
     echo "Building with the following info:"
     echo "  Version: ${VERSION}"
@@ -156,7 +156,8 @@ case "$choice" in
     docker compose build \
       --build-arg VERSION="${VERSION}" \
       --build-arg COMMIT="${COMMIT}" \
-      --build-arg BUILD_DATE="${BUILD_DATE}"
+      --build-arg BUILD_DATE="${BUILD_DATE}" \
+      --build-arg SOURCE_REPOSITORY="${SOURCE_REPOSITORY:-}"
 
     if [[ "${WITH_USAGE}" == "true" ]]; then
       export_stats

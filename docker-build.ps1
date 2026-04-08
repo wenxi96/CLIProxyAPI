@@ -23,10 +23,11 @@ switch ($choice) {
     "2" {
         Write-Host "--- Building from Source and Running ---"
 
-        # Get Version Information
-        $VERSION = (git describe --tags --always --dirty)
-        $COMMIT  = (git rev-parse --short HEAD)
-        $BUILD_DATE = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+        $versionInfo = & "$PSScriptRoot/scripts/version.ps1" -Mode snapshot
+        $VERSION = $versionInfo.VERSION
+        $COMMIT  = $versionInfo.COMMIT
+        $BUILD_DATE = $versionInfo.BUILD_DATE
+        $SOURCE_REPOSITORY = $versionInfo.SOURCE_REPOSITORY
 
         Write-Host "Building with the following info:"
         Write-Host "  Version: $VERSION"
@@ -38,7 +39,7 @@ switch ($choice) {
         $env:CLI_PROXY_IMAGE = "cli-proxy-api:local"
         
         Write-Host "Building the Docker image..."
-        docker compose build --build-arg VERSION=$VERSION --build-arg COMMIT=$COMMIT --build-arg BUILD_DATE=$BUILD_DATE
+        docker compose build --build-arg VERSION=$VERSION --build-arg COMMIT=$COMMIT --build-arg BUILD_DATE=$BUILD_DATE --build-arg SOURCE_REPOSITORY=$SOURCE_REPOSITORY
 
         Write-Host "Starting the services..."
         docker compose up -d --remove-orphans --pull never
