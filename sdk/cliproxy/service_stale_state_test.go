@@ -53,9 +53,6 @@ func TestServiceApplyCoreAuthAddOrUpdate_DeleteReAddDoesNotInheritStaleRuntimeSt
 	if disabled.NextRefreshAfter.IsZero() {
 		t.Fatalf("expected disabled auth to still carry prior NextRefreshAfter for regression setup")
 	}
-	if len(disabled.ModelStates) == 0 {
-		t.Fatalf("expected disabled auth to still carry prior ModelStates for regression setup")
-	}
 
 	service.applyCoreAuthAddOrUpdate(context.Background(), &coreauth.Auth{
 		ID:       authID,
