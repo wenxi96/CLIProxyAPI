@@ -643,17 +643,38 @@ func extractAPIErrorMessage(body gjson.Result, raw string) string {
 }
 
 func looksLikeNoQuotaError(body gjson.Result, message string, statusCode int) bool {
-	if statusCode == http.StatusTooManyRequests {
-		return true
-	}
 	joined := strings.ToLower(strings.Join([]string{
 		body.Get("error.code").String(),
 		body.Get("error.type").String(),
 		message,
 	}, " "))
+	if statusCode == http.StatusTooManyRequests {
+		return hasQuotaSignalText(joined)
+	}
 	return strings.Contains(joined, "usage_limit_reached") ||
 		strings.Contains(joined, "usage limit has been reached") ||
 		(statusCode >= http.StatusBadRequest && strings.Contains(joined, "quota"))
+}
+
+func hasQuotaSignalText(message string) bool {
+	lower := strings.ToLower(strings.TrimSpace(message))
+	if lower == "" {
+		return false
+	}
+	for _, token := range []string{
+		"quota",
+		"usage limit",
+		"usage_limit",
+		"insufficient_quota",
+		"credit",
+		"credits exhausted",
+		"billing",
+	} {
+		if strings.Contains(lower, token) {
+			return true
+		}
+	}
+	return false
 }
 
 func classificationFromRemainingPercent(remaining *int) string {

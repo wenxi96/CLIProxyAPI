@@ -2042,7 +2042,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	if persistSnapshot != nil {
 		m.enqueuePersist(persistSnapshot)
 	}
-	if !result.Success {
+	if shouldEnqueueQuotaCheck(result) {
 		m.tryEnqueueQuotaCheck(result.AuthID)
 	}
 

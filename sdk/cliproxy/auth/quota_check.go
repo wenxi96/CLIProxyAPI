@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"strings"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 )
@@ -59,4 +60,37 @@ func (m *Manager) CurrentConfig() *internalconfig.Config {
 	}
 	cfg, _ := m.runtimeConfig.Load().(*internalconfig.Config)
 	return cfg
+}
+
+func shouldEnqueueQuotaCheck(result Result) bool {
+	if result.Success || strings.TrimSpace(result.AuthID) == "" || result.Error == nil {
+		return false
+	}
+	switch statusCodeFromResult(result.Error) {
+	case 402, 403, 429:
+		return hasQuotaSignal(result.Error.Message)
+	default:
+		return false
+	}
+}
+
+func hasQuotaSignal(message string) bool {
+	lower := strings.ToLower(strings.TrimSpace(message))
+	if lower == "" {
+		return false
+	}
+	for _, token := range []string{
+		"quota",
+		"usage limit",
+		"usage_limit",
+		"insufficient_quota",
+		"credit",
+		"credits exhausted",
+		"billing",
+	} {
+		if strings.Contains(lower, token) {
+			return true
+		}
+	}
+	return false
 }

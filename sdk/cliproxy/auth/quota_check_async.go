@@ -198,6 +198,15 @@ func (m *Manager) applyAutoDisableFromQuotaCheck(authID string, result QuotaChec
 		m.enqueuePersist(persistSnapshot)
 	}
 	if authSnapshot != nil {
+		fields := log.Fields{
+			"auth_id":        authID,
+			"classification": result.Classification,
+			"status_code":    result.StatusCode,
+		}
+		if result.RemainingPercent != nil {
+			fields["remaining_percent"] = *result.RemainingPercent
+		}
+		log.WithFields(fields).Warn("auth manager: auto disabled auth after confirmed zero quota")
 		m.hook.OnAuthUpdated(context.Background(), authSnapshot.Clone())
 	}
 }

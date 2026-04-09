@@ -76,3 +76,29 @@ func TestServiceCheckCodexReturnsExhaustedWhenRemainingIsZero(t *testing.T) {
 		t.Fatalf("expected remaining percent 0, got %#v", result.RemainingPercent)
 	}
 }
+
+func TestClassifyAPIResponse_DoesNotTreatGeneric429AsNoQuota(t *testing.T) {
+	classification, message, statusCode := classifyAPIResponse(apiCallResponse{
+		StatusCode: http.StatusTooManyRequests,
+		Body:       `{"error":{"message":"rate limit exceeded"}}`,
+	})
+	if classification != ClassificationAPIError {
+		t.Fatalf("expected classification %q, got %q", ClassificationAPIError, classification)
+	}
+	if message != "rate limit exceeded" {
+		t.Fatalf("expected error message to be preserved, got %q", message)
+	}
+	if statusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected status %d, got %d", http.StatusTooManyRequests, statusCode)
+	}
+}
+
+func TestClassifyAPIResponse_TreatsQuota429AsNoQuota(t *testing.T) {
+	classification, _, _ := classifyAPIResponse(apiCallResponse{
+		StatusCode: http.StatusTooManyRequests,
+		Body:       `{"error":{"message":"The usage limit has been reached"}}`,
+	})
+	if classification != ClassificationNoQuota {
+		t.Fatalf("expected classification %q, got %q", ClassificationNoQuota, classification)
+	}
+}

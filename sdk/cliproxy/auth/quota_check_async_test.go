@@ -255,6 +255,43 @@ func TestMarkResult_DoesNotEnqueueQuotaCheckWhenConfigDisabled(t *testing.T) {
 	}
 }
 
+func TestMarkResult_DoesNotEnqueueQuotaCheckForTransientStreamError(t *testing.T) {
+	checker := &quotaCheckerStub{}
+	mgr := NewManager(nil, nil, nil)
+	mgr.SetQuotaChecker(checker)
+	mgr.SetConfig(&internalconfig.Config{
+		QuotaExceeded: internalconfig.QuotaExceeded{
+			AutoDisableAuthFileOnZeroQuota: true,
+		},
+	})
+
+	auth := &Auth{
+		ID:       "auth-1",
+		Provider: "codex",
+		Status:   StatusActive,
+		Metadata: map[string]any{
+			"chatgpt_account_id": "acct-1",
+			"access_token":       "token-1",
+		},
+	}
+	if _, err := mgr.Register(WithSkipPersist(context.Background()), auth); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	mgr.MarkResult(context.Background(), Result{
+		AuthID:   auth.ID,
+		Provider: auth.Provider,
+		Model:    "gpt-5",
+		Success:  false,
+		Error:    &Error{HTTPStatus: 408, Message: "stream disconnected before completion"},
+	})
+
+	time.Sleep(150 * time.Millisecond)
+	if got := checker.callCount.Load(); got != 0 {
+		t.Fatalf("expected no quota checks for transient stream errors, got %d", got)
+	}
+}
+
 func intPtr(v int) *int {
 	return &v
 }
