@@ -1,0 +1,36 @@
+# 已确认事实
+
+- 当前后端没有认证文件批量检查聚合接口。
+- 当前前端认证文件页已有列表、批量启停删、模型详情弹窗与单文件 quota 刷新能力。
+- 前端单文件 quota 刷新统一通过 `/v0/management/api-call` 实现，可复用为后端聚合检查能力的底层请求链路。
+- 参考实现来自 `/home/cheng/git-project/cliproxyapi-tool/batch_check_auth/batch_check_auth_quota.py`，其中包含状态分类、剩余额度百分比与桶位划分逻辑。
+- 当前前端仓库没有现成测试运行器；前端验证需要依赖 `type-check`、`build` 与开发实例联调。
+- 当前运行中的开发实例 `cliproxyapi-dev-18317` 使用只读挂载配置 `/tmp/cliproxyapi-dev-18317.yaml`，并通过 `go run ./cmd/server -config /tmp/cliproxyapi-dev-18317.yaml` 启动。
+- 上述开发实例配置中的 `remote-management.panel-github-repository` 仍为上游前端仓库 `https://github.com/router-for-me/Cli-Proxy-API-Management-Center`，因此当前访问到的 `/management.html` 默认不是用户 fork 的前端产物。
+- 前端 fork 仓库 `/home/cheng/git-project/Cli-Proxy-API-Management-Center` 当前分支为 `dev`，工作区干净，但尚未实现认证文件批量检查页面逻辑。
+- 前端页面批量检查实现现已落地到前端 fork 的 `dev` 分支工作区，包括：
+  - `src/types/authFile.ts`
+  - `src/services/api/authFiles.ts`
+  - `src/features/authFiles/hooks/useAuthFilesBatchCheck.ts`
+  - `src/features/authFiles/components/AuthFilesBatchCheckModal.tsx`
+  - `src/features/authFiles/components/AuthFileCard.tsx`
+  - `src/pages/AuthFilesPage.tsx`
+  - `src/pages/AuthFilesPage.module.scss`
+  - `src/i18n/locales/zh-CN.json`
+  - `src/i18n/locales/en.json`
+  - `src/i18n/locales/ru.json`
+- 前端本地依赖通过 `npm ci` 安装后，`npm run type-check` 与 `npm run build` 均已通过。
+- 当前开发实例使用的 `management.html` 已被本地前端构建产物覆盖，且本地产物、容器内文件、HTTP 返回内容的 SHA256 一致，说明页面来源已经切到本地新前端。
+- 批量检查接口出现的 `404` 根因不是前端请求路径错误，而是本地开发实例使用 `go run` 启动后不会热加载新的 Go 路由代码；仅修改源码不会自动把新路由注册到已运行进程。
+- 重启开发容器后，未带认证头访问 `POST /v0/management/auth-files/batch-check` 已返回 `401 Unauthorized`，证明后端批量检查路由已被新进程成功注册。
+- 前端默认请求超时是 `30s`，定义在前端 `REQUEST_TIMEOUT_MS`。
+- 后端单个管理 API 代调用的默认超时是 `60s`，定义在 `defaultAPICallTimeout`。
+- 当前后端批量检查实现是同步串行执行，不具备任务化进度语义。
+- 本地开发实例日志中已经出现过一次 `POST /v0/management/auth-files/batch-check` 耗时 `32.746s` 的请求，足以解释浏览器侧超时。
+- 当前认证目录 `/home/cheng/.cli-proxy-api` 下文件数约为 `252`，若沿用“当前筛选结果全部”作为默认检查范围，将持续放大超时与等待问题。
+- 前端项目已有 OAuth 状态轮询范式，可复用到批量检查任务状态轮询。
+- 用户已确认新方案采用：
+  - 后端异步批量检查任务
+  - 前端轮询进度
+  - 默认批量检查范围改为“当前页”
+  - 同时支持“已选中项 / 当前页 / 当前筛选结果全部”

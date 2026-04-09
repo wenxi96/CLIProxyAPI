@@ -1,6 +1,6 @@
 services:
   cli-proxy-api:
-    image: ${CLI_PROXY_IMAGE:-eceasy/cli-proxy-api:latest}
+    image: ${CLI_PROXY_IMAGE:-ghcr.io/wenxi96/cli-proxy-api:latest}
     pull_policy: always
     build:
       context: .
@@ -9,6 +9,7 @@ services:
         VERSION: ${VERSION:-dev}
         COMMIT: ${COMMIT:-none}
         BUILD_DATE: ${BUILD_DATE:-unknown}
+        SOURCE_REPOSITORY: ${SOURCE_REPOSITORY:-https://github.com/wenxi96/CLIProxyAPI}
     container_name: cli-proxy-api
     # env_file:
     #   - .env

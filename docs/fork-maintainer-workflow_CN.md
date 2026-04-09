@@ -104,13 +104,27 @@ git push
 
 如果你同时维护自己的 `Cli-Proxy-API-Management-Center` fork，建议让前端仓库也采用同样的 `main/master/dev/feature/*` 模型，并把 `remote-management.panel-github-repository` 指向你的前端 fork。
 
-对当前这个 fork，默认值指向 `https://github.com/920293630/Cli-Proxy-API-Management-Center`；如果你维护的是其他 fork，请改成你自己的前端仓库。
+对当前这个 fork，默认值指向 `https://github.com/wenxi96/Cli-Proxy-API-Management-Center`；如果你维护的是其他 fork，请改成你自己的前端仓库。
 
 推荐默认值：
 
 ```yaml
 remote-management:
-  panel-github-repository: "https://github.com/920293630/Cli-Proxy-API-Management-Center"
+  panel-github-repository: "https://github.com/wenxi96/Cli-Proxy-API-Management-Center"
 ```
 
 这样 `/management.html` 的真实来源就会是你自己的前端发布流水线，而不是上游面板仓库。
+
+## Docker 镜像与安装脚本
+
+当前 fork 额外维护以下分发入口：
+
+- GitHub Container Registry 镜像：`ghcr.io/wenxi96/cli-proxy-api`
+- Linux 一键安装脚本：`install/linux/cliproxyapi-installer.sh`
+- Linux 本地安全更新脚本：`install/linux/update-cliproxyapi-safe.sh`
+
+推荐做法：
+
+- `master` 作为稳定分支，对外提供 Binary release、Docker 镜像与安装脚本
+- `main` 只保留上游镜像，不放 fork 专属分发入口
+- 若 Docker 镜像首次发布后默认仍不可拉取，请在 GitHub Packages 页面把镜像改为 Public

@@ -70,7 +70,12 @@ Get 10% OFF GLM CODING PLAN：https://z.ai/subscribe?ic=8JVLJQFSKB
 
 ## Getting Started
 
-CLIProxyAPI Guides: [https://help.router-for.me/](https://help.router-for.me/)
+Fork deployment guides:
+
+- [Linux one-click install and update](docs/deploy/install-script_CN.md)
+- [Backend binary deployment](docs/deploy/backend-binary_CN.md)
+- [Backend Docker deployment](docs/deploy/backend-docker_CN.md)
+- [Frontend panel release and integration](docs/deploy/frontend-panel_CN.md)
 
 ## Management API
 

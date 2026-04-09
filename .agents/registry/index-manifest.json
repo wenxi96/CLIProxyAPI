@@ -1,0 +1,58 @@
+{
+  "manifestVersion": "1",
+  "generatedAt": "2026-03-31T00:00:00+08:00",
+  "repoRoot": ".",
+  "repoType": "go-backend-service",
+  "primaryLanguages": ["Go", "YAML", "Markdown"],
+  "packageManagers": ["go"],
+  "workspaceRoots": ["."],
+  "mainApps": ["main.go"],
+  "mainServices": [
+    "internal/api/server.go",
+    "internal/api/handlers/management",
+    "internal/managementasset"
+  ],
+  "keyEntryPaths": [
+    "main.go",
+    "internal/api/server.go",
+    "internal/api/handlers/management/auth_files.go",
+    "internal/api/handlers/management/api_tools.go"
+  ],
+  "verificationSources": [
+    "internal/api/handlers/management/*_test.go",
+    "/home/cheng/git-project/Cli-Proxy-API-Management-Center/package.json"
+  ],
+  "scanMode": "minimal",
+  "scopedRoots": [
+    "internal/api",
+    "internal/managementasset",
+    "README_CN.md"
+  ],
+  "coverageNotes": [
+    "本次索引聚焦管理 API 与认证文件相关改动，不覆盖全仓所有 provider 细节。"
+  ],
+  "confidenceSummary": {
+    "confirmed": 8,
+    "inferred": 1,
+    "unknown": 1
+  },
+  "freshnessFingerprint": {
+    "trackedFiles": [
+      "README_CN.md",
+      "go.mod",
+      "internal/api/server.go",
+      "internal/api/handlers/management/auth_files.go"
+    ],
+    "signals": [
+      "当前分支: dev",
+      "工作区存在未跟踪文件: config.example - 副本.yaml:Zone.Identifier"
+    ]
+  },
+  "defaultIgnoredPatterns": [
+    ".agents/scratch/**",
+    ".agents/agents/**"
+  ],
+  "unknowns": [
+    "前端联调是否完全切到自有 fork 产物，需要在开发实例阶段再确认。"
+  ]
+}

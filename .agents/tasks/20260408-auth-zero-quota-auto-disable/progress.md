@@ -1,0 +1,23 @@
+# 进度记录
+
+- 2026-04-08：根据用户已确认边界建立任务 `20260408-auth-zero-quota-auto-disable`。
+- 2026-04-08：完成首轮分诊，确认当前请求属于已收口 feature，主流程进入 `writing-plans`。
+- 2026-04-08：整理设计说明与 canonical implementation plan。
+- 2026-04-08：确认本轮核心改动面为共享额度查询服务、`auth.Manager` 异步确认、配置接口与 store 持久化一致性修复。
+- 2026-04-08：新增 `internal/authquota/service.go`，补齐 `codex`、`claude`、`gemini-cli`、`kimi`、`antigravity` 的真实额度检查能力。
+- 2026-04-08：为 `sdk/cliproxy/auth.Manager` 增加异步额度确认队列、同 auth 去重和确认后自动禁用逻辑。
+- 2026-04-08：新增配置项 `quota-exceeded.auto-disable-auth-file-on-zero-quota`，并补齐管理接口与路由。
+- 2026-04-08：统一 file/git/object/postgres store 的 metadata 注入逻辑，确保 `disabled` 状态可稳定落盘。
+- 2026-04-08：新增测试：
+  - `internal/authquota/service_test.go`
+  - `sdk/cliproxy/auth/quota_check_async_test.go`
+  - `internal/api/handlers/management/quota_test.go`
+- 2026-04-08：容器验证通过：
+  - `go test ./internal/authquota ./sdk/cliproxy/auth ./internal/api/handlers/management -count=1`
+  - `go test ./internal/store ./sdk/auth -count=1`
+  - `go build -o /tmp/cli-proxy-api-test ./cmd/server`
+- 2026-04-08：补充记录，`go test ./sdk/cliproxy -count=1` 命中现有失败用例 `TestServiceApplyCoreAuthAddOrUpdate_DeleteReAddDoesNotInheritStaleRuntimeState`，本轮未改动对应逻辑，暂不扩大处理范围。
+- 2026-04-08：主线程重新完成当前候选结果验证：
+  - `docker run --rm -v "$PWD":/src -w /src golang:1.26-alpine sh -lc '/usr/local/go/bin/go test ./internal/authquota ./sdk/cliproxy/auth ./internal/api/handlers/management ./internal/store ./sdk/auth -count=1'`
+  - `docker run --rm -v "$PWD":/src -w /src golang:1.26-alpine sh -lc '/usr/local/go/bin/go build -o /tmp/cli-proxy-api-test ./cmd/server'`
+  - `docker run --rm -v "$PWD":/src -w /src golang:1.26-alpine sh -lc '/usr/local/go/bin/go test ./sdk/cliproxy -count=1'` 仍命中既有失败用例 `TestServiceApplyCoreAuthAddOrUpdate_DeleteReAddDoesNotInheritStaleRuntimeState`，未发现由本轮改动新增的失败。

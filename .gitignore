@@ -29,6 +29,8 @@ auths/*
 docs/*
 !docs/fork-maintainer-workflow.md
 !docs/fork-maintainer-workflow_CN.md
+!docs/deploy/
+!docs/deploy/**
 AGENTS.md
 CLAUDE.md
 GEMINI.md
@@ -42,6 +44,15 @@ GEMINI.md
 .serena/*
 .agent/*
 .agents/*
+!.agents/README.md
+!.agents/registry/
+!.agents/registry/**
+!.agents/tasks/
+!.agents/tasks/**
+!.agents/archive/
+!.agents/archive/**
+.agents/scratch/
+.agents/agents/
 .opencode/*
 .idea/*
 .bmad/*

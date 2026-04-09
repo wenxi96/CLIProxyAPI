@@ -70,7 +70,12 @@ GLM CODING PLAN 是专为AI编码打造的订阅套餐，每月最低仅需20元
 
 ## 新手入门
 
-CLIProxyAPI 用户手册： [https://help.router-for.me/](https://help.router-for.me/cn/)
+部署手册（当前 fork）：
+
+- [Linux 一键安装与更新](docs/deploy/install-script_CN.md)
+- [后端 Binary 部署](docs/deploy/backend-binary_CN.md)
+- [后端 Docker 部署](docs/deploy/backend-docker_CN.md)
+- [前端管理面板发布与接入](docs/deploy/frontend-panel_CN.md)
 
 ## 管理 API 文档
 

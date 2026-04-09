@@ -117,14 +117,15 @@ fi
 
 # --- Step 1: Choose Environment ---
 echo "Please select an option:"
-echo "1) Run using Pre-built Image (Recommended)"
+echo "1) Run using Fork Pre-built Image (GHCR)"
 echo "2) Build from Source and Run (For Developers)"
 read -r -p "Enter choice [1-2]: " choice
 
 # --- Step 2: Execute based on choice ---
 case "$choice" in
   1)
-    echo "--- Running with Pre-built Image ---"
+    echo "--- Running with Fork Pre-built Image ---"
+    echo "Remote image: ${CLI_PROXY_IMAGE:-ghcr.io/wenxi96/cli-proxy-api:latest}"
     if [[ "${WITH_USAGE}" == "true" ]]; then
       export_stats
     fi
@@ -133,7 +134,7 @@ case "$choice" in
       wait_for_service
       import_stats
     fi
-    echo "Services are starting from remote image."
+    echo "Services are starting from the fork remote image."
     echo "Run 'docker compose logs -f' to see the logs."
     ;;
   2)

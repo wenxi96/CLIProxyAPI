@@ -104,13 +104,27 @@ This repository is configured so that on `main`:
 
 If you also maintain your own `Cli-Proxy-API-Management-Center` fork, keep that repository on the same `main/master/dev/feature/*` model and point `remote-management.panel-github-repository` at your fork.
 
-For this fork, the default points to `https://github.com/920293630/Cli-Proxy-API-Management-Center`. If you maintain another fork, replace it with your own frontend repository.
+For this fork, the default points to `https://github.com/wenxi96/Cli-Proxy-API-Management-Center`. If you maintain another fork, replace it with your own frontend repository.
 
 Recommended default:
 
 ```yaml
 remote-management:
-  panel-github-repository: "https://github.com/920293630/Cli-Proxy-API-Management-Center"
+  panel-github-repository: "https://github.com/wenxi96/Cli-Proxy-API-Management-Center"
 ```
 
 That keeps `/management.html` sourced from your own frontend release pipeline instead of the upstream panel repository.
+
+## Docker Images And Installer Scripts
+
+This fork also maintains its own distribution entry points:
+
+- GHCR image: `ghcr.io/wenxi96/cli-proxy-api`
+- Linux installer: `install/linux/cliproxyapi-installer.sh`
+- Linux safe updater: `install/linux/update-cliproxyapi-safe.sh`
+
+Recommended policy:
+
+- use `master` as the stable branch that publishes binary releases, Docker images, and installer scripts
+- keep `main` as the upstream mirror branch only
+- if the first GHCR publish is not publicly pullable yet, switch the package visibility to Public in GitHub Packages
