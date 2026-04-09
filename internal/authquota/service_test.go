@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -59,8 +60,8 @@ func TestServiceCheckCodexReturnsExhaustedWhenRemainingIsZero(t *testing.T) {
 	result, err := svc.Check(context.Background(), &coreauth.Auth{
 		Provider: "codex",
 		Metadata: map[string]any{
-			"chatgpt_account_id": "acct-1",
-			"access_token":       "token-1",
+			"account_id":   "acct-1",
+			"access_token": "token-1",
 		},
 	})
 	if err != nil {
@@ -100,5 +101,76 @@ func TestClassifyAPIResponse_TreatsQuota429AsNoQuota(t *testing.T) {
 	})
 	if classification != ClassificationNoQuota {
 		t.Fatalf("expected classification %q, got %q", ClassificationNoQuota, classification)
+	}
+}
+
+func TestResolveCodexAccountID_AcceptsLegacyChatGPTKeys(t *testing.T) {
+	auth := &coreauth.Auth{
+		Metadata: map[string]any{
+			"chatgpt_account_id": "acct-legacy",
+		},
+	}
+	if got := resolveCodexAccountID(auth); got != "acct-legacy" {
+		t.Fatalf("expected legacy account id, got %q", got)
+	}
+}
+
+func TestServiceTransportFor_EmptyProxyUsesDirectTransport(t *testing.T) {
+	svc := NewService(Options{
+		ConfigProvider: func() *config.Config { return &config.Config{} },
+	})
+
+	rt := svc.transportFor(&coreauth.Auth{})
+	if rt == nil {
+		t.Fatal("expected non-nil transport")
+	}
+	if _, ok := rt.(*http.Transport); !ok {
+		t.Fatalf("expected *http.Transport, got %T", rt)
+	}
+}
+
+func TestServiceExecuteAPICallWithoutExplicitTransportProviderDoesNotPanic(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer token-1" {
+			t.Fatalf("unexpected authorization header %q", got)
+		}
+		if got := r.Header.Get("Chatgpt-Account-Id"); got != "acct-1" {
+			t.Fatalf("unexpected account header %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"rate_limit":{
+				"primary_window":{"used_percent":100,"limit_window_seconds":18000,"reset_after_seconds":1200}
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	svc := NewService(Options{
+		ConfigProvider: func() *config.Config { return &config.Config{} },
+	})
+
+	resp, err := svc.executeAPICall(context.Background(), &coreauth.Auth{
+		Provider: "codex",
+		Metadata: map[string]any{
+			"account_id":   "acct-1",
+			"access_token": "token-1",
+		},
+	}, apiCallRequest{
+		Method: "GET",
+		URL:    server.URL,
+		Header: map[string]string{
+			"Authorization":      "Bearer $TOKEN$",
+			"Chatgpt-Account-Id": "acct-1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("executeAPICall() error = %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200, got %#v", resp)
 	}
 }

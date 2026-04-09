@@ -693,14 +693,14 @@ func resolveCodexAccountID(auth *coreauth.Auth) string {
 		return ""
 	}
 	if auth.Metadata != nil {
-		for _, key := range []string{"chatgpt_account_id", "chatgptAccountId"} {
+		for _, key := range []string{"account_id", "accountId", "chatgpt_account_id", "chatgptAccountId"} {
 			if value := strings.TrimSpace(stringValueAny(auth.Metadata[key])); value != "" {
 				return value
 			}
 		}
 	}
 	if auth.Attributes != nil {
-		for _, key := range []string{"chatgpt_account_id", "chatgptAccountId"} {
+		for _, key := range []string{"account_id", "accountId", "chatgpt_account_id", "chatgptAccountId"} {
 			if value := strings.TrimSpace(auth.Attributes[key]); value != "" {
 				return value
 			}
@@ -1300,6 +1300,9 @@ func buildProxyTransport(proxyStr string) http.RoundTripper {
 	transport, _, err := proxyutil.BuildHTTPTransport(proxyStr)
 	if err != nil {
 		log.WithError(err).Debug("build proxy transport failed")
+		return nil
+	}
+	if transport == nil {
 		return nil
 	}
 	return transport
