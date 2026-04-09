@@ -22,6 +22,12 @@ import (
 const (
 	DefaultPanelGitHubRepository = "https://github.com/wenxi96/Cli-Proxy-API-Management-Center"
 	DefaultPprofAddr             = "127.0.0.1:8316"
+	DefaultScopedPoolLimit       = 5
+	DefaultScopedPoolErrorLimit  = 3
+	DefaultScopedPoolPenaltySec  = 300
+	DefaultScopedPoolQuotaTTLSec = 300
+	DefaultScopedPoolIdleLogSec  = 60
+	MaxScopedPoolQuotaPercent    = 50
 )
 
 // Config represents the application's configuration, loaded from a YAML file.
@@ -214,6 +220,35 @@ type RoutingConfig struct {
 	// Strategy selects the credential selection strategy.
 	// Supported values: "round-robin" (default), "fill-first".
 	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
+
+	// ScopedPool configures provider-local active pool routing on top of round-robin.
+	ScopedPool RoutingScopedPoolConfig `yaml:"scoped-pool,omitempty" json:"scoped-pool,omitempty"`
+}
+
+// RoutingScopedPoolConfig defines provider-local scoped-pool settings.
+type RoutingScopedPoolConfig struct {
+	// Defaults provides default values for provider-specific entries.
+	Defaults RoutingScopedPoolProviderConfig `yaml:"defaults,omitempty" json:"defaults,omitempty"`
+	// Providers defines per-provider scoped-pool settings keyed by provider category.
+	Providers map[string]RoutingScopedPoolProviderConfig `yaml:"providers,omitempty" json:"providers,omitempty"`
+}
+
+// RoutingScopedPoolProviderConfig defines one provider's scoped-pool settings.
+type RoutingScopedPoolProviderConfig struct {
+	// Enabled explicitly turns scoped-pool routing on for this provider category.
+	Enabled bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	// Limit controls the maximum number of active members kept in the pool.
+	Limit int `yaml:"limit,omitempty" json:"limit,omitempty"`
+	// QuotaThresholdPercent ejects quota-capable credentials once remaining quota falls below this percentage.
+	QuotaThresholdPercent int `yaml:"quota-threshold-percent,omitempty" json:"quota-threshold-percent,omitempty"`
+	// ConsecutiveErrorThreshold ejects a credential after this many consecutive request failures.
+	ConsecutiveErrorThreshold int `yaml:"consecutive-error-threshold,omitempty" json:"consecutive-error-threshold,omitempty"`
+	// PenaltyWindowSeconds controls how long an ejected credential stays out of the pool.
+	PenaltyWindowSeconds int `yaml:"penalty-window-seconds,omitempty" json:"penalty-window-seconds,omitempty"`
+	// QuotaSnapshotTTLSeconds controls how long quota snapshots are considered fresh for display.
+	QuotaSnapshotTTLSeconds int `yaml:"quota-snapshot-ttl-seconds,omitempty" json:"quota-snapshot-ttl-seconds,omitempty"`
+	// IdleLogThrottleSeconds throttles repeated "no pool change" log messages.
+	IdleLogThrottleSeconds int `yaml:"idle-log-throttle-seconds,omitempty" json:"idle-log-throttle-seconds,omitempty"`
 }
 
 // OAuthModelAlias defines a model ID alias for a specific channel.
@@ -682,6 +717,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// Normalize global OAuth model name aliases.
 	cfg.SanitizeOAuthModelAlias()
 
+	// Normalize routing strategy and scoped-pool settings.
+	cfg.SanitizeRouting()
+
 	// Validate raw payload rules and drop invalid entries.
 	cfg.SanitizePayloadRules()
 
@@ -702,6 +740,114 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Return the populated configuration struct.
 	return &cfg, nil
+}
+
+// SanitizeRouting normalizes routing strategy and scoped-pool settings.
+func (cfg *Config) SanitizeRouting() {
+	if cfg == nil {
+		return
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.Routing.Strategy)) {
+	case "", "round-robin", "roundrobin", "rr":
+		cfg.Routing.Strategy = "round-robin"
+	case "fill-first", "fillfirst", "ff":
+		cfg.Routing.Strategy = "fill-first"
+	default:
+		cfg.Routing.Strategy = strings.TrimSpace(cfg.Routing.Strategy)
+	}
+	cfg.Routing.ScopedPool = NormalizeRoutingScopedPoolConfig(cfg.Routing.ScopedPool)
+}
+
+// DefaultRoutingScopedPoolProviderConfig returns the normalized default values for scoped-pool entries.
+func DefaultRoutingScopedPoolProviderConfig() RoutingScopedPoolProviderConfig {
+	return RoutingScopedPoolProviderConfig{
+		Enabled:                   false,
+		Limit:                     DefaultScopedPoolLimit,
+		QuotaThresholdPercent:     0,
+		ConsecutiveErrorThreshold: DefaultScopedPoolErrorLimit,
+		PenaltyWindowSeconds:      DefaultScopedPoolPenaltySec,
+		QuotaSnapshotTTLSeconds:   DefaultScopedPoolQuotaTTLSec,
+		IdleLogThrottleSeconds:    DefaultScopedPoolIdleLogSec,
+	}
+}
+
+// NormalizeRoutingScopedPoolConfig normalizes defaults and provider-specific scoped-pool settings.
+func NormalizeRoutingScopedPoolConfig(cfg RoutingScopedPoolConfig) RoutingScopedPoolConfig {
+	defaults := normalizeRoutingScopedPoolProviderConfig(cfg.Defaults, DefaultRoutingScopedPoolProviderConfig())
+	defaults.Enabled = cfg.Defaults.Enabled
+
+	if len(cfg.Providers) == 0 {
+		return RoutingScopedPoolConfig{Defaults: defaults}
+	}
+
+	providers := make(map[string]RoutingScopedPoolProviderConfig, len(cfg.Providers))
+	for rawKey, rawValue := range cfg.Providers {
+		key := strings.ToLower(strings.TrimSpace(rawKey))
+		if key == "" {
+			continue
+		}
+		normalized := normalizeRoutingScopedPoolProviderConfig(rawValue, defaults)
+		normalized.Enabled = rawValue.Enabled
+		providers[key] = normalized
+	}
+
+	if len(providers) == 0 {
+		return RoutingScopedPoolConfig{Defaults: defaults}
+	}
+	return RoutingScopedPoolConfig{
+		Defaults:  defaults,
+		Providers: providers,
+	}
+}
+
+func normalizeRoutingScopedPoolProviderConfig(cfg RoutingScopedPoolProviderConfig, fallback RoutingScopedPoolProviderConfig) RoutingScopedPoolProviderConfig {
+	normalized := fallback
+	normalized.Enabled = cfg.Enabled
+
+	if cfg.Limit > 0 {
+		normalized.Limit = cfg.Limit
+	}
+	if normalized.Limit <= 0 {
+		normalized.Limit = DefaultScopedPoolLimit
+	}
+
+	normalized.QuotaThresholdPercent = cfg.QuotaThresholdPercent
+	if normalized.QuotaThresholdPercent < 0 {
+		normalized.QuotaThresholdPercent = 0
+	}
+	if normalized.QuotaThresholdPercent > MaxScopedPoolQuotaPercent {
+		normalized.QuotaThresholdPercent = MaxScopedPoolQuotaPercent
+	}
+
+	if cfg.ConsecutiveErrorThreshold > 0 {
+		normalized.ConsecutiveErrorThreshold = cfg.ConsecutiveErrorThreshold
+	}
+	if normalized.ConsecutiveErrorThreshold <= 0 {
+		normalized.ConsecutiveErrorThreshold = DefaultScopedPoolErrorLimit
+	}
+
+	if cfg.PenaltyWindowSeconds > 0 {
+		normalized.PenaltyWindowSeconds = cfg.PenaltyWindowSeconds
+	}
+	if normalized.PenaltyWindowSeconds <= 0 {
+		normalized.PenaltyWindowSeconds = DefaultScopedPoolPenaltySec
+	}
+
+	if cfg.QuotaSnapshotTTLSeconds > 0 {
+		normalized.QuotaSnapshotTTLSeconds = cfg.QuotaSnapshotTTLSeconds
+	}
+	if normalized.QuotaSnapshotTTLSeconds <= 0 {
+		normalized.QuotaSnapshotTTLSeconds = DefaultScopedPoolQuotaTTLSec
+	}
+
+	if cfg.IdleLogThrottleSeconds > 0 {
+		normalized.IdleLogThrottleSeconds = cfg.IdleLogThrottleSeconds
+	}
+	if normalized.IdleLogThrottleSeconds <= 0 {
+		normalized.IdleLogThrottleSeconds = DefaultScopedPoolIdleLogSec
+	}
+
+	return normalized
 }
 
 // SanitizePayloadRules validates raw JSON payload rule params and drops invalid rules.
@@ -1047,6 +1193,7 @@ func SaveConfigPreserveComments(configFile string, cfg *Config) error {
 
 	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "oauth-excluded-models")
 	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "oauth-model-alias")
+	pruneRoutingScopedPoolToGenerated(original.Content[0], generated.Content[0])
 
 	// Merge generated into original in-place, preserving comments/order of existing nodes.
 	mergeMappingPreserve(original.Content[0], generated.Content[0])
@@ -1658,6 +1805,64 @@ func pruneMappingToGeneratedKeys(dstRoot, srcRoot *yaml.Node, key string) {
 		return
 	}
 	pruneMissingMapKeys(dstVal, srcVal)
+}
+
+func pruneRoutingScopedPoolToGenerated(dstRoot, srcRoot *yaml.Node) {
+	dstScopedPool, srcScopedPool := nestedMappingPair(dstRoot, srcRoot, "routing", "scoped-pool")
+	if dstScopedPool == nil || srcScopedPool == nil {
+		return
+	}
+
+	dstDefaults, srcDefaults := nestedMappingPair(dstScopedPool, srcScopedPool, "defaults")
+	if dstDefaults != nil && srcDefaults != nil {
+		pruneMissingMapKeys(dstDefaults, srcDefaults)
+	}
+
+	dstProviders, srcProviders := nestedMappingPair(dstScopedPool, srcScopedPool, "providers")
+	if dstProviders == nil || srcProviders == nil {
+		return
+	}
+
+	pruneMissingMapKeys(dstProviders, srcProviders)
+	for i := 0; i+1 < len(srcProviders.Content); i += 2 {
+		keyNode := srcProviders.Content[i]
+		if keyNode == nil {
+			continue
+		}
+		providerName := strings.TrimSpace(keyNode.Value)
+		if providerName == "" {
+			continue
+		}
+		dstProvider, srcProvider := nestedMappingPair(dstProviders, srcProviders, providerName)
+		if dstProvider == nil || srcProvider == nil {
+			continue
+		}
+		pruneMissingMapKeys(dstProvider, srcProvider)
+	}
+}
+
+func nestedMappingPair(dstRoot, srcRoot *yaml.Node, path ...string) (*yaml.Node, *yaml.Node) {
+	if len(path) == 0 {
+		return nil, nil
+	}
+	dstNode := dstRoot
+	srcNode := srcRoot
+	for _, key := range path {
+		if dstNode == nil || srcNode == nil || dstNode.Kind != yaml.MappingNode || srcNode.Kind != yaml.MappingNode {
+			return nil, nil
+		}
+		dstIdx := findMapKeyIndex(dstNode, key)
+		srcIdx := findMapKeyIndex(srcNode, key)
+		if dstIdx < 0 || srcIdx < 0 || dstIdx+1 >= len(dstNode.Content) || srcIdx+1 >= len(srcNode.Content) {
+			return nil, nil
+		}
+		dstNode = dstNode.Content[dstIdx+1]
+		srcNode = srcNode.Content[srcIdx+1]
+	}
+	if dstNode == nil || srcNode == nil || dstNode.Kind != yaml.MappingNode || srcNode.Kind != yaml.MappingNode {
+		return nil, nil
+	}
+	return dstNode, srcNode
 }
 
 func pruneMissingMapKeys(dstMap, srcMap *yaml.Node) {

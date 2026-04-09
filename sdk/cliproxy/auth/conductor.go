@@ -203,6 +203,7 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 	manager.runtimeConfig.Store(&internalconfig.Config{})
 	manager.apiKeyModelAlias.Store(apiKeyModelAliasTable(nil))
 	manager.scheduler = newAuthScheduler(selector)
+	manager.scheduler.setScopedPoolConfig("", internalconfig.RoutingScopedPoolConfig{})
 	return manager
 }
 
@@ -368,6 +369,9 @@ func (m *Manager) SetConfig(cfg *internalconfig.Config) {
 	}
 	m.runtimeConfig.Store(cfg)
 	m.rebuildAPIKeyModelAliasFromRuntimeConfig()
+	if m.scheduler != nil {
+		m.scheduler.setScopedPoolConfig(cfg.Routing.Strategy, cfg.Routing.ScopedPool)
+	}
 }
 
 func (m *Manager) lookupAPIKeyUpstreamModel(authID, requestedModel string) string {
@@ -589,6 +593,43 @@ func (m *Manager) preparedExecutionModels(auth *Auth, routeModel string) ([]stri
 	candidates := m.executionModelCandidates(auth, routeModel)
 	pooled := len(candidates) > 1
 	return m.filterExecutionModels(auth, routeModel, candidates, pooled), pooled
+}
+
+func (m *Manager) filterScopedPoolAvailable(provider string, available []*Auth) []*Auth {
+	if m == nil || m.scheduler == nil || m.scheduler.scopedPool == nil || len(available) == 0 {
+		return available
+	}
+	filtered := m.scheduler.scopedPool.FilterCandidates(provider, available)
+	if filtered == nil {
+		return nil
+	}
+	return filtered
+}
+
+func (m *Manager) filterScopedPoolAvailableMixed(available []*Auth) []*Auth {
+	if m == nil || m.scheduler == nil || m.scheduler.scopedPool == nil || len(available) == 0 {
+		return available
+	}
+	grouped := make(map[string][]*Auth)
+	order := make([]string, 0, len(available))
+	for _, auth := range available {
+		if auth == nil {
+			continue
+		}
+		providerKey := strings.ToLower(strings.TrimSpace(auth.Provider))
+		if providerKey == "" {
+			continue
+		}
+		if _, ok := grouped[providerKey]; !ok {
+			order = append(order, providerKey)
+		}
+		grouped[providerKey] = append(grouped[providerKey], auth)
+	}
+	filtered := make([]*Auth, 0, len(available))
+	for _, providerKey := range order {
+		filtered = append(filtered, m.filterScopedPoolAvailable(providerKey, grouped[providerKey])...)
+	}
+	return filtered
 }
 
 func (m *Manager) prepareExecutionModels(auth *Auth, routeModel string) []string {
@@ -2038,6 +2079,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	m.mu.Unlock()
 	if m.scheduler != nil && authSnapshot != nil {
 		m.scheduler.upsertAuth(authSnapshot)
+		m.scheduler.markScopedPoolResult(authSnapshot, result)
 	}
 	if persistSnapshot != nil {
 		m.enqueuePersist(persistSnapshot)
@@ -2597,6 +2639,11 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		m.mu.RUnlock()
 		return nil, nil, errAvailable
 	}
+	available = m.filterScopedPoolAvailable(provider, available)
+	if len(available) == 0 {
+		m.mu.RUnlock()
+		return nil, nil, &Error{Code: "auth_unavailable", Message: "no auth available"}
+	}
 	selected, errPick := m.selector.Pick(ctx, provider, selectionArgForSelector(m.selector, model), opts, available)
 	if errPick != nil {
 		m.mu.RUnlock()
@@ -2615,6 +2662,9 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 			authCopy = current.Clone()
 		}
 		m.mu.Unlock()
+	}
+	if m.scheduler != nil {
+		m.scheduler.markScopedPoolSelected(authCopy)
 	}
 	return authCopy, executor, nil
 }
@@ -2662,6 +2712,9 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 			authCopy = current.Clone()
 		}
 		m.mu.Unlock()
+	}
+	if m.scheduler != nil {
+		m.scheduler.markScopedPoolSelected(authCopy)
 	}
 	return authCopy, executor, nil
 }
@@ -2726,6 +2779,11 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		m.mu.RUnlock()
 		return nil, nil, "", errAvailable
 	}
+	available = m.filterScopedPoolAvailableMixed(available)
+	if len(available) == 0 {
+		m.mu.RUnlock()
+		return nil, nil, "", &Error{Code: "auth_unavailable", Message: "no auth available"}
+	}
 	selected, errPick := m.selector.Pick(ctx, "mixed", selectionArgForSelector(m.selector, model), opts, available)
 	if errPick != nil {
 		m.mu.RUnlock()
@@ -2750,6 +2808,9 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 			authCopy = current.Clone()
 		}
 		m.mu.Unlock()
+	}
+	if m.scheduler != nil {
+		m.scheduler.markScopedPoolSelected(authCopy)
 	}
 	return authCopy, executor, providerKey, nil
 }
@@ -2825,6 +2886,9 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 			authCopy = current.Clone()
 		}
 		m.mu.Unlock()
+	}
+	if m.scheduler != nil {
+		m.scheduler.markScopedPoolSelected(authCopy)
 	}
 	return authCopy, executor, providerKey, nil
 }
@@ -2930,6 +2994,19 @@ func (m *Manager) snapshotAuths() []*Auth {
 		out = append(out, a.Clone())
 	}
 	return out
+}
+
+// ScopedPoolSnapshot returns the provider-local scoped-pool runtime status.
+func (m *Manager) ScopedPoolSnapshot() PoolSnapshot {
+	if m == nil || m.scheduler == nil {
+		return PoolSnapshot{
+			GeneratedAt: time.Now(),
+			Strategy:    "round-robin",
+			Providers:   map[string]PoolProviderSnapshot{},
+			Auths:       map[string]PoolAuthSnapshot{},
+		}
+	}
+	return m.scheduler.scopedPoolSnapshot()
 }
 
 func (m *Manager) shouldRefresh(a *Auth, now time.Time) bool {

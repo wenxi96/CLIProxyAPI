@@ -107,6 +107,25 @@ quota-exceeded:
 # Routing strategy for selecting credentials when multiple match.
 routing:
   strategy: "round-robin" # round-robin (default), fill-first
+  # Provider-local scoped-pool routing. It only takes effect when:
+  # 1. the provider entry explicitly sets enabled=true
+  # 2. routing.strategy remains "round-robin"
+  # scoped-pool:
+  #   defaults:
+  #     enabled: false
+  #     limit: 5
+  #     quota-threshold-percent: 0
+  #     consecutive-error-threshold: 3
+  #     penalty-window-seconds: 300
+  #     quota-snapshot-ttl-seconds: 300
+  #     idle-log-throttle-seconds: 60
+  #   providers:
+  #     codex:
+  #       enabled: true
+  #       limit: 5
+  #     claude:
+  #       enabled: true
+  #       limit: 5
 
 # When true, enable authentication for the WebSocket API (/v1/ws).
 ws-auth: false

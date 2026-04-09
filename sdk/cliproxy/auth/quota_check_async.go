@@ -23,7 +23,7 @@ func (m *Manager) autoDisableAuthFileOnZeroQuotaEnabled() bool {
 }
 
 func (m *Manager) tryEnqueueQuotaCheck(authID string) {
-	if m == nil || !m.autoDisableAuthFileOnZeroQuotaEnabled() {
+	if m == nil {
 		return
 	}
 	authID = strings.TrimSpace(authID)
@@ -37,6 +37,9 @@ func (m *Manager) tryEnqueueQuotaCheck(authID string) {
 
 	snapshot, ok := m.quotaCheckSnapshot(authID, checker)
 	if !ok || snapshot == nil {
+		return
+	}
+	if !m.autoDisableAuthFileOnZeroQuotaEnabled() && !scopedPoolEnabledForAuth(m.CurrentConfig(), snapshot) {
 		return
 	}
 
@@ -132,7 +135,7 @@ func (m *Manager) runQuotaCheck(authID string) {
 	defer m.finishQuotaCheck(authID)
 
 	checker := m.getQuotaChecker()
-	if checker == nil || !m.autoDisableAuthFileOnZeroQuotaEnabled() {
+	if checker == nil {
 		return
 	}
 	snapshot, ok := m.quotaCheckSnapshot(authID, checker)
@@ -148,11 +151,12 @@ func (m *Manager) runQuotaCheck(authID string) {
 		log.WithError(err).Warnf("auth manager: quota check failed for %s", authID)
 		return
 	}
-	if !result.Exhausted {
-		return
+	if m.scheduler != nil {
+		m.scheduler.applyScopedPoolQuotaCheck(authID, result)
 	}
-
-	m.applyAutoDisableFromQuotaCheck(authID, result)
+	if result.Exhausted {
+		m.applyAutoDisableFromQuotaCheck(authID, result)
+	}
 }
 
 func (m *Manager) applyAutoDisableFromQuotaCheck(authID string, result QuotaCheckResult) {

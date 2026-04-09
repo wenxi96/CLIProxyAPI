@@ -42,6 +42,15 @@ func (m *Manager) SetQuotaChecker(checker QuotaChecker) {
 	m.quotaCheckerMu.Lock()
 	m.quotaChecker = checker
 	m.quotaCheckerMu.Unlock()
+	if m.scheduler != nil {
+		m.scheduler.setQuotaSupportEvaluator(func(auth *Auth) bool {
+			if checker == nil {
+				return false
+			}
+			return checker.Supports(auth)
+		})
+		m.syncScheduler()
+	}
 }
 
 func (m *Manager) getQuotaChecker() QuotaChecker {

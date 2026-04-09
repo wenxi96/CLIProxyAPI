@@ -16,6 +16,7 @@
 - `20260403-absorb-arron-usage-persistence`：吸收参考仓库 usage 快照恢复与周期持久化能力。
 - `20260408-auth-zero-quota-auto-disable`：额度查询型认证文件在额度真实耗尽后自动禁用。
 - `20260409-fork-install-docker-self-hosting`：补齐 fork 自有 Docker 发布链路与仓库内 Linux 安装更新脚本。
+- `20260409-provider-scoped-routing-pool`：按供应商类别独立启用的范围轮询设计与后续实现。
 
 ## 说明
 

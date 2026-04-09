@@ -247,9 +247,10 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 		return
 	}
 	auths := h.authManager.List()
+	poolSnapshot := h.authManager.ScopedPoolSnapshot()
 	files := make([]gin.H, 0, len(auths))
 	for _, auth := range auths {
-		if entry := h.buildAuthFileEntry(auth); entry != nil {
+		if entry := h.buildAuthFileEntry(auth, poolSnapshot.Auths[auth.ID]); entry != nil {
 			files = append(files, entry)
 		}
 	}
@@ -358,7 +359,7 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 	c.JSON(200, gin.H{"files": files})
 }
 
-func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
+func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth, poolStatus coreauth.PoolAuthSnapshot) gin.H {
 	if auth == nil {
 		return nil
 	}
@@ -403,6 +404,35 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	}
 	if !auth.CreatedAt.IsZero() {
 		entry["created_at"] = auth.CreatedAt
+	}
+	if poolStatus.AuthID != "" {
+		entry["pool_configured"] = poolStatus.Configured
+		entry["pool_enabled"] = poolStatus.PoolEnabled
+		entry["in_pool"] = poolStatus.InPool
+		entry["pool_state"] = poolStatus.State
+		entry["pool_reason"] = poolStatus.Reason
+		entry["pool_supports_quota_check"] = poolStatus.SupportsQuotaCheck
+		if poolStatus.RemainingPercent != nil {
+			entry["pool_remaining_percent"] = *poolStatus.RemainingPercent
+		}
+		if !poolStatus.LastQuotaCheckedAt.IsZero() {
+			entry["pool_last_quota_checked_at"] = poolStatus.LastQuotaCheckedAt
+		}
+		if poolStatus.ConsecutiveErrors > 0 {
+			entry["pool_consecutive_errors"] = poolStatus.ConsecutiveErrors
+		}
+		if poolStatus.RecentTimeoutCount > 0 {
+			entry["pool_recent_timeout_count"] = poolStatus.RecentTimeoutCount
+		}
+		if poolStatus.PenaltyScore > 0 {
+			entry["pool_penalty_score"] = poolStatus.PenaltyScore
+		}
+		if !poolStatus.PenaltyUntil.IsZero() {
+			entry["pool_penalty_until"] = poolStatus.PenaltyUntil
+		}
+		if !poolStatus.LastSelectedAt.IsZero() {
+			entry["pool_last_selected_at"] = poolStatus.LastSelectedAt
+		}
 	}
 	if !auth.UpdatedAt.IsZero() {
 		entry["modtime"] = auth.UpdatedAt

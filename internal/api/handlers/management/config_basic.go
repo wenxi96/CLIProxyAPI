@@ -21,7 +21,7 @@ import (
 
 const (
 	defaultLatestReleaseURL = "https://api.github.com/repos/router-for-me/CLIProxyAPI/releases/latest"
-	latestReleaseUserAgent = "CLIProxyAPI"
+	latestReleaseUserAgent  = "CLIProxyAPI"
 )
 
 func resolveLatestReleaseURL(repository string) string {
@@ -367,6 +367,23 @@ func (h *Handler) PutRoutingStrategy(c *gin.Context) {
 		return
 	}
 	h.cfg.Routing.Strategy = normalized
+	h.persist(c)
+}
+
+// RoutingScopedPool
+func (h *Handler) GetRoutingScopedPool(c *gin.Context) {
+	c.JSON(200, gin.H{"scoped-pool": config.NormalizeRoutingScopedPoolConfig(h.cfg.Routing.ScopedPool)})
+}
+
+func (h *Handler) PutRoutingScopedPool(c *gin.Context) {
+	var body struct {
+		Value *config.RoutingScopedPoolConfig `json:"value"`
+	}
+	if errBindJSON := c.ShouldBindJSON(&body); errBindJSON != nil || body.Value == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	h.cfg.Routing.ScopedPool = config.NormalizeRoutingScopedPoolConfig(*body.Value)
 	h.persist(c)
 }
 

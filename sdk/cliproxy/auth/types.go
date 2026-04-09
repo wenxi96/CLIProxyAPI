@@ -125,6 +125,84 @@ type ModelState struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// PoolState describes how one auth currently participates in provider-local scoped-pool routing.
+type PoolState string
+
+const (
+	PoolStateUnmanaged PoolState = "unmanaged"
+	PoolStateInPool    PoolState = "in_pool"
+	PoolStateStandby   PoolState = "standby"
+	PoolStatePenalized PoolState = "penalized"
+	PoolStateEjected   PoolState = "ejected"
+	PoolStateDisabled  PoolState = "disabled"
+)
+
+// PoolReason captures the dominant reason behind the current scoped-pool state.
+type PoolReason string
+
+const (
+	PoolReasonNone                 PoolReason = ""
+	PoolReasonHealthy              PoolReason = "healthy"
+	PoolReasonPoolFull             PoolReason = "pool_full"
+	PoolReasonNotEnabled           PoolReason = "not_enabled"
+	PoolReasonStrategyIncompatible PoolReason = "strategy_incompatible"
+	PoolReasonDisabled             PoolReason = "disabled"
+	PoolReasonUnavailable          PoolReason = "unavailable"
+	PoolReasonPenaltyWindow        PoolReason = "penalty_window"
+	PoolReasonConsecutiveErrors    PoolReason = "consecutive_errors"
+	PoolReasonRequestTimeout       PoolReason = "request_timeout"
+	PoolReasonLowQuota             PoolReason = "low_quota"
+)
+
+// PoolAuthSnapshot captures the runtime scoped-pool view for one auth.
+type PoolAuthSnapshot struct {
+	AuthID             string     `json:"auth_id"`
+	AuthIndex          string     `json:"auth_index,omitempty"`
+	Provider           string     `json:"provider"`
+	Configured         bool       `json:"configured"`
+	PoolEnabled        bool       `json:"pool_enabled"`
+	InPool             bool       `json:"in_pool"`
+	State              PoolState  `json:"pool_state"`
+	Reason             PoolReason `json:"pool_reason,omitempty"`
+	RuntimeOnly        bool       `json:"runtime_only,omitempty"`
+	Disabled           bool       `json:"disabled,omitempty"`
+	SupportsQuotaCheck bool       `json:"supports_quota_check"`
+	RemainingPercent   *int       `json:"remaining_percent,omitempty"`
+	LastQuotaCheckedAt time.Time  `json:"last_quota_checked_at,omitempty"`
+	ConsecutiveErrors  int        `json:"consecutive_errors,omitempty"`
+	RecentTimeoutCount int        `json:"recent_timeout_count,omitempty"`
+	PenaltyScore       int        `json:"penalty_score,omitempty"`
+	PenaltyUntil       time.Time  `json:"penalty_until,omitempty"`
+	LastSelectedAt     time.Time  `json:"last_selected_at,omitempty"`
+	LastPoolEventAt    time.Time  `json:"last_pool_event_at,omitempty"`
+	LastTransitionAt   time.Time  `json:"last_transition_at,omitempty"`
+}
+
+// PoolProviderSnapshot captures provider-level scoped-pool status.
+type PoolProviderSnapshot struct {
+	Provider       string                      `json:"provider"`
+	Configured     bool                        `json:"configured"`
+	Effective      bool                        `json:"effective"`
+	Reason         PoolReason                  `json:"reason,omitempty"`
+	Limit          int                         `json:"limit"`
+	CandidateCount int                         `json:"candidate_count"`
+	ActiveCount    int                         `json:"active_count"`
+	StandbyCount   int                         `json:"standby_count"`
+	PenalizedCount int                         `json:"penalized_count"`
+	EjectedCount   int                         `json:"ejected_count"`
+	DisabledCount  int                         `json:"disabled_count"`
+	ActiveAuthIDs  []string                    `json:"active_auth_ids,omitempty"`
+	Auths          map[string]PoolAuthSnapshot `json:"auths,omitempty"`
+}
+
+// PoolSnapshot captures all scoped-pool runtime state exposed to management consumers.
+type PoolSnapshot struct {
+	GeneratedAt time.Time                       `json:"generated_at"`
+	Strategy    string                          `json:"strategy"`
+	Providers   map[string]PoolProviderSnapshot `json:"providers"`
+	Auths       map[string]PoolAuthSnapshot     `json:"auths"`
+}
+
 // Clone shallow copies the Auth structure, duplicating maps to avoid accidental mutation.
 func (a *Auth) Clone() *Auth {
 	if a == nil {
