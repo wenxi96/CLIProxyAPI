@@ -59,9 +59,8 @@ jobs:
             [[ "${tag}" == \#* ]] && continue
 
             echo "Cleaning ${tag}"
-            release_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" --jq '.id' 2>/dev/null || true)"
-            if [[ -n "${release_id}" ]]; then
-              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/releases/${release_id}"
+            if gh release view "${tag}" >/dev/null 2>&1; then
+              gh release delete "${tag}" --yes --cleanup-tag
             fi
 
             git tag -d "${tag}" >/dev/null 2>&1 || true
@@ -105,6 +104,11 @@ jobs:
               GITHUB_TOKEN="${GH_TOKEN}" \
               goreleaser release --snapshot --clean --skip=validate
             )
+
+            if gh release view "${tag}" >/dev/null 2>&1; then
+              gh release delete "${tag}" --yes --cleanup-tag
+            fi
+            git push origin ":refs/tags/${tag}" >/dev/null 2>&1 || true
 
             gh release create "${tag}" \
               "${build_dir}"/dist/*.tar.gz \
