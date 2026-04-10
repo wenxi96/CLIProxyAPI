@@ -72,6 +72,34 @@ jobs:
         run: |
           set -euo pipefail
 
+          emit_error() {
+            local title="$1"
+            local message="$2"
+            message="${message//'%'/'%25'}"
+            message="${message//$'\r'/'%0D'}"
+            message="${message//$'\n'/'%0A'}"
+            echo "::error title=${title}::${message}"
+          }
+
+          run_with_log() {
+            local title="$1"
+            shift
+            local log_file
+            log_file="$(mktemp)"
+            if "$@" >"${log_file}" 2>&1; then
+              cat "${log_file}"
+              rm -f "${log_file}"
+              return 0
+            fi
+
+            local summary
+            summary="$(tail -n 40 "${log_file}")"
+            emit_error "${title}" "${summary}"
+            cat "${log_file}" >&2
+            rm -f "${log_file}"
+            return 1
+          }
+
           plan_file=".github/release-history/rebuild-plan.tsv"
           while IFS=$'\t' read -r tag version base_tag source_commit previous_tag previous_commit; do
             [[ -n "${tag}" ]] || continue
@@ -81,12 +109,14 @@ jobs:
             notes_file="$(mktemp)"
             build_dir="$(mktemp -d)"
 
-            VERSION="${version}" \
-            RELEASE_TARGET_COMMIT="${source_commit}" \
-            RELEASE_BASE_TAG="${base_tag}" \
-            RELEASE_PREVIOUS_TAG="${previous_tag}" \
-            RELEASE_PREVIOUS_COMMIT="${previous_commit}" \
-            bash ./scripts/release-notes.sh "${notes_file}"
+            run_with_log "release-notes ${tag}" \
+              env \
+                VERSION="${version}" \
+                RELEASE_TARGET_COMMIT="${source_commit}" \
+                RELEASE_BASE_TAG="${base_tag}" \
+                RELEASE_PREVIOUS_TAG="${previous_tag}" \
+                RELEASE_PREVIOUS_COMMIT="${previous_commit}" \
+                bash ./scripts/release-notes.sh "${notes_file}"
 
             git worktree add --detach "${build_dir}" "${source_commit}"
             git -C "${build_dir}" fetch --depth 1 https://github.com/router-for-me/models.git main
@@ -95,30 +125,32 @@ jobs:
             short_commit="$(git -C "${build_dir}" rev-parse --short HEAD)"
             build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-            (
-              cd "${build_dir}"
-              VERSION="${version}" \
-              COMMIT="${short_commit}" \
-              BUILD_DATE="${build_date}" \
-              SOURCE_REPOSITORY="${SOURCE_REPOSITORY}" \
-              GITHUB_TOKEN="${GH_TOKEN}" \
-              goreleaser release --snapshot --clean --skip=validate
-            )
+            run_with_log "build ${tag}" \
+              env \
+                BUILD_DIR="${build_dir}" \
+                VERSION="${version}" \
+                COMMIT="${short_commit}" \
+                BUILD_DATE="${build_date}" \
+                SOURCE_REPOSITORY="${SOURCE_REPOSITORY}" \
+                GITHUB_TOKEN="${GH_TOKEN}" \
+                bash -lc 'cd "${BUILD_DIR}" && goreleaser release --snapshot --clean --skip=validate'
 
             if gh release view "${tag}" >/dev/null 2>&1; then
               gh release delete "${tag}" --yes --cleanup-tag
             fi
             git push origin ":refs/tags/${tag}" >/dev/null 2>&1 || true
 
-            RELEASE_TAG="${tag}" \
-            RELEASE_NAME="${version}" \
-            RELEASE_TARGET_COMMIT="${source_commit}" \
-            RELEASE_NOTES_FILE="${notes_file}" \
-            GH_TOKEN="${GH_TOKEN}" \
-            python3 ./scripts/publish-release.py \
-              "${build_dir}"/dist/*.tar.gz \
-              "${build_dir}"/dist/*.zip \
-              "${build_dir}"/dist/checksums.txt
+            run_with_log "publish ${tag}" \
+              env \
+                RELEASE_TAG="${tag}" \
+                RELEASE_NAME="${version}" \
+                RELEASE_TARGET_COMMIT="${source_commit}" \
+                RELEASE_NOTES_FILE="${notes_file}" \
+                GH_TOKEN="${GH_TOKEN}" \
+                python3 ./scripts/publish-release.py \
+                "${build_dir}"/dist/*.tar.gz \
+                "${build_dir}"/dist/*.zip \
+                "${build_dir}"/dist/checksums.txt
 
             git worktree remove --force "${build_dir}"
             rm -f "${notes_file}"
