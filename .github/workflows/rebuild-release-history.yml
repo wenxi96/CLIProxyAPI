@@ -110,13 +110,15 @@ jobs:
             fi
             git push origin ":refs/tags/${tag}" >/dev/null 2>&1 || true
 
-            gh release create "${tag}" \
+            RELEASE_TAG="${tag}" \
+            RELEASE_NAME="${version}" \
+            RELEASE_TARGET_COMMIT="${source_commit}" \
+            RELEASE_NOTES_FILE="${notes_file}" \
+            GH_TOKEN="${GH_TOKEN}" \
+            python3 ./scripts/publish-release.py \
               "${build_dir}"/dist/*.tar.gz \
               "${build_dir}"/dist/*.zip \
-              "${build_dir}"/dist/checksums.txt \
-              --title "${version}" \
-              --notes-file "${notes_file}" \
-              --target "${source_commit}"
+              "${build_dir}"/dist/checksums.txt
 
             git worktree remove --force "${build_dir}"
             rm -f "${notes_file}"
