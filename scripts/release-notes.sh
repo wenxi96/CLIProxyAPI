@@ -10,22 +10,24 @@ CUSTOM_NOTES_FILE="${ROOT_DIR}/.github/release-notes/custom.md"
 source "${ROOT_DIR}/scripts/release-lib.sh"
 release_load_metadata
 
-BASE_TAG="$(release_resolve_base_tag)"
+TARGET_COMMIT="${RELEASE_TARGET_COMMIT:-HEAD}"
+BASE_TAG="${RELEASE_BASE_TAG:-$(release_resolve_base_tag "${TARGET_COMMIT}")}"
 if [[ -z "${BASE_TAG}" ]]; then
-  echo "failed to resolve upstream base tag from current branch" >&2
+  echo "failed to resolve upstream base tag from target commit" >&2
   exit 1
 fi
 
 BASE_VERSION="${BASE_TAG#v}"
-SHORT_COMMIT="$(git rev-parse --short HEAD)"
-FULL_COMMIT="$(git rev-parse HEAD)"
+SHORT_COMMIT="$(git rev-parse --short "${TARGET_COMMIT}")"
+FULL_COMMIT="$(git rev-parse "${TARGET_COMMIT}")"
 DISPLAY_VERSION="${VERSION:-$(release_resolve_display_version "${BASE_TAG}")}"
 FORMAL_VERSION="$(release_normalize_version_value "${DISPLAY_VERSION}")"
 CURRENT_CUSTOM_VERSION="$(release_extract_fork_version "${FORMAL_VERSION}" 2>/dev/null || true)"
 if [[ -z "${CURRENT_CUSTOM_VERSION}" ]]; then
   CURRENT_CUSTOM_VERSION="${CUSTOM_VERSION}"
 fi
-PREVIOUS_FORK_TAG="$(release_resolve_previous_fork_release_tag "${BASE_TAG}" "${FORMAL_VERSION}" || true)"
+PREVIOUS_FORK_TAG="${RELEASE_PREVIOUS_TAG:-$(release_resolve_previous_fork_release_tag "${FORMAL_VERSION}" "${TARGET_COMMIT}" || true)}"
+PREVIOUS_FORK_COMMIT="${RELEASE_PREVIOUS_COMMIT:-}"
 UPSTREAM_REF="upstream/${UPSTREAM_BRANCH}"
 
 fetch_release_field() {
@@ -57,14 +59,19 @@ if isinstance(value, str):
 PY
 }
 
-fork_range="${BASE_TAG}..HEAD"
-if [[ -n "${PREVIOUS_FORK_TAG}" ]]; then
-  fork_range="${PREVIOUS_FORK_TAG}..HEAD"
-elif git rev-parse --verify "${UPSTREAM_REF}" >/dev/null 2>&1; then
-  fork_range="${UPSTREAM_REF}..HEAD"
+fork_range="${BASE_TAG}..${TARGET_COMMIT}"
+if [[ -n "${PREVIOUS_FORK_COMMIT}" ]]; then
+  fork_range="${PREVIOUS_FORK_COMMIT}..${TARGET_COMMIT}"
+elif [[ -n "${PREVIOUS_FORK_TAG}" ]] && git rev-parse --verify "${PREVIOUS_FORK_TAG}" >/dev/null 2>&1; then
+  fork_range="${PREVIOUS_FORK_TAG}..${TARGET_COMMIT}"
 fi
 
-custom_changes="$(git log --no-merges --pretty=format:'- %h %s' "${fork_range}" || true)"
+custom_changes=""
+if git rev-parse --verify "${UPSTREAM_REF}" >/dev/null 2>&1; then
+  custom_changes="$(git log --no-merges --pretty=format:'- %h %s' "${fork_range}" --not "${UPSTREAM_REF}" || true)"
+else
+  custom_changes="$(git log --no-merges --pretty=format:'- %h %s' "${fork_range}" || true)"
+fi
 manual_notes=""
 if [[ -f "${CUSTOM_NOTES_FILE}" ]]; then
   manual_notes="$(sed '/^[[:space:]]*$/d' "${CUSTOM_NOTES_FILE}" || true)"
@@ -73,8 +80,9 @@ fi
 upstream_notes_url="https://api.github.com/repos/${UPSTREAM_REPO}/releases/tags/${BASE_TAG}"
 upstream_notes="$(fetch_release_field "${upstream_notes_url}" body)"
 upstream_sync_commits=""
-if git rev-parse --verify "${UPSTREAM_REF}" >/dev/null 2>&1 \
-  && git merge-base --is-ancestor "${UPSTREAM_REF}" HEAD >/dev/null 2>&1 \
+if [[ -z "${RELEASE_TARGET_COMMIT:-}" ]] \
+  && git rev-parse --verify "${UPSTREAM_REF}" >/dev/null 2>&1 \
+  && git merge-base --is-ancestor "${UPSTREAM_REF}" "${TARGET_COMMIT}" >/dev/null 2>&1 \
   && git merge-base --is-ancestor "${BASE_TAG}" "${UPSTREAM_REF}" >/dev/null 2>&1; then
   upstream_sync_commits="$(git log --no-merges --pretty=format:'- %h %s' "${BASE_TAG}..${UPSTREAM_REF}" || true)"
 fi

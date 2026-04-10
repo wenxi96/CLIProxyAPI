@@ -1,0 +1,4 @@
+# tag	version	base_tag	source_commit	previous_tag	previous_commit
+v6.9.15-wx-1.0	6.9.15-wx-1.0	v6.9.15	906c5fe6d9cb7c83097bdc06d7f06df5a427df21		
+v6.9.16-wx-1.1	6.9.16-wx-1.1	v6.9.16	2909ff0ddcd156932c2f6f69f6f0b301c3899f3e	v6.9.15-wx-1.0	906c5fe6d9cb7c83097bdc06d7f06df5a427df21
+v6.9.16-wx-1.2	6.9.16-wx-1.2	v6.9.16	e44dc93db0d4eb5d4dd558c4d5967cf885547dd0	v6.9.16-wx-1.1	2909ff0ddcd156932c2f6f69f6f0b301c3899f3e
