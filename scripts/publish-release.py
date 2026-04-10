@@ -111,8 +111,16 @@ def create_release() -> dict:
         "draft": False,
         "prerelease": False,
     }
-    _, release = api_json(f"{API_ROOT}/releases", method="POST", payload=payload)
-    return release
+    try:
+        _, release = api_json(f"{API_ROOT}/releases", method="POST", payload=payload)
+        return release
+    except ApiError as exc:
+        if exc.status == 403 and "Resource not accessible by integration" in exc.message:
+            raise SystemExit(
+                "release creation requires a token with repository contents write access; "
+                "set repository secret RELEASE_HISTORY_TOKEN to a PAT and rerun the workflow"
+            ) from exc
+        raise
 
 
 def upload_asset(upload_url: str, asset_path: Path) -> None:

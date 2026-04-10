@@ -18,7 +18,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[rebuild-release-history]')
     runs-on: ubuntu-latest
     env:
-      GH_TOKEN: ${{ github.token }}
+      GH_TOKEN: ${{ secrets.RELEASE_HISTORY_TOKEN != '' && secrets.RELEASE_HISTORY_TOKEN || github.token }}
       SOURCE_REPOSITORY: https://github.com/${{ github.repository }}
     steps:
       - uses: actions/checkout@v6
