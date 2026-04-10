@@ -78,7 +78,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  master-snapshot:
+  master-release:
     if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     permissions:
@@ -105,16 +105,16 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Generate snapshot metadata
+      - name: Generate release metadata
         run: |
-          bash ./scripts/version.sh snapshot >> "$GITHUB_ENV"
+          bash ./scripts/version.sh auto-release >> "$GITHUB_ENV"
       - name: Install GoReleaser
         uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
           version: '~> v2'
           install-only: true
-      - name: Run snapshot GoReleaser
+      - name: Run master GoReleaser build
         run: goreleaser release --snapshot --clean --skip=validate
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -122,14 +122,14 @@ jobs:
           COMMIT: ${{ env.COMMIT }}
           BUILD_DATE: ${{ env.BUILD_DATE }}
           SOURCE_REPOSITORY: ${{ env.SOURCE_REPOSITORY }}
-      - name: Generate snapshot release notes
+      - name: Generate release notes
         run: |
           bash ./scripts/release-notes.sh release-notes.md
-      - name: Publish snapshot release
+      - name: Publish master release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.SNAPSHOT_TAG }}
-          name: ${{ env.SNAPSHOT_NAME }}
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.RELEASE_NAME }}
           target_commitish: ${{ github.sha }}
           body_path: release-notes.md
           files: |

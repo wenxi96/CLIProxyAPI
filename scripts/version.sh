@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-MODE="${1:-snapshot}"
+MODE="${1:-auto-release}"
 INPUT_TAG="${2:-}"
 
 ROOT_DIR="$(git rev-parse --show-toplevel)"
@@ -22,7 +22,7 @@ BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 SOURCE_REPOSITORY="$(release_resolve_source_repository)"
 
 case "${MODE}" in
-  snapshot)
+  auto-release|snapshot)
     BASE_TAG="$(release_resolve_base_tag)"
     if [[ -z "${BASE_TAG}" ]]; then
       echo "failed to resolve upstream base tag from current branch" >&2
@@ -43,6 +43,8 @@ case "${MODE}" in
     emit "CUSTOM_VERSION" "${CUSTOM_VERSION}"
     emit "DISPLAY_VERSION" "${DISPLAY_VERSION}"
     emit "EFFECTIVE_CUSTOM_VERSION" "${EFFECTIVE_CUSTOM_VERSION}"
+    emit "RELEASE_TAG" "${SNAPSHOT_TAG}"
+    emit "RELEASE_NAME" "${SNAPSHOT_NAME}"
     emit "VERSION" "${VERSION}"
     emit "SNAPSHOT_TAG" "${SNAPSHOT_TAG}"
     emit "SNAPSHOT_NAME" "${SNAPSHOT_NAME}"

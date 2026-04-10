@@ -63,7 +63,7 @@ jobs:
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
             eval "$(bash ./scripts/version.sh release "${GITHUB_REF_NAME}" | sed 's/^/export /')"
           else
-            eval "$(bash ./scripts/version.sh snapshot | sed 's/^/export /')"
+            eval "$(bash ./scripts/version.sh auto-release | sed 's/^/export /')"
           fi
 
           tags_file="$(mktemp)"

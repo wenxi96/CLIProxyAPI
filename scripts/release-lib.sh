@@ -143,8 +143,7 @@ release_resolve_display_version() {
 
 release_resolve_snapshot_version() {
   local display_version="$1"
-  local short_commit="$2"
-  printf '%s-build.%s' "${display_version}" "${short_commit}"
+  printf '%s' "${display_version}"
 }
 
 release_resolve_snapshot_tag() {

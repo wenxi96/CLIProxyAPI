@@ -1,6 +1,6 @@
 param(
-    [ValidateSet("snapshot", "release")]
-    [string]$Mode = "snapshot",
+    [ValidateSet("auto-release", "snapshot", "release")]
+    [string]$Mode = "auto-release",
     [string]$Tag = ""
 )
 
@@ -56,7 +56,7 @@ try {
         $sourceRepository = $remoteUrl -replace '\.git$', ''
     }
 
-    if ($Mode -eq "snapshot") {
+    if ($Mode -eq "snapshot" -or $Mode -eq "auto-release") {
         $baseTag = git tag --merged HEAD --list "v*" --sort=-version:refname |
             Where-Object { $_ -match $upstreamTagRegex } |
             Select-Object -First 1
@@ -90,7 +90,7 @@ try {
         }
 
         $displayVersion = "$baseVersion-$customMark.$effectiveCustomVersion"
-        $version = "$displayVersion-build.$shortCommit"
+        $version = $displayVersion
         $snapshotTag = "v$version"
 
         [PSCustomObject]@{
@@ -101,6 +101,8 @@ try {
             CUSTOM_VERSION    = $customVersion
             DISPLAY_VERSION   = $displayVersion
             EFFECTIVE_CUSTOM_VERSION = $effectiveCustomVersion
+            RELEASE_TAG       = $snapshotTag
+            RELEASE_NAME      = $version
             VERSION           = $version
             SNAPSHOT_TAG      = $snapshotTag
             SNAPSHOT_NAME     = $version
