@@ -1,0 +1,119 @@
+name: rebuild-release-history
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rebuild-release-history
+  cancel-in-progress: false
+
+jobs:
+  rebuild:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[rebuild-release-history]')
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_REPOSITORY: https://github.com/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Fetch upstream tags
+        run: |
+          if git remote get-url upstream >/dev/null 2>&1; then
+            git remote set-url upstream https://github.com/router-for-me/CLIProxyAPI.git
+          else
+            git remote add upstream https://github.com/router-for-me/CLIProxyAPI.git
+          fi
+          git fetch origin --force --tags
+          git fetch upstream main --force --tags
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install GoReleaser
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          install-only: true
+
+      - name: Clean legacy releases and tags
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cleanup_file=".github/release-history/cleanup-tags.txt"
+          while IFS= read -r tag; do
+            [[ -n "${tag}" ]] || continue
+            [[ "${tag}" == \#* ]] && continue
+
+            echo "Cleaning ${tag}"
+            release_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" --jq '.id' 2>/dev/null || true)"
+            if [[ -n "${release_id}" ]]; then
+              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/releases/${release_id}"
+            fi
+
+            git tag -d "${tag}" >/dev/null 2>&1 || true
+            git push origin ":refs/tags/${tag}" >/dev/null 2>&1 || true
+          done < "${cleanup_file}"
+
+      - name: Rebuild release history
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          plan_file=".github/release-history/rebuild-plan.tsv"
+          while IFS=$'\t' read -r tag version base_tag source_commit previous_tag previous_commit; do
+            [[ -n "${tag}" ]] || continue
+            [[ "${tag}" == \#* ]] && continue
+
+            echo "Rebuilding ${tag} from ${source_commit}"
+            notes_file="$(mktemp)"
+            build_dir="$(mktemp -d)"
+
+            VERSION="${version}" \
+            RELEASE_TARGET_COMMIT="${source_commit}" \
+            RELEASE_BASE_TAG="${base_tag}" \
+            RELEASE_PREVIOUS_TAG="${previous_tag}" \
+            RELEASE_PREVIOUS_COMMIT="${previous_commit}" \
+            bash ./scripts/release-notes.sh "${notes_file}"
+
+            git worktree add --detach "${build_dir}" "${source_commit}"
+            git -C "${build_dir}" fetch --depth 1 https://github.com/router-for-me/models.git main
+            git -C "${build_dir}" show FETCH_HEAD:models.json > "${build_dir}/internal/registry/models/models.json"
+
+            short_commit="$(git -C "${build_dir}" rev-parse --short HEAD)"
+            build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+            (
+              cd "${build_dir}"
+              VERSION="${version}" \
+              COMMIT="${short_commit}" \
+              BUILD_DATE="${build_date}" \
+              SOURCE_REPOSITORY="${SOURCE_REPOSITORY}" \
+              GITHUB_TOKEN="${GH_TOKEN}" \
+              goreleaser release --snapshot --clean --skip=validate
+            )
+
+            gh release create "${tag}" \
+              "${build_dir}"/dist/*.tar.gz \
+              "${build_dir}"/dist/*.zip \
+              "${build_dir}"/dist/checksums.txt \
+              --title "${version}" \
+              --notes-file "${notes_file}" \
+              --target "${source_commit}"
+
+            git worktree remove --force "${build_dir}"
+            rm -f "${notes_file}"
+          done < "${plan_file}"

@@ -64,10 +64,10 @@ func TestResolveReleaseVersion(t *testing.T) {
 		{
 			name: "prefer release name",
 			info: releaseInfo{
-				Name:    "6.9.15-wx.1",
-				TagName: "v6.9.15-wx.1-build.b39f4b27",
+				Name:    "6.9.15-wx-1.0",
+				TagName: "v6.9.15-wx-1.0-build.906c5fe6",
 			},
-			want: "6.9.15-wx.1",
+			want: "6.9.15-wx-1.0",
 		},
 		{
 			name: "normalize upstream release name",
@@ -79,9 +79,16 @@ func TestResolveReleaseVersion(t *testing.T) {
 		{
 			name: "fallback to tag name",
 			info: releaseInfo{
-				TagName: "v6.9.15-wx.1-build.b39f4b27",
+				TagName: "v6.9.15-wx-1.0-build.906c5fe6",
 			},
-			want: "6.9.15-wx.1",
+			want: "6.9.15-wx-1.0",
+		},
+		{
+			name: "keep legacy fork version compatible",
+			info: releaseInfo{
+				TagName: "v6.9.16-wx.1.2-build.88a812ee",
+			},
+			want: "6.9.16-wx.1.2",
 		},
 		{
 			name: "empty response",
