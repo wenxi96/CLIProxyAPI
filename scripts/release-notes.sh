@@ -20,6 +20,12 @@ BASE_VERSION="${BASE_TAG#v}"
 SHORT_COMMIT="$(git rev-parse --short HEAD)"
 FULL_COMMIT="$(git rev-parse HEAD)"
 DISPLAY_VERSION="${VERSION:-$(release_resolve_display_version "${BASE_TAG}")}"
+FORMAL_VERSION="$(release_normalize_version_value "${DISPLAY_VERSION}")"
+CURRENT_CUSTOM_VERSION="$(release_extract_fork_version "${FORMAL_VERSION}" 2>/dev/null || true)"
+if [[ -z "${CURRENT_CUSTOM_VERSION}" ]]; then
+  CURRENT_CUSTOM_VERSION="${CUSTOM_VERSION}"
+fi
+PREVIOUS_FORK_TAG="$(release_resolve_previous_fork_release_tag "${BASE_TAG}" "${FORMAL_VERSION}" || true)"
 UPSTREAM_REF="upstream/${UPSTREAM_BRANCH}"
 
 fetch_release_field() {
@@ -52,7 +58,9 @@ PY
 }
 
 fork_range="${BASE_TAG}..HEAD"
-if git rev-parse --verify "${UPSTREAM_REF}" >/dev/null 2>&1; then
+if [[ -n "${PREVIOUS_FORK_TAG}" ]]; then
+  fork_range="${PREVIOUS_FORK_TAG}..HEAD"
+elif git rev-parse --verify "${UPSTREAM_REF}" >/dev/null 2>&1; then
   fork_range="${UPSTREAM_REF}..HEAD"
 fi
 
@@ -91,6 +99,12 @@ fi
   echo "- 上游仓库：\`${UPSTREAM_REPO}\`"
   echo "- 上游版本：\`${BASE_TAG}\`"
   echo "- 当前版本：\`${DISPLAY_VERSION}\`"
+  if [[ "${FORMAL_VERSION}" != "${DISPLAY_VERSION}" ]]; then
+    echo "- 目标正式版本：\`${FORMAL_VERSION}\`"
+  fi
+  if [[ -n "${PREVIOUS_FORK_TAG}" ]]; then
+    echo "- 上一正式版本：\`${PREVIOUS_FORK_TAG}\`"
+  fi
   echo "- 当前提交：\`${FULL_COMMIT}\`"
   if [[ -n "${GITHUB_SERVER_URL:-}" && -n "${GITHUB_REPOSITORY:-}" && -n "${GITHUB_RUN_ID:-}" ]]; then
     echo "- 工作流：${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
@@ -118,6 +132,9 @@ fi
   echo
   echo "- 基线版本：\`${BASE_VERSION}\`"
   echo "- 自定义标识：\`${CUSTOM_MARK}\`"
-  echo "- 自定义版本号：\`${CUSTOM_VERSION}\`"
+  echo "- 当前自定义版本号：\`${CURRENT_CUSTOM_VERSION}\`"
+  if [[ "${CUSTOM_VERSION}" != "${CURRENT_CUSTOM_VERSION}" ]]; then
+    echo "- 自定义版本基线：\`${CUSTOM_VERSION}\`"
+  fi
   echo "- 构建提交：\`${SHORT_COMMIT}\`"
 } > "${OUTPUT_PATH}"

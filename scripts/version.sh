@@ -30,8 +30,10 @@ case "${MODE}" in
     fi
 
     BASE_VERSION="${BASE_TAG#v}"
-    VERSION="$(release_resolve_display_version "${BASE_TAG}")"
-    SNAPSHOT_TAG="$(release_resolve_snapshot_tag "${VERSION}" "${SHORT_COMMIT}")"
+    DISPLAY_VERSION="$(release_resolve_display_version "${BASE_TAG}")"
+    EFFECTIVE_CUSTOM_VERSION="$(release_extract_fork_version "${DISPLAY_VERSION}")"
+    VERSION="$(release_resolve_snapshot_version "${DISPLAY_VERSION}" "${SHORT_COMMIT}")"
+    SNAPSHOT_TAG="$(release_resolve_snapshot_tag "${VERSION}")"
     SNAPSHOT_NAME="${VERSION}"
 
     emit "MODE" "${MODE}"
@@ -39,6 +41,8 @@ case "${MODE}" in
     emit "BASE_VERSION" "${BASE_VERSION}"
     emit "CUSTOM_MARK" "${CUSTOM_MARK}"
     emit "CUSTOM_VERSION" "${CUSTOM_VERSION}"
+    emit "DISPLAY_VERSION" "${DISPLAY_VERSION}"
+    emit "EFFECTIVE_CUSTOM_VERSION" "${EFFECTIVE_CUSTOM_VERSION}"
     emit "VERSION" "${VERSION}"
     emit "SNAPSHOT_TAG" "${SNAPSHOT_TAG}"
     emit "SNAPSHOT_NAME" "${SNAPSHOT_NAME}"

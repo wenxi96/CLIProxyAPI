@@ -11,7 +11,7 @@ Push-Location $rootDir
 
 try {
     $customMark = "wx"
-    $customVersion = "1"
+    $customVersion = "1.0"
     $upstreamTagRegex = '^v\d+\.\d+\.\d+$'
     $metadataPath = Join-Path $rootDir "release-metadata.env"
     if (Test-Path $metadataPath) {
@@ -66,8 +66,32 @@ try {
         }
 
         $baseVersion = $baseTag.Substring(1)
-        $version = "$baseVersion-$customMark.$customVersion"
-        $snapshotTag = "v$version-build.$shortCommit"
+        $prefix = "v$baseVersion-$customMark."
+        $latestForkRelease = git tag --merged HEAD --list "$prefix*" --sort=-version:refname |
+            Where-Object {
+                $tag = $_.Trim()
+                $suffix = $tag.Substring($prefix.Length)
+                $suffix -match '^\d+(\.\d+)*$'
+            } |
+            Select-Object -First 1
+
+        $effectiveCustomVersion = $customVersion
+        if ($latestForkRelease) {
+            $latestVersion = ($latestForkRelease.Trim()).Substring($prefix.Length)
+            $parts = $latestVersion -split '\.'
+            $lastIndex = $parts.Length - 1
+            $parts[$lastIndex] = ([int]$parts[$lastIndex] + 1).ToString()
+            $candidateVersion = ($parts -join '.')
+
+            $sorted = @($candidateVersion, $customVersion) | Sort-Object { [version]($_ -replace '\.0*$', '.0') }
+            if ($sorted[-1] -eq $candidateVersion) {
+                $effectiveCustomVersion = $candidateVersion
+            }
+        }
+
+        $displayVersion = "$baseVersion-$customMark.$effectiveCustomVersion"
+        $version = "$displayVersion-build.$shortCommit"
+        $snapshotTag = "v$version"
 
         [PSCustomObject]@{
             MODE              = $Mode
@@ -75,6 +99,8 @@ try {
             BASE_VERSION      = $baseVersion
             CUSTOM_MARK       = $customMark
             CUSTOM_VERSION    = $customVersion
+            DISPLAY_VERSION   = $displayVersion
+            EFFECTIVE_CUSTOM_VERSION = $effectiveCustomVersion
             VERSION           = $version
             SNAPSHOT_TAG      = $snapshotTag
             SNAPSHOT_NAME     = $version
