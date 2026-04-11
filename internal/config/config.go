@@ -234,6 +234,9 @@ type RoutingConfig struct {
 
 // RoutingScopedPoolConfig defines provider-local scoped-pool settings.
 type RoutingScopedPoolConfig struct {
+	// Enabled explicitly enables scoped-pool routing globally.
+	// When nil, legacy configs fall back to enabled if any provider override is enabled.
+	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 	// Defaults provides default values for provider-specific entries.
 	Defaults RoutingScopedPoolProviderConfig `yaml:"defaults,omitempty" json:"defaults,omitempty"`
 	// Providers defines per-provider scoped-pool settings keyed by provider category.
@@ -778,13 +781,42 @@ func DefaultRoutingScopedPoolProviderConfig() RoutingScopedPoolProviderConfig {
 	}
 }
 
+func cloneOptionalBool(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func hasEnabledRoutingScopedPoolProvider(providers map[string]RoutingScopedPoolProviderConfig) bool {
+	for _, provider := range providers {
+		if provider.Enabled {
+			return true
+		}
+	}
+	return false
+}
+
+// IsRoutingScopedPoolEnabled reports whether scoped-pool should be considered globally enabled.
+func IsRoutingScopedPoolEnabled(cfg RoutingScopedPoolConfig) bool {
+	if cfg.Enabled != nil {
+		return *cfg.Enabled
+	}
+	return hasEnabledRoutingScopedPoolProvider(cfg.Providers)
+}
+
 // NormalizeRoutingScopedPoolConfig normalizes defaults and provider-specific scoped-pool settings.
 func NormalizeRoutingScopedPoolConfig(cfg RoutingScopedPoolConfig) RoutingScopedPoolConfig {
 	defaults := normalizeRoutingScopedPoolProviderConfig(cfg.Defaults, DefaultRoutingScopedPoolProviderConfig())
 	defaults.Enabled = cfg.Defaults.Enabled
+	enabled := cloneOptionalBool(cfg.Enabled)
 
 	if len(cfg.Providers) == 0 {
-		return RoutingScopedPoolConfig{Defaults: defaults}
+		return RoutingScopedPoolConfig{
+			Enabled:  enabled,
+			Defaults: defaults,
+		}
 	}
 
 	providers := make(map[string]RoutingScopedPoolProviderConfig, len(cfg.Providers))
@@ -799,9 +831,17 @@ func NormalizeRoutingScopedPoolConfig(cfg RoutingScopedPoolConfig) RoutingScoped
 	}
 
 	if len(providers) == 0 {
-		return RoutingScopedPoolConfig{Defaults: defaults}
+		return RoutingScopedPoolConfig{
+			Enabled:  enabled,
+			Defaults: defaults,
+		}
+	}
+	if enabled == nil && hasEnabledRoutingScopedPoolProvider(providers) {
+		inferred := true
+		enabled = &inferred
 	}
 	return RoutingScopedPoolConfig{
+		Enabled:   enabled,
 		Defaults:  defaults,
 		Providers: providers,
 	}

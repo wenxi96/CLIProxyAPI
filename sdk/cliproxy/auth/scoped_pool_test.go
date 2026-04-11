@@ -182,6 +182,39 @@ func TestScopedPoolManager_FillFirstDisablesEffectivePool(t *testing.T) {
 	}
 }
 
+func TestScopedPoolManager_GlobalDisablePreservesConfiguredButNotEffective(t *testing.T) {
+	manager := newScopedPoolManager()
+	disabled := false
+	manager.SetConfig("round-robin", internalconfig.RoutingScopedPoolConfig{
+		Enabled: &disabled,
+		Providers: map[string]internalconfig.RoutingScopedPoolProviderConfig{
+			"codex": {Enabled: true, Limit: 1},
+		},
+	})
+
+	codexA := testScopedPoolAuth("codex-a", "codex", 0)
+	codexB := testScopedPoolAuth("codex-b", "codex", 0)
+	manager.SyncAuth(codexA)
+	manager.SyncAuth(codexB)
+
+	filtered := manager.FilterCandidates("codex", []*Auth{codexA, codexB})
+	if len(filtered) != 2 {
+		t.Fatalf("expected global disable to bypass scoped-pool, got %d candidates", len(filtered))
+	}
+
+	snapshot := manager.Snapshot()
+	provider := snapshot.Providers["codex"]
+	if !provider.Configured {
+		t.Fatalf("expected codex provider to remain configured")
+	}
+	if provider.Effective {
+		t.Fatalf("expected codex provider to be ineffective when scoped-pool is globally disabled")
+	}
+	if provider.Reason != PoolReasonNotEnabled {
+		t.Fatalf("expected not_enabled reason, got %s", provider.Reason)
+	}
+}
+
 func TestManagerScopedPoolSnapshot_IsAccessible(t *testing.T) {
 	manager := NewManager(nil, nil, nil)
 	manager.SetConfig(&internalconfig.Config{

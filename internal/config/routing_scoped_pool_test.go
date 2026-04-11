@@ -29,6 +29,9 @@ func TestNormalizeRoutingScopedPoolConfig(t *testing.T) {
 	if normalized.Defaults.Limit != DefaultScopedPoolLimit {
 		t.Fatalf("expected default limit %d, got %d", DefaultScopedPoolLimit, normalized.Defaults.Limit)
 	}
+	if normalized.Enabled == nil || !*normalized.Enabled {
+		t.Fatalf("expected scoped-pool enabled to be inferred from enabled providers")
+	}
 	if normalized.Defaults.QuotaThresholdPercent != MaxScopedPoolQuotaPercent {
 		t.Fatalf("expected default quota threshold clamp to %d, got %d", MaxScopedPoolQuotaPercent, normalized.Defaults.QuotaThresholdPercent)
 	}
@@ -50,6 +53,23 @@ func TestNormalizeRoutingScopedPoolConfig(t *testing.T) {
 	}
 	if codex.PenaltyWindowSeconds != DefaultScopedPoolPenaltySec {
 		t.Fatalf("expected penalty fallback %d, got %d", DefaultScopedPoolPenaltySec, codex.PenaltyWindowSeconds)
+	}
+}
+
+func TestNormalizeRoutingScopedPoolConfig_ExplicitDisableWins(t *testing.T) {
+	disabled := false
+	normalized := NormalizeRoutingScopedPoolConfig(RoutingScopedPoolConfig{
+		Enabled: &disabled,
+		Providers: map[string]RoutingScopedPoolProviderConfig{
+			"codex": {Enabled: true, Limit: 1},
+		},
+	})
+
+	if normalized.Enabled == nil {
+		t.Fatalf("expected explicit enabled flag to be preserved")
+	}
+	if *normalized.Enabled {
+		t.Fatalf("expected explicit disabled scoped-pool to remain disabled")
 	}
 }
 

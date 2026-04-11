@@ -108,11 +108,12 @@ quota-exceeded:
 routing:
   strategy: "round-robin" # round-robin (default), fill-first
   # Provider-local scoped-pool routing. It only takes effect when:
-  # 1. the provider entry explicitly sets enabled=true
-  # 2. routing.strategy remains "round-robin"
+  # 1. scoped-pool.enabled=true
+  # 2. the provider entry explicitly sets enabled=true
+  # 3. routing.strategy remains "round-robin"
   # scoped-pool:
+  #   enabled: true
   #   defaults:
-  #     enabled: false
   #     limit: 5
   #     quota-threshold-percent: 0
   #     consecutive-error-threshold: 3

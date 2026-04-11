@@ -15,6 +15,7 @@ type quotaSupportEvaluator func(*Auth) bool
 
 type scopedPoolRuntimeConfig struct {
 	strategy  string
+	enabled   bool
 	defaults  internalconfig.RoutingScopedPoolProviderConfig
 	providers map[string]internalconfig.RoutingScopedPoolProviderConfig
 }
@@ -76,6 +77,7 @@ func normalizeScopedPoolRuntimeConfig(strategy string, cfg internalconfig.Routin
 	normalized := internalconfig.NormalizeRoutingScopedPoolConfig(cfg)
 	out := scopedPoolRuntimeConfig{
 		strategy:  "round-robin",
+		enabled:   internalconfig.IsRoutingScopedPoolEnabled(normalized),
 		defaults:  normalized.Defaults,
 		providers: make(map[string]internalconfig.RoutingScopedPoolProviderConfig, len(normalized.Providers)),
 	}
@@ -102,6 +104,9 @@ func scopedPoolEnabledForAuth(cfg *internalconfig.Config, auth *Auth) bool {
 	runtime := normalizeScopedPoolRuntimeConfig(cfg.Routing.Strategy, cfg.Routing.ScopedPool)
 	providerCfg, ok := runtime.providers[providerKey]
 	if !ok || !providerCfg.Enabled {
+		return false
+	}
+	if !runtime.enabled {
 		return false
 	}
 	return runtime.strategy == "round-robin"
@@ -627,6 +632,9 @@ func (m *ScopedPoolManager) resolveProviderLocked(providerKey string) (internalc
 	configured := ok && providerCfg.Enabled
 	if !configured {
 		return cfg, false, false, PoolReasonNotEnabled
+	}
+	if !m.runtime.enabled {
+		return cfg, true, false, PoolReasonNotEnabled
 	}
 	if m.runtime.strategy != "round-robin" {
 		return cfg, true, false, PoolReasonStrategyIncompatible
