@@ -1,6 +1,7 @@
 package management
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -58,10 +59,12 @@ type callbackForwarder struct {
 }
 
 var (
-	callbackForwardersMu  sync.Mutex
-	callbackForwarders    = make(map[int]*callbackForwarder)
-	errAuthFileMustBeJSON = errors.New("auth file must be .json")
-	errAuthFileNotFound   = errors.New("auth file not found")
+	callbackForwardersMu   sync.Mutex
+	callbackForwarders     = make(map[int]*callbackForwarder)
+	errAuthFileMustBeJSON  = errors.New("auth file must be .json")
+	errAuthFileNotFound    = errors.New("auth file not found")
+	errAuthFileInvalidName = errors.New("invalid name")
+	errAuthFileInvalidExt  = errors.New("name must end with .json")
 )
 
 func extractLastRefreshTimestamp(meta map[string]any) (time.Time, bool) {
@@ -584,29 +587,122 @@ func isUnsafeAuthFileName(name string) bool {
 	return false
 }
 
-// Download single auth file by name
-func (h *Handler) DownloadAuthFile(c *gin.Context) {
-	name := strings.TrimSpace(c.Query("name"))
+func validateAuthFileDownloadName(name string) error {
 	if isUnsafeAuthFileName(name) {
-		c.JSON(400, gin.H{"error": "invalid name"})
-		return
+		return errAuthFileInvalidName
 	}
 	if !strings.HasSuffix(strings.ToLower(name), ".json") {
-		c.JSON(400, gin.H{"error": "name must end with .json"})
-		return
+		return errAuthFileInvalidExt
 	}
-	full := filepath.Join(h.cfg.AuthDir, name)
+	return nil
+}
+
+func normalizeRequestedAuthFileNames(names []string) []string {
+	seen := make(map[string]struct{}, len(names))
+	normalized := make([]string, 0, len(names))
+	for _, name := range names {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" {
+			continue
+		}
+		if _, exists := seen[trimmed]; exists {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		normalized = append(normalized, trimmed)
+	}
+	return normalized
+}
+
+func (h *Handler) readAuthFileForDownload(name string) ([]byte, string, error) {
+	normalizedName := strings.TrimSpace(name)
+	if err := validateAuthFileDownloadName(normalizedName); err != nil {
+		return nil, normalizedName, err
+	}
+
+	full := filepath.Join(h.cfg.AuthDir, normalizedName)
 	data, err := os.ReadFile(full)
 	if err != nil {
 		if os.IsNotExist(err) {
-			c.JSON(404, gin.H{"error": "file not found"})
-		} else {
-			c.JSON(500, gin.H{"error": fmt.Sprintf("failed to read file: %v", err)})
+			return nil, normalizedName, errAuthFileNotFound
 		}
+		return nil, normalizedName, fmt.Errorf("failed to read file: %w", err)
+	}
+
+	return data, normalizedName, nil
+}
+
+func writeAuthFileDownloadError(c *gin.Context, err error) {
+	switch {
+	case err == nil:
+		return
+	case errors.Is(err, errAuthFileNotFound):
+		c.JSON(http.StatusNotFound, gin.H{"error": "file not found"})
+	case errors.Is(err, errAuthFileInvalidName) || errors.Is(err, errAuthFileInvalidExt):
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	default:
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	}
+}
+
+// Download single auth file by name
+func (h *Handler) DownloadAuthFile(c *gin.Context) {
+	data, name, err := h.readAuthFileForDownload(c.Query("name"))
+	if err != nil {
+		writeAuthFileDownloadError(c, err)
 		return
 	}
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", name))
 	c.Data(200, "application/json", data)
+}
+
+// Download multiple auth files as a single zip archive.
+func (h *Handler) DownloadAuthFilesArchive(c *gin.Context) {
+	var req struct {
+		Names []string `json:"names"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+
+	names := normalizeRequestedAuthFileNames(req.Names)
+	if len(names) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "names must not be empty"})
+		return
+	}
+
+	var archive bytes.Buffer
+	zipWriter := zip.NewWriter(&archive)
+	for _, name := range names {
+		data, normalizedName, err := h.readAuthFileForDownload(name)
+		if err != nil {
+			_ = zipWriter.Close()
+			writeAuthFileDownloadError(c, err)
+			return
+		}
+
+		entryWriter, err := zipWriter.Create(normalizedName)
+		if err != nil {
+			_ = zipWriter.Close()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to create zip entry: %v", err)})
+			return
+		}
+		if _, err = entryWriter.Write(data); err != nil {
+			_ = zipWriter.Close()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to write zip entry: %v", err)})
+			return
+		}
+	}
+
+	if err := zipWriter.Close(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to finalize zip archive: %v", err)})
+		return
+	}
+
+	archiveName := fmt.Sprintf("auth-files-%s.zip", time.Now().UTC().Format("20060102-150405"))
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", archiveName))
+	c.Data(http.StatusOK, "application/zip", archive.Bytes())
 }
 
 // Upload auth file: multipart or raw JSON with ?name=
