@@ -69,6 +69,47 @@ func TestHealthz(t *testing.T) {
 	}
 }
 
+func TestManagementControlPanelSupportsGetAndHead(t *testing.T) {
+	server := newTestServer(t)
+
+	staticDir := filepath.Join(filepath.Dir(server.configFilePath), "static")
+	if err := os.MkdirAll(staticDir, 0o755); err != nil {
+		t.Fatalf("failed to create static dir: %v", err)
+	}
+
+	const html = "<!doctype html><title>management</title>"
+	assetPath := filepath.Join(staticDir, "management.html")
+	if err := os.WriteFile(assetPath, []byte(html), 0o644); err != nil {
+		t.Fatalf("failed to write management asset: %v", err)
+	}
+
+	t.Run("get", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/management.html", nil)
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("unexpected GET status: got %d want %d", rr.Code, http.StatusOK)
+		}
+		if body := rr.Body.String(); body != html {
+			t.Fatalf("unexpected GET body: got %q want %q", body, html)
+		}
+	})
+
+	t.Run("head", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodHead, "/management.html", nil)
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("unexpected HEAD status: got %d want %d", rr.Code, http.StatusOK)
+		}
+		if rr.Body.Len() != 0 {
+			t.Fatalf("expected empty HEAD body, got %q", rr.Body.String())
+		}
+	})
+}
+
 func TestAmpProviderModelRoutes(t *testing.T) {
 	testCases := []struct {
 		name         string
