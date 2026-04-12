@@ -54,6 +54,7 @@ GEMINI.md
 .agents/scratch/
 .agents/agents/
 .opencode/*
+.playwright-mcp/
 .idea/*
 .beads/*
 .bmad/*
