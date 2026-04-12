@@ -2,8 +2,6 @@ name: docker-image
 
 on:
   push:
-    branches:
-      - master
     tags:
       - v*
   workflow_dispatch:
@@ -18,7 +16,7 @@ env:
 
 jobs:
   docker:
-    if: github.event_name != 'push' || github.ref_type == 'tag' || !contains(github.event.head_commit.message, '[skip release]')
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -61,11 +59,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            eval "$(bash ./scripts/version.sh release "${GITHUB_REF_NAME}" | sed 's/^/export /')"
-          else
-            eval "$(bash ./scripts/version.sh auto-release | sed 's/^/export /')"
-          fi
+          eval "$(bash ./scripts/version.sh release "${GITHUB_REF_NAME}" | sed 's/^/export /')"
 
           tags_file="$(mktemp)"
           add_tag() {
@@ -78,11 +72,7 @@ jobs:
           add_tag "${IMAGE_REPOSITORY}:${VERSION}"
           add_tag "${IMAGE_REPOSITORY}:latest"
           add_tag "${IMAGE_REPOSITORY}:sha-${COMMIT}"
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            add_tag "${IMAGE_REPOSITORY}:${GITHUB_REF_NAME#v}"
-          else
-            add_tag "${IMAGE_REPOSITORY}:master"
-          fi
+          add_tag "${IMAGE_REPOSITORY}:${GITHUB_REF_NAME#v}"
 
           {
             echo "version=${VERSION}"
