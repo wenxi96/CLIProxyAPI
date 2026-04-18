@@ -2,8 +2,12 @@ package managementasset
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -196,5 +200,141 @@ func TestEnsureLatestManagementHTML_DefaultRepoUsesFallbackWhenReleaseFetchFails
 	}
 	if string(body) != "<html>fallback</html>" {
 		t.Fatalf("unexpected local management file contents: %q", string(body))
+	}
+}
+
+func TestEnsureLatestManagementHTML_RetriesReleaseFetchOnTransientError(t *testing.T) {
+	tempDir := t.TempDir()
+	resetManagementAssetTestState()
+
+	prevFetch := fetchLatestAssetFunc
+	prevDownload := downloadAssetFunc
+	prevRetryDelay := retryDelayFunc
+	t.Cleanup(func() {
+		fetchLatestAssetFunc = prevFetch
+		downloadAssetFunc = prevDownload
+		retryDelayFunc = prevRetryDelay
+	})
+
+	retryDelayFunc = func(int) time.Duration { return 0 }
+
+	body := []byte("<html>release-retry</html>")
+	sum := sha256.Sum256(body)
+	hash := hex.EncodeToString(sum[:])
+
+	fetchCalls := 0
+	fetchLatestAssetFunc = func(context.Context, *http.Client, string) (*releaseAsset, string, error) {
+		fetchCalls++
+		if fetchCalls < 3 {
+			return nil, "", context.DeadlineExceeded
+		}
+		return &releaseAsset{
+			Name:               ManagementFileName,
+			BrowserDownloadURL: "https://example.com/management.html",
+		}, hash, nil
+	}
+
+	downloadCalls := 0
+	downloadAssetFunc = func(context.Context, *http.Client, string) ([]byte, string, error) {
+		downloadCalls++
+		return body, hash, nil
+	}
+
+	ok := EnsureLatestManagementHTML(context.Background(), tempDir, "", "https://github.com/wenxi96/Cli-Proxy-API-Management-Center")
+	if !ok {
+		t.Fatal("expected sync to succeed after release retries")
+	}
+	if fetchCalls != 3 {
+		t.Fatalf("expected 3 release fetch attempts, got %d", fetchCalls)
+	}
+	if downloadCalls != 1 {
+		t.Fatalf("expected 1 download attempt, got %d", downloadCalls)
+	}
+	got, err := os.ReadFile(filepath.Join(tempDir, ManagementFileName))
+	if err != nil {
+		t.Fatalf("read synced management file: %v", err)
+	}
+	if string(got) != string(body) {
+		t.Fatalf("unexpected synced body: %q", string(got))
+	}
+}
+
+func TestEnsureLatestManagementHTML_RetriesAssetDownloadOnTransientError(t *testing.T) {
+	tempDir := t.TempDir()
+	resetManagementAssetTestState()
+
+	prevFetch := fetchLatestAssetFunc
+	prevDownload := downloadAssetFunc
+	prevRetryDelay := retryDelayFunc
+	t.Cleanup(func() {
+		fetchLatestAssetFunc = prevFetch
+		downloadAssetFunc = prevDownload
+		retryDelayFunc = prevRetryDelay
+	})
+
+	retryDelayFunc = func(int) time.Duration { return 0 }
+
+	body := []byte("<html>download-retry</html>")
+	sum := sha256.Sum256(body)
+	hash := hex.EncodeToString(sum[:])
+
+	fetchLatestAssetFunc = func(context.Context, *http.Client, string) (*releaseAsset, string, error) {
+		return &releaseAsset{
+			Name:               ManagementFileName,
+			BrowserDownloadURL: "https://example.com/management.html",
+		}, hash, nil
+	}
+
+	downloadCalls := 0
+	downloadAssetFunc = func(context.Context, *http.Client, string) ([]byte, string, error) {
+		downloadCalls++
+		if downloadCalls < 3 {
+			return nil, "", io.ErrUnexpectedEOF
+		}
+		return body, hash, nil
+	}
+
+	ok := EnsureLatestManagementHTML(context.Background(), tempDir, "", "https://github.com/wenxi96/Cli-Proxy-API-Management-Center")
+	if !ok {
+		t.Fatal("expected sync to succeed after download retries")
+	}
+	if downloadCalls != 3 {
+		t.Fatalf("expected 3 download attempts, got %d", downloadCalls)
+	}
+	got, err := os.ReadFile(filepath.Join(tempDir, ManagementFileName))
+	if err != nil {
+		t.Fatalf("read synced management file: %v", err)
+	}
+	if string(got) != string(body) {
+		t.Fatalf("unexpected synced body: %q", string(got))
+	}
+}
+
+func TestDownloadAssetAllowsSlowBodyAfterHeaders(t *testing.T) {
+	t.Parallel()
+
+	body := []byte("<html>slow-body</html>")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		time.Sleep(120 * time.Millisecond)
+		_, _ = w.Write(body)
+	}))
+	defer server.Close()
+
+	client := newHTTPClient("", 20*time.Millisecond)
+	data, hash, err := downloadAsset(context.Background(), client, server.URL)
+	if err != nil {
+		t.Fatalf("expected slow body download to succeed, got %v", err)
+	}
+	if string(data) != string(body) {
+		t.Fatalf("downloaded body = %q, want %q", string(data), string(body))
+	}
+
+	sum := sha256.Sum256(body)
+	if hash != hex.EncodeToString(sum[:]) {
+		t.Fatalf("downloaded hash = %s, want %s", hash, hex.EncodeToString(sum[:]))
 	}
 }

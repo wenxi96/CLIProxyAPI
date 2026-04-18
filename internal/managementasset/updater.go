@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -32,6 +33,9 @@ const (
 	managementSyncMinInterval    = 30 * time.Second
 	updateCheckInterval          = 3 * time.Hour
 	maxAssetDownloadSize         = 50 << 20 // 10 MB safety limit for management asset downloads
+	managementRetryAttempts      = 3
+	managementReleaseHeaderTO    = 20 * time.Second
+	managementAssetHeaderTO      = 20 * time.Second
 )
 
 // ManagementFileName exposes the control panel asset filename.
@@ -46,6 +50,7 @@ var (
 	sfGroup              singleflight.Group
 	fetchLatestAssetFunc = fetchLatestAsset
 	downloadAssetFunc    = downloadAsset
+	retryDelayFunc       = managementRetryDelay
 )
 
 // SetCurrentConfig stores the latest configuration snapshot for management asset decisions.
@@ -113,11 +118,26 @@ func runAutoUpdater(ctx context.Context) {
 	}
 }
 
-func newHTTPClient(proxyURL string) *http.Client {
-	client := &http.Client{Timeout: 15 * time.Second}
-
+func newHTTPClient(proxyURL string, responseHeaderTimeout time.Duration) *http.Client {
+	client := &http.Client{}
 	sdkCfg := &sdkconfig.SDKConfig{ProxyURL: strings.TrimSpace(proxyURL)}
 	util.SetProxy(sdkCfg, client)
+
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok || transport == nil {
+		if defaultTransport, okDefault := http.DefaultTransport.(*http.Transport); okDefault && defaultTransport != nil {
+			transport = defaultTransport.Clone()
+		} else {
+			transport = &http.Transport{}
+		}
+	} else {
+		transport = transport.Clone()
+	}
+
+	if responseHeaderTimeout > 0 {
+		transport.ResponseHeaderTimeout = responseHeaderTimeout
+	}
+	client.Transport = transport
 
 	return client
 }
@@ -135,6 +155,30 @@ type releaseResponse struct {
 type managementReleaseSource struct {
 	releaseURL    string
 	allowFallback bool
+}
+
+type fetchedManagementAsset struct {
+	asset      *releaseAsset
+	remoteHash string
+}
+
+type downloadedManagementAsset struct {
+	data []byte
+	hash string
+}
+
+type managementHTTPStatusError struct {
+	operation string
+	status    int
+	body      string
+}
+
+func (e *managementHTTPStatusError) Error() string {
+	return fmt.Sprintf("unexpected %s status %d: %s", e.operation, e.status, strings.TrimSpace(e.body))
+}
+
+func (e *managementHTTPStatusError) Retryable() bool {
+	return e.status == http.StatusRequestTimeout || e.status == http.StatusTooManyRequests || e.status >= http.StatusInternalServerError
 }
 
 // StaticDir resolves the directory that stores the management control panel asset.
@@ -233,7 +277,8 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 			log.WithError(err).Warn("failed to resolve management release source")
 			return nil, nil
 		}
-		client := newHTTPClient(proxyURL)
+		releaseClient := newHTTPClient(proxyURL, managementReleaseHeaderTO)
+		assetClient := newHTTPClient(proxyURL, managementAssetHeaderTO)
 
 		localHash, err := fileSHA256(localPath)
 		if err != nil {
@@ -243,11 +288,17 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 			localHash = ""
 		}
 
-		asset, remoteHash, err := fetchLatestAssetFunc(ctx, client, releaseSource.releaseURL)
+		fetchedAsset, err := retryManagementOperation(ctx, "fetch latest management release information", func(opCtx context.Context) (fetchedManagementAsset, error) {
+			asset, remoteHash, errFetch := fetchLatestAssetFunc(opCtx, releaseClient, releaseSource.releaseURL)
+			if errFetch != nil {
+				return fetchedManagementAsset{}, errFetch
+			}
+			return fetchedManagementAsset{asset: asset, remoteHash: remoteHash}, nil
+		})
 		if err != nil {
 			if localFileMissing && releaseSource.allowFallback {
 				log.WithError(err).Warn("failed to fetch latest management release information, trying fallback page")
-				if ensureFallbackManagementHTML(ctx, client, localPath) {
+				if ensureFallbackManagementHTML(ctx, assetClient, localPath) {
 					return nil, nil
 				}
 				return nil, nil
@@ -255,17 +306,25 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 			log.WithError(err).Warn("failed to fetch latest management release information")
 			return nil, nil
 		}
+		asset := fetchedAsset.asset
+		remoteHash := fetchedAsset.remoteHash
 
 		if remoteHash != "" && localHash != "" && strings.EqualFold(remoteHash, localHash) {
 			log.Debug("management asset is already up to date")
 			return nil, nil
 		}
 
-		data, downloadedHash, err := downloadAssetFunc(ctx, client, asset.BrowserDownloadURL)
+		downloadedAsset, err := retryManagementOperation(ctx, "download management asset", func(opCtx context.Context) (downloadedManagementAsset, error) {
+			data, downloadedHash, errDownload := downloadAssetFunc(opCtx, assetClient, asset.BrowserDownloadURL)
+			if errDownload != nil {
+				return downloadedManagementAsset{}, errDownload
+			}
+			return downloadedManagementAsset{data: data, hash: downloadedHash}, nil
+		})
 		if err != nil {
 			if localFileMissing && releaseSource.allowFallback {
 				log.WithError(err).Warn("failed to download management asset, trying fallback page")
-				if ensureFallbackManagementHTML(ctx, client, localPath) {
+				if ensureFallbackManagementHTML(ctx, assetClient, localPath) {
 					return nil, nil
 				}
 				return nil, nil
@@ -273,6 +332,8 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 			log.WithError(err).Warn("failed to download management asset")
 			return nil, nil
 		}
+		data := downloadedAsset.data
+		downloadedHash := downloadedAsset.hash
 
 		if remoteHash != "" && !strings.EqualFold(remoteHash, downloadedHash) {
 			log.Errorf("management asset digest mismatch: expected %s got %s — aborting update for safety", remoteHash, downloadedHash)
@@ -290,6 +351,76 @@ func EnsureLatestManagementHTML(ctx context.Context, staticDir string, proxyURL 
 
 	_, err := os.Stat(localPath)
 	return err == nil
+}
+
+func retryManagementOperation[T any](ctx context.Context, operation string, fn func(context.Context) (T, error)) (T, error) {
+	var zero T
+	var lastErr error
+
+	for attempt := 1; attempt <= managementRetryAttempts; attempt++ {
+		result, err := fn(ctx)
+		if err == nil {
+			return result, nil
+		}
+
+		lastErr = err
+		if attempt == managementRetryAttempts || !isRetryableManagementError(err) {
+			return zero, err
+		}
+
+		delay := retryDelayFunc(attempt)
+		log.WithError(err).Warnf("management asset %s attempt %d/%d failed, retrying in %s", operation, attempt, managementRetryAttempts, delay)
+		if !sleepWithContext(ctx, delay) {
+			return zero, lastErr
+		}
+	}
+
+	return zero, lastErr
+}
+
+func managementRetryDelay(attempt int) time.Duration {
+	if attempt <= 0 {
+		return time.Second
+	}
+	return time.Duration(attempt) * time.Second
+}
+
+func sleepWithContext(ctx context.Context, delay time.Duration) bool {
+	if delay <= 0 {
+		return true
+	}
+
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func isRetryableManagementError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+
+	var statusErr *managementHTTPStatusError
+	if errors.As(err, &statusErr) {
+		return statusErr.Retryable()
+	}
+
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return netErr.Timeout() || netErr.Temporary()
+	}
+
+	return false
 }
 
 func ensureFallbackManagementHTML(ctx context.Context, client *http.Client, localPath string) bool {
@@ -394,7 +525,11 @@ func fetchLatestAsset(ctx context.Context, client *http.Client, releaseURL strin
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return nil, "", fmt.Errorf("unexpected release status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, "", &managementHTTPStatusError{
+			operation: "release",
+			status:    resp.StatusCode,
+			body:      strings.TrimSpace(string(body)),
+		}
 	}
 
 	var release releaseResponse
@@ -434,7 +569,11 @@ func downloadAsset(ctx context.Context, client *http.Client, downloadURL string)
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return nil, "", fmt.Errorf("unexpected download status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, "", &managementHTTPStatusError{
+			operation: "download",
+			status:    resp.StatusCode,
+			body:      strings.TrimSpace(string(body)),
+		}
 	}
 
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxAssetDownloadSize+1))
