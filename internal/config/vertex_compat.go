@@ -20,6 +20,11 @@ type VertexCompatKey struct {
 	// Prefix optionally namespaces model aliases for this credential (e.g., "teamA/vertex-pro").
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
 
+	// DisplayName is an optional human-readable label for this credential,
+	// shown in the management center stats / logs in place of the auto-generated
+	// "Vertex #N" fallback. It does not affect routing or authentication.
+	DisplayName string `yaml:"display-name,omitempty" json:"display-name,omitempty"`
+
 	// BaseURL optionally overrides the Vertex-compatible API endpoint.
 	// The executor will append "/v1/publishers/google/models/{model}:action" to this.
 	// When empty, requests fall back to the default Vertex API base URL.
@@ -70,6 +75,7 @@ func (cfg *Config) SanitizeVertexCompatKeys() {
 			continue
 		}
 		entry.Prefix = normalizeModelPrefix(entry.Prefix)
+		entry.DisplayName = strings.TrimSpace(entry.DisplayName)
 		entry.BaseURL = strings.TrimSpace(entry.BaseURL)
 		entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
 		entry.Headers = NormalizeHeaders(entry.Headers)
