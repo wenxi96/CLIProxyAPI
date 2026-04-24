@@ -17,6 +17,8 @@
 - `20260408-auth-zero-quota-auto-disable`：额度查询型认证文件在额度真实耗尽后自动禁用。
 - `20260409-fork-install-docker-self-hosting`：补齐 fork 自有 Docker 发布链路与仓库内 Linux 安装更新脚本。
 - `20260409-provider-scoped-routing-pool`：按供应商类别独立启用的范围轮询设计与后续实现。
+- `20260424-absorb-cliproxyapi2-fixes`：制定 CLIProxyAPI2 改动吸收计划并沉淀分批执行方案。
+- `20260424-evaluate-watcher-race-current-architecture`：评估当前 watcher 架构下是否存在与参考仓库同类竞态，并决定是否另起实施任务。
 
 ## 说明
 

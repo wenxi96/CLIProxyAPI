@@ -1155,6 +1155,53 @@ func TestHandleEventRemoveKnownFileDeletes(t *testing.T) {
 	}
 }
 
+func TestHandleEventRemoveThenQuickRecreateTreatsAsUpdate(t *testing.T) {
+	tmpDir := t.TempDir()
+	authDir := filepath.Join(tmpDir, "auth")
+	if err := os.MkdirAll(authDir, 0o755); err != nil {
+		t.Fatalf("failed to create auth dir: %v", err)
+	}
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("auth_dir: "+authDir+"\n"), 0o644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+	authFile := filepath.Join(authDir, "recreate.json")
+	oldContent := []byte(`{"type":"demo","v":1}`)
+	newContent := []byte(`{"type":"demo","v":2}`)
+	oldSum := sha256.Sum256(oldContent)
+	if err := os.WriteFile(authFile, oldContent, 0o644); err != nil {
+		t.Fatalf("failed to write initial auth file: %v", err)
+	}
+
+	var reloads int32
+	w := &Watcher{
+		authDir:        authDir,
+		configPath:     configPath,
+		lastAuthHashes: make(map[string]string),
+		reloadCallback: func(*config.Config) { atomic.AddInt32(&reloads, 1) },
+		config:         &config.Config{AuthDir: authDir},
+	}
+	normalized := w.normalizeAuthPath(authFile)
+	w.lastAuthHashes[normalized] = hexString(oldSum[:])
+
+	if err := os.Remove(authFile); err != nil {
+		t.Fatalf("failed to remove auth file before event: %v", err)
+	}
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		_ = os.WriteFile(authFile, newContent, 0o644)
+	}()
+
+	w.handleEvent(fsnotify.Event{Name: authFile, Op: fsnotify.Remove})
+
+	if atomic.LoadInt32(&reloads) != 0 {
+		t.Fatalf("expected quick recreate to avoid global reload, got %d", reloads)
+	}
+	if got := w.lastAuthHashes[normalized]; got == "" || got == hexString(oldSum[:]) {
+		t.Fatalf("expected recreated file hash to be updated, got %q", got)
+	}
+}
+
 func TestNormalizeAuthPathAndDebounceCleanup(t *testing.T) {
 	w := &Watcher{}
 	if got := w.normalizeAuthPath("   "); got != "" {
@@ -1208,6 +1255,52 @@ func TestRefreshAuthStateDispatchesRuntimeAuths(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for runtime auth update")
+	}
+}
+
+func TestRuntimeDeleteThenRefreshDoesNotEmitDuplicateDelete(t *testing.T) {
+	queue := make(chan AuthUpdate, 8)
+	w := &Watcher{
+		authDir:        t.TempDir(),
+		lastAuthHashes: make(map[string]string),
+		currentAuths: map[string]*coreauth.Auth{
+			"file-1":    {ID: "file-1", Provider: "file"},
+			"runtime-1": {ID: "runtime-1", Provider: "runtime"},
+		},
+		runtimeAuths: map[string]*coreauth.Auth{
+			"runtime-1": {ID: "runtime-1", Provider: "runtime"},
+		},
+	}
+	w.SetConfig(&config.Config{AuthDir: w.authDir})
+	w.SetAuthUpdateQueue(queue)
+	defer w.stopDispatch()
+
+	origSnapshot := snapshotCoreAuthsFunc
+	snapshotCoreAuthsFunc = func(*config.Config, string) []*coreauth.Auth {
+		return []*coreauth.Auth{{ID: "file-1", Provider: "file"}}
+	}
+	t.Cleanup(func() {
+		snapshotCoreAuthsFunc = origSnapshot
+	})
+
+	if ok := w.DispatchRuntimeAuthUpdate(AuthUpdate{Action: AuthUpdateActionDelete, ID: "runtime-1"}); !ok {
+		t.Fatal("expected DispatchRuntimeAuthUpdate delete to enqueue")
+	}
+	select {
+	case update := <-queue:
+		if update.Action != AuthUpdateActionDelete || update.ID != "runtime-1" {
+			t.Fatalf("unexpected runtime delete update: %+v", update)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for runtime delete update")
+	}
+
+	w.refreshAuthState(false)
+
+	select {
+	case update := <-queue:
+		t.Fatalf("expected no duplicate delete after refresh, got %+v", update)
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 
