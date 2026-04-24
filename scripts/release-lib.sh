@@ -243,7 +243,7 @@ release_has_custom_changes_since() {
 
   if git rev-parse --verify "${upstream_ref}" >/dev/null 2>&1; then
     git log --no-merges --format='%H' "${previous_tag}..HEAD" --not "${upstream_ref}" | grep -q .
-    return 0
+    return $?
   fi
 
   git log --no-merges --format='%H' "${previous_tag}..HEAD" | grep -q .
