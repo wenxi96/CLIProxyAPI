@@ -203,8 +203,10 @@ func (b *Builder) Build() (*Service, error) {
 	accessManager.SetProviders(sdkaccess.RegisteredProviders())
 
 	coreManager := b.coreManager
+	var tokenStore coreauth.Store
+	var selector coreauth.Selector
 	if coreManager == nil {
-		tokenStore := sdkAuth.GetTokenStore()
+		tokenStore = sdkAuth.GetTokenStore()
 		if dirSetter, ok := tokenStore.(interface{ SetBaseDir(string) }); ok && b.cfg != nil {
 			dirSetter.SetBaseDir(b.cfg.AuthDir)
 		}
@@ -222,7 +224,6 @@ func (b *Builder) Build() (*Service, error) {
 				}
 			}
 		}
-		var selector coreauth.Selector
 		switch strategy {
 		case "fill-first", "fillfirst", "ff":
 			selector = &coreauth.FillFirstSelector{}
@@ -238,15 +239,7 @@ func (b *Builder) Build() (*Service, error) {
 			})
 		}
 
-		coreManager = coreauth.NewManager(tokenStore, selector, nil)
 	}
-	// Attach a default RoundTripper provider so providers can opt-in per-auth transports.
-	coreManager.SetRoundTripperProvider(newDefaultRoundTripperProvider())
-	coreManager.SetConfig(b.cfg)
-	coreManager.SetQuotaChecker(authquota.NewService(authquota.Options{
-		ConfigProvider: coreManager.CurrentConfig,
-	}))
-	coreManager.SetOAuthModelAlias(b.cfg.OAuthModelAlias)
 
 	service := &Service{
 		cfg:            b.cfg,
@@ -260,5 +253,18 @@ func (b *Builder) Build() (*Service, error) {
 		coreManager:    coreManager,
 		serverOptions:  append([]api.ServerOption(nil), b.serverOptions...),
 	}
+	if b.coreManager == nil {
+		service.coreManager = coreauth.NewManager(tokenStore, selector, authMaintenanceHook{
+			next:    coreauth.NoopHook{},
+			service: service,
+		})
+	}
+	// Attach a default RoundTripper provider so providers can opt-in per-auth transports.
+	service.coreManager.SetRoundTripperProvider(newDefaultRoundTripperProvider())
+	service.coreManager.SetConfig(b.cfg)
+	service.coreManager.SetQuotaChecker(authquota.NewService(authquota.Options{
+		ConfigProvider: service.coreManager.CurrentConfig,
+	}))
+	service.coreManager.SetOAuthModelAlias(b.cfg.OAuthModelAlias)
 	return service, nil
 }

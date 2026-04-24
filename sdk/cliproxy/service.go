@@ -103,6 +103,13 @@ type Service struct {
 	wsGateway *wsrelay.Manager
 }
 
+type skipAuthLifecycleSyncContextKey struct{}
+
+type authMaintenanceHook struct {
+	next    coreauth.Hook
+	service *Service
+}
+
 // RegisterUsagePlugin registers a usage plugin on the global usage manager.
 // This allows external code to monitor API usage and token consumption.
 //
@@ -123,6 +130,45 @@ func newDefaultAuthManager() *sdkAuth.Manager {
 }
 
 const usagePersistenceDisabledPollInterval = 5 * time.Second
+
+func withSkipAuthLifecycleSync(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, skipAuthLifecycleSyncContextKey{}, true)
+}
+
+func shouldSkipAuthLifecycleSync(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	skip, _ := ctx.Value(skipAuthLifecycleSyncContextKey{}).(bool)
+	return skip
+}
+
+func (h authMaintenanceHook) OnAuthRegistered(ctx context.Context, auth *coreauth.Auth) {
+	if h.next != nil {
+		h.next.OnAuthRegistered(ctx, auth)
+	}
+	if h.service != nil {
+		h.service.onAuthLifecycleEvent(ctx, watcher.AuthUpdateActionAdd, auth)
+	}
+}
+
+func (h authMaintenanceHook) OnAuthUpdated(ctx context.Context, auth *coreauth.Auth) {
+	if h.next != nil {
+		h.next.OnAuthUpdated(ctx, auth)
+	}
+	if h.service != nil {
+		h.service.onAuthLifecycleEvent(ctx, watcher.AuthUpdateActionModify, auth)
+	}
+}
+
+func (h authMaintenanceHook) OnResult(ctx context.Context, result coreauth.Result) {
+	if h.next != nil {
+		h.next.OnResult(ctx, result)
+	}
+}
 
 func usagePersistenceIntervalForConfig(cfg *config.Config) time.Duration {
 	if cfg == nil || cfg.UsageStatisticsPersistIntervalSeconds <= 0 {
@@ -364,6 +410,17 @@ func (s *Service) emitAuthUpdate(ctx context.Context, update watcher.AuthUpdate)
 	s.handleAuthUpdate(ctx, update)
 }
 
+func (s *Service) onAuthLifecycleEvent(ctx context.Context, action watcher.AuthUpdateAction, auth *coreauth.Auth) {
+	if s == nil || auth == nil || auth.ID == "" || shouldSkipAuthLifecycleSync(ctx) {
+		return
+	}
+	s.emitAuthUpdate(ctx, watcher.AuthUpdate{
+		Action: action,
+		ID:     auth.ID,
+		Auth:   auth.Clone(),
+	})
+}
+
 func (s *Service) handleAuthUpdate(ctx context.Context, update watcher.AuthUpdate) {
 	if s == nil {
 		return
@@ -469,6 +526,7 @@ func (s *Service) applyCoreAuthAddOrUpdate(ctx context.Context, auth *coreauth.A
 	if s == nil || s.coreManager == nil || auth == nil || auth.ID == "" {
 		return
 	}
+	ctx = withSkipAuthLifecycleSync(ctx)
 	auth = auth.Clone()
 	s.ensureExecutorsForAuth(auth)
 
