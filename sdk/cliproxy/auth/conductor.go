@@ -2866,6 +2866,9 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 			}
 			m.mu.Unlock()
 		}
+		if m.scheduler != nil {
+			m.scheduler.markScopedPoolSelected(authCopy)
+		}
 		return authCopy, executor, nil
 	}
 }
@@ -3050,6 +3053,9 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 				authCopy = current.Clone()
 			}
 			m.mu.Unlock()
+		}
+		if m.scheduler != nil {
+			m.scheduler.markScopedPoolSelected(authCopy)
 		}
 		return authCopy, executor, providerKey, nil
 	}
