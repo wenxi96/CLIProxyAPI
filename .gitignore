@@ -38,6 +38,7 @@ GEMINI.md
 # Tooling metadata
 .vscode/*
 .worktrees/
+.codex
 .codex/*
 .claude/*
 .gemini/*
@@ -45,6 +46,9 @@ GEMINI.md
 .agent/*
 .agents/*
 !.agents/README.md
+
+# Local build/test scratch (Go cache, throwaway binaries, etc.)
+.tmp/
 !.agents/registry/
 !.agents/registry/**
 !.agents/tasks/
