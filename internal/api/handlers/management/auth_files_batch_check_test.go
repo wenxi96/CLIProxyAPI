@@ -197,8 +197,8 @@ func TestBatchCheckAuthFiles_SummarizesResults(t *testing.T) {
 	if len(payload.Aggregate.ActionCandidates.ReenableNames) != 0 {
 		t.Fatalf("expected empty reenable_names, got %#v", payload.Aggregate.ActionCandidates.ReenableNames)
 	}
-	if payload.Aggregate.ActionCandidates.ReenableThreshold != "danger" {
-		t.Fatalf("expected reenable_threshold_bucket=danger, got %q", payload.Aggregate.ActionCandidates.ReenableThreshold)
+	if payload.Aggregate.ActionCandidates.ReenableThreshold != "alert" {
+		t.Fatalf("expected reenable_threshold_bucket=alert, got %q", payload.Aggregate.ActionCandidates.ReenableThreshold)
 	}
 
 	if len(payload.Results) != 2 {
@@ -501,4 +501,90 @@ func TestBuildBatchCheckAggregate_ReenableNamesOnlyIncludesRecoveredOK(t *testin
 
 func intPtr(value int) *int {
 	return &value
+}
+
+// TestBuildBatchCheckAggregate_ReenableThresholdBoundary verifies the reenable threshold
+// (alert, >=10%) boundary behavior: disabled accounts with 1-9% remaining must be excluded,
+// while 10%/50%/100% must be included.
+func TestBuildBatchCheckAggregate_ReenableThresholdBoundary(t *testing.T) {
+	results := []authFileBatchCheckResult{
+		{
+			Name:             "disabled-1pct.json",
+			Provider:         "codex",
+			Disabled:         true,
+			Classification:   authFileBatchCheckClassificationOK,
+			Bucket:           "danger",
+			RemainingPercent: intPtr(1),
+		},
+		{
+			Name:             "disabled-9pct.json",
+			Provider:         "codex",
+			Disabled:         true,
+			Classification:   authFileBatchCheckClassificationOK,
+			Bucket:           "danger",
+			RemainingPercent: intPtr(9),
+		},
+		{
+			Name:             "disabled-10pct.json",
+			Provider:         "codex",
+			Disabled:         true,
+			Classification:   authFileBatchCheckClassificationOK,
+			Bucket:           "alert",
+			RemainingPercent: intPtr(10),
+		},
+		{
+			Name:             "disabled-50pct.json",
+			Provider:         "claude",
+			Disabled:         true,
+			Classification:   authFileBatchCheckClassificationOK,
+			Bucket:           "usable",
+			RemainingPercent: intPtr(50),
+		},
+		{
+			Name:             "disabled-100pct.json",
+			Provider:         "gemini",
+			Disabled:         true,
+			Classification:   authFileBatchCheckClassificationOK,
+			Bucket:           "full",
+			RemainingPercent: intPtr(100),
+		},
+	}
+
+	aggregate := buildBatchCheckAggregate(results, nil)
+
+	// 1-9% must be excluded.
+	excluded := map[string]struct{}{
+		"disabled-1pct.json": {},
+		"disabled-9pct.json": {},
+	}
+	for _, name := range aggregate.ActionCandidates.ReenableNames {
+		if _, blocked := excluded[name]; blocked {
+			t.Fatalf("expected %q to be excluded from reenable_names (below 10%% threshold), got list %#v",
+				name, aggregate.ActionCandidates.ReenableNames)
+		}
+	}
+
+	// 10% and above must be included.
+	expectedIncluded := []string{
+		"disabled-10pct.json",
+		"disabled-50pct.json",
+		"disabled-100pct.json",
+	}
+	if len(aggregate.ActionCandidates.ReenableNames) != len(expectedIncluded) {
+		t.Fatalf("expected %d reenable candidates (>=10%%), got %d: %#v",
+			len(expectedIncluded), len(aggregate.ActionCandidates.ReenableNames),
+			aggregate.ActionCandidates.ReenableNames)
+	}
+	for _, want := range expectedIncluded {
+		found := false
+		for _, got := range aggregate.ActionCandidates.ReenableNames {
+			if got == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected %q in reenable_names, got %#v", want, aggregate.ActionCandidates.ReenableNames)
+		}
+	}
 }

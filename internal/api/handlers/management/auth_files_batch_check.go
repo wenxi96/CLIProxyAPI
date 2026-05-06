@@ -43,7 +43,7 @@ const (
 	authFileBatchCheckClassificationRuntimeOnly     = "runtime_only"
 	authFileBatchCheckClassificationNotFound        = "auth_not_found"
 	authFileBatchCheckClassificationUnknown         = "unknown"
-	authFileBatchCheckReenableThresholdBucket       = "danger"
+	authFileBatchCheckReenableThresholdBucket       = "alert"
 )
 
 var antigravityQuotaURLs = []string{
