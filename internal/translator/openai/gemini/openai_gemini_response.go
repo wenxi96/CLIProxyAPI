@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"strings"
 
-	translatorcommon "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/common"
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/common"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -280,7 +280,7 @@ func parseArgsToObjectRaw(argsStr string) string {
 		}
 	}
 
-	// Tolerant parse: handle streams where values are barewords (e.g., 北京, celsius)
+	// Tolerant parse: handle streams where values are barewords (e.g., Beijing, celsius)
 	tolerant := tolerantParseJSONObjectRaw(trimmed)
 	if tolerant != "{}" {
 		return tolerant
@@ -298,7 +298,7 @@ func escapeSjsonPathKey(key string) string {
 
 // tolerantParseJSONObjectRaw attempts to parse a JSON-like object string into a JSON object string, tolerating
 // bareword values (unquoted strings) commonly seen during streamed tool calls.
-// Example input: {"location": 北京, "unit": celsius}
+// Example input: {"location": Beijing, "unit": celsius}
 func tolerantParseJSONObjectRaw(s string) string {
 	// Ensure we operate within the outermost braces if present
 	start := strings.Index(s, "{")

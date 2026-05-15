@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 )
 
 const (
@@ -19,15 +19,15 @@ const (
 	legacyStatisticsFileName = "usage-statistics.json"
 )
 
-// StatisticsFilePayload 是 usage 快照文件的磁盘格式。
-// 它与管理接口导出结构保持兼容，便于复用现有导入链路。
+// StatisticsFilePayload is the on-disk format for usage snapshots.
+// It stays compatible with the management export payload so the import path can be reused.
 type StatisticsFilePayload struct {
 	Version    int                `json:"version"`
 	ExportedAt time.Time          `json:"exported_at"`
 	Usage      StatisticsSnapshot `json:"usage"`
 }
 
-// StatisticsFilePath 返回 usage 快照文件的默认保存路径。
+// StatisticsFilePath returns the default path for the usage snapshot file.
 func StatisticsFilePath(cfg *config.Config) string {
 	logDir := strings.TrimSpace(logging.ResolveLogDirectory(cfg))
 	if logDir == "" {
@@ -48,7 +48,7 @@ func legacyStatisticsFilePath(path string) string {
 	return filepath.Join(filepath.Dir(target), legacyStatisticsFileName)
 }
 
-// SaveSnapshotFile 以原子方式写入完整 usage 快照。
+// SaveSnapshotFile atomically writes a complete usage snapshot.
 func SaveSnapshotFile(path string, snapshot StatisticsSnapshot) error {
 	payload := StatisticsFilePayload{
 		Version:    StatisticsFileVersion,
@@ -63,8 +63,8 @@ func SaveSnapshotFile(path string, snapshot StatisticsSnapshot) error {
 	return writeFileAtomic(path, data)
 }
 
-// LoadSnapshotFile 从磁盘读取 usage 快照。
-// 兼容带 envelope 的新格式和旧的裸 StatisticsSnapshot 格式。
+// LoadSnapshotFile reads a usage snapshot from disk.
+// It supports both the new enveloped format and the legacy bare StatisticsSnapshot format.
 func LoadSnapshotFile(path string) (StatisticsSnapshot, error) {
 	var snapshot StatisticsSnapshot
 
@@ -97,8 +97,8 @@ func LoadSnapshotFile(path string) (StatisticsSnapshot, error) {
 	return snapshot, nil
 }
 
-// RestoreRequestStatistics 将磁盘快照合并到当前内存统计中。
-// 快照文件不存在时返回 no-op。
+// RestoreRequestStatistics merges a disk snapshot into the current in-memory statistics.
+// Missing snapshot files are treated as a no-op.
 func RestoreRequestStatistics(path string, stats *RequestStatistics) (loaded bool, result MergeResult, err error) {
 	if stats == nil {
 		return false, result, nil
@@ -125,8 +125,8 @@ func RestoreRequestStatistics(path string, stats *RequestStatistics) (loaded boo
 	return true, result, nil
 }
 
-// PersistRequestStatistics 将当前 usage 快照保存到磁盘。
-// 只有存在未持久化变更时才会执行写盘。
+// PersistRequestStatistics saves the current usage snapshot to disk.
+// It writes only when there are unpersisted changes.
 func PersistRequestStatistics(path string, stats *RequestStatistics) (bool, error) {
 	if stats == nil {
 		return false, nil

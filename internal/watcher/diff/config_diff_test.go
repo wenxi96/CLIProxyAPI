@@ -3,8 +3,8 @@ package diff
 import (
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
 
 func TestBuildConfigChangeDetails(t *testing.T) {
@@ -279,7 +279,7 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 			APIKeys:                    []string{" key-1 ", "key-2"},
 			ForceModelPrefix:           true,
 			NonStreamKeepAliveInterval: 5,
-			DisableImageGeneration:     true,
+			DisableImageGeneration:     config.DisableImageGenerationAll,
 		},
 	}
 
@@ -408,7 +408,7 @@ func TestBuildConfigChangeDetails_AllBranches(t *testing.T) {
 			RequestLog:             true,
 			ProxyURL:               "http://new-proxy",
 			APIKeys:                []string{"keyB"},
-			DisableImageGeneration: true,
+			DisableImageGeneration: config.DisableImageGenerationAll,
 		},
 		OAuthExcludedModels: map[string][]string{"p1": {"b", "c"}, "p2": {"d"}},
 		OpenAICompatibility: []config.OpenAICompatibility{

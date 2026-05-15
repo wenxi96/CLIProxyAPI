@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
 
 var statisticsEnabled atomic.Bool
@@ -455,8 +455,8 @@ func dedupKey(apiName, modelName string, detail RequestDetail) string {
 	)
 }
 
-// resolveClientIP 与主 HTTP 日志共用同一套 IP 解析逻辑，
-// 确保 usage 统计里的 client_ip 与日志中展示的客户端 IP 一致。
+// resolveClientIP shares the same IP resolution logic as the main HTTP logger,
+// keeping usage client_ip consistent with the client IP shown in request logs.
 func resolveClientIP(ctx context.Context) string {
 	if ctx == nil {
 		return ""

@@ -7,9 +7,10 @@ import (
 	"testing"
 	"time"
 
-	internalusage "github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
-	coreusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	internalusage "github.com/router-for-me/CLIProxyAPI/v7/internal/usage"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	"gopkg.in/yaml.v3"
 )
 
 func TestServicePersistUsageStatisticsSavesDirtyDataWhenDisabled(t *testing.T) {
@@ -50,6 +51,31 @@ func TestServiceApplyUsagePersistenceConfigChangePersistsOnDisable(t *testing.T)
 	}
 	if stats.HasPendingPersistence() {
 		t.Fatalf("stats should be clean after disable-triggered persistence")
+	}
+}
+
+func TestServiceApplyConfigUpdateUsesSnapshotForInPlaceConfigEdits(t *testing.T) {
+	stats := internalusage.NewRequestStatistics()
+	recordUsageForServiceTest(t, stats, time.Date(2026, 3, 27, 10, 30, 0, 0, time.UTC))
+
+	service := newUsagePersistenceTestService(t, stats, true, 30)
+	service.oldConfigYaml, _ = yaml.Marshal(service.cfg)
+
+	// Management handlers mutate the shared config pointer before the watcher callback fires.
+	service.cfg.UsageStatisticsEnabled = false
+	nextCfg := &sdkconfig.Config{
+		UsageStatisticsEnabled:                false,
+		UsageStatisticsPersistIntervalSeconds: 30,
+	}
+
+	service.applyConfigUpdate(nextCfg)
+
+	path := service.usageStatisticsFilePath()
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("persisted statistics file missing after in-place disable: %v", err)
+	}
+	if stats.HasPendingPersistence() {
+		t.Fatalf("stats should be clean after in-place disable-triggered persistence")
 	}
 }
 

@@ -173,7 +173,6 @@ func (m dashboardModel) renderDashboard(cfg, usage map[string]any, authFiles []m
 		lipgloss.NewStyle().Foreground(colorMuted).Render(fmt.Sprintf("%s (%d %s)", T("auth_files_label"), activeAuth, T("active_suffix"))),
 	))
 
-	// Card 3: Total Requests
 	totalReqs := int64(0)
 	successReqs := int64(0)
 	failedReqs := int64(0)
@@ -192,11 +191,9 @@ func (m dashboardModel) renderDashboard(cfg, usage map[string]any, authFiles []m
 		lipgloss.NewStyle().Foreground(colorMuted).Render(fmt.Sprintf("%s (✓%d ✗%d)", T("total_requests"), successReqs, failedReqs)),
 	))
 
-	// Card 4: Total Tokens
-	tokenStr := formatLargeNumber(totalTokens)
 	card4 := cardStyle.Render(fmt.Sprintf(
 		"%s\n%s",
-		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("170")).Render(fmt.Sprintf("🔤 %s", tokenStr)),
+		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("170")).Render(fmt.Sprintf("🔤 %s", formatLargeNumber(totalTokens))),
 		lipgloss.NewStyle().Foreground(colorMuted).Render(T("total_tokens")),
 	))
 
@@ -257,38 +254,6 @@ func (m dashboardModel) renderDashboard(cfg, usage map[string]any, authFiles []m
 	}
 
 	sb.WriteString("\n")
-
-	// ━━━ Per-Model Usage ━━━
-	if usage != nil {
-		if usageMap, ok := usage["usage"].(map[string]any); ok {
-			if apis, ok := usageMap["apis"].(map[string]any); ok && len(apis) > 0 {
-				sb.WriteString(lipgloss.NewStyle().Bold(true).Foreground(colorHighlight).Render(T("model_stats")))
-				sb.WriteString("\n")
-				sb.WriteString(strings.Repeat("─", minInt(m.width, 60)))
-				sb.WriteString("\n")
-
-				header := fmt.Sprintf("  %-40s %10s %12s", T("model"), T("requests"), T("tokens"))
-				sb.WriteString(tableHeaderStyle.Render(header))
-				sb.WriteString("\n")
-
-				for _, apiSnap := range apis {
-					if apiMap, ok := apiSnap.(map[string]any); ok {
-						if models, ok := apiMap["models"].(map[string]any); ok {
-							for model, v := range models {
-								if stats, ok := v.(map[string]any); ok {
-									reqs := int64(getFloat(stats, "total_requests"))
-									toks := int64(getFloat(stats, "total_tokens"))
-									row := fmt.Sprintf("  %-40s %10d %12s", truncate(model, 40), reqs, formatLargeNumber(toks))
-									sb.WriteString(tableCellStyle.Render(row))
-									sb.WriteString("\n")
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-	}
 
 	return sb.String()
 }

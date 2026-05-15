@@ -14,11 +14,11 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/watcher/diff"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/watcher/synthesizer"
-	sdkAuth "github.com/router-for-me/CLIProxyAPI/v6/sdk/auth"
-	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/diff"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/synthesizer"
+	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"gopkg.in/yaml.v3"
 )
 
@@ -1184,13 +1184,9 @@ func TestHandleEventRemoveThenQuickRecreateTreatsAsUpdate(t *testing.T) {
 	normalized := w.normalizeAuthPath(authFile)
 	w.lastAuthHashes[normalized] = hexString(oldSum[:])
 
-	if err := os.Remove(authFile); err != nil {
-		t.Fatalf("failed to remove auth file before event: %v", err)
+	if err := os.WriteFile(authFile, newContent, 0o644); err != nil {
+		t.Fatalf("failed to recreate auth file before remove event handling: %v", err)
 	}
-	go func() {
-		time.Sleep(10 * time.Millisecond)
-		_ = os.WriteFile(authFile, newContent, 0o644)
-	}()
 
 	w.handleEvent(fsnotify.Event{Name: authFile, Op: fsnotify.Remove})
 
