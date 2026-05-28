@@ -154,13 +154,25 @@ func (m *Manager) runQuotaCheck(authID string) {
 	if m.scheduler != nil {
 		m.scheduler.applyScopedPoolQuotaCheck(authID, result)
 	}
-	if result.Exhausted {
+
+	// Check if auto-disable should be triggered (exhausted or threshold hit)
+	cfg := m.CurrentConfig()
+	threshold := effectiveAutoDisableThreshold(cfg)
+	if shouldDisable, _ := shouldAutoDisable(result, threshold); shouldDisable {
 		m.applyAutoDisableFromQuotaCheck(authID, result)
 	}
 }
 
 func (m *Manager) applyAutoDisableFromQuotaCheck(authID string, result QuotaCheckResult) {
-	if m == nil || !result.Exhausted || !m.autoDisableAuthFileOnZeroQuotaEnabled() {
+	if m == nil || !m.autoDisableAuthFileOnZeroQuotaEnabled() {
+		return
+	}
+
+	// Determine if we should disable based on exhausted or threshold
+	cfg := m.CurrentConfig()
+	threshold := effectiveAutoDisableThreshold(cfg)
+	shouldDisable, reason := shouldAutoDisable(result, threshold)
+	if !shouldDisable {
 		return
 	}
 
@@ -174,17 +186,25 @@ func (m *Manager) applyAutoDisableFromQuotaCheck(authID string, result QuotaChec
 		return
 	}
 
+	// Determine status message based on trigger reason
+	statusMessage := autoDisabledQuotaStatusMessage
+	quotaReason := "quota_exhausted"
+	if reason == "threshold" {
+		statusMessage = autoDisabledQuotaThresholdStatusMessage
+		quotaReason = "quota_threshold"
+	}
+
 	now := time.Now()
 	current.Disabled = true
 	current.Status = StatusDisabled
-	current.StatusMessage = autoDisabledQuotaStatusMessage
+	current.StatusMessage = statusMessage
 	current.Unavailable = false
 	current.LastError = nil
 	current.NextRetryAfter = time.Time{}
 	current.ModelStates = nil
 	current.Quota = QuotaState{
 		Exceeded: true,
-		Reason:   "quota_exhausted",
+		Reason:   quotaReason,
 	}
 	current.UpdatedAt = now
 	PrepareMetadataForPersistence(current)
@@ -206,11 +226,12 @@ func (m *Manager) applyAutoDisableFromQuotaCheck(authID string, result QuotaChec
 			"auth_id":        authID,
 			"classification": result.Classification,
 			"status_code":    result.StatusCode,
+			"reason":         reason,
 		}
 		if result.RemainingPercent != nil {
 			fields["remaining_percent"] = *result.RemainingPercent
 		}
-		log.WithFields(fields).Warn("auth manager: auto disabled auth after confirmed zero quota")
+		log.WithFields(fields).Warn("auth manager: auto disabled auth after quota check")
 		m.hook.OnAuthUpdated(context.Background(), authSnapshot.Clone())
 	}
 }

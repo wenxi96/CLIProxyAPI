@@ -20,15 +20,16 @@ import (
 )
 
 const (
-	DefaultPanelGitHubRepository = "https://github.com/wenxi96/Cli-Proxy-API-Management-Center"
-	DefaultPprofAddr             = "127.0.0.1:8316"
-	DefaultScopedPoolLimit       = 5
-	DefaultScopedPoolErrorLimit  = 3
-	DefaultScopedPoolPenaltySec  = 300
-	DefaultScopedPoolQuotaTTLSec = 300
-	DefaultScopedPoolIdleLogSec  = 60
-	MaxScopedPoolQuotaPercent    = 50
-	DefaultAuthDir               = "~/.cli-proxy-api"
+	DefaultPanelGitHubRepository        = "https://github.com/wenxi96/Cli-Proxy-API-Management-Center"
+	DefaultPprofAddr                    = "127.0.0.1:8316"
+	DefaultScopedPoolLimit              = 5
+	DefaultScopedPoolErrorLimit         = 3
+	DefaultScopedPoolPenaltySec         = 300
+	DefaultScopedPoolQuotaTTLSec        = 300
+	DefaultScopedPoolIdleLogSec         = 60
+	MaxScopedPoolQuotaPercent           = 50
+	MaxAutoDisableQuotaThresholdPercent = 50
+	DefaultAuthDir                      = "~/.cli-proxy-api"
 )
 
 // Config represents the application's configuration, loaded from a YAML file.
@@ -229,6 +230,11 @@ type QuotaExceeded struct {
 	// AutoDisableAuthFileOnZeroQuota indicates whether file-backed auths with real quota inspection
 	// should be automatically disabled after an async confirmation that remaining quota is zero.
 	AutoDisableAuthFileOnZeroQuota bool `yaml:"auto-disable-auth-file-on-zero-quota" json:"auto-disable-auth-file-on-zero-quota"`
+
+	// AutoDisableAuthFileQuotaThresholdPercent sets a global quota threshold (0..50) for auto-disabling auth files.
+	// When set to a value greater than 0, auth files will be disabled when remaining quota percent is less than or equal to this threshold.
+	// A value of 0 preserves the legacy behavior (only disable on explicit zero quota / exhausted).
+	AutoDisableAuthFileQuotaThresholdPercent int `yaml:"auto-disable-auth-file-quota-threshold-percent" json:"auto-disable-auth-file-quota-threshold-percent"`
 
 	// AntigravityCredits indicates whether to retry Antigravity quota_exhausted 429s once
 	// on the same credential with enabledCreditTypes=["GOOGLE_ONE_AI"].
@@ -815,6 +821,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// Normalize routing strategy and scoped-pool settings.
 	cfg.SanitizeRouting()
 
+	// Normalize quota-exceeded settings.
+	cfg.SanitizeQuotaExceeded()
+
 	// Validate raw payload rules and drop invalid entries.
 	cfg.SanitizePayloadRules()
 
@@ -851,6 +860,20 @@ func (cfg *Config) SanitizeRouting() {
 		cfg.Routing.Strategy = strings.TrimSpace(cfg.Routing.Strategy)
 	}
 	cfg.Routing.ScopedPool = NormalizeRoutingScopedPoolConfig(cfg.Routing.ScopedPool)
+}
+
+// SanitizeQuotaExceeded normalizes quota-exceeded settings.
+// It clamps AutoDisableAuthFileQuotaThresholdPercent to the valid range [0, MaxAutoDisableQuotaThresholdPercent].
+func (cfg *Config) SanitizeQuotaExceeded() {
+	if cfg == nil {
+		return
+	}
+	if cfg.QuotaExceeded.AutoDisableAuthFileQuotaThresholdPercent < 0 {
+		cfg.QuotaExceeded.AutoDisableAuthFileQuotaThresholdPercent = 0
+	}
+	if cfg.QuotaExceeded.AutoDisableAuthFileQuotaThresholdPercent > MaxAutoDisableQuotaThresholdPercent {
+		cfg.QuotaExceeded.AutoDisableAuthFileQuotaThresholdPercent = MaxAutoDisableQuotaThresholdPercent
+	}
 }
 
 // DefaultRoutingScopedPoolProviderConfig returns the normalized default values for scoped-pool entries.

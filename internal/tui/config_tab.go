@@ -345,6 +345,8 @@ func (m configTabModel) parseConfig(cfg map[string]any) []configField {
 	// Quota exceeded
 	fields = append(fields, configField{"Switch Project on Quota", "quota-exceeded/switch-project", "bool", fmt.Sprintf("%v", getBoolNested(cfg, "quota-exceeded", "switch-project")), nil})
 	fields = append(fields, configField{"Switch Preview Model", "quota-exceeded/switch-preview-model", "bool", fmt.Sprintf("%v", getBoolNested(cfg, "quota-exceeded", "switch-preview-model")), nil})
+	fields = append(fields, configField{"Auto Disable on Zero Quota", "quota-exceeded/auto-disable-auth-file-on-zero-quota", "bool", fmt.Sprintf("%v", getBoolNested(cfg, "quota-exceeded", "auto-disable-auth-file-on-zero-quota")), nil})
+	fields = append(fields, configField{"Auto Disable Threshold %", "quota-exceeded/auto-disable-auth-file-quota-threshold-percent", "int", fmt.Sprintf("%.0f", getFloatNested(cfg, "quota-exceeded", "auto-disable-auth-file-quota-threshold-percent")), nil})
 
 	// Routing
 	if routing, ok := cfg["routing"].(map[string]any); ok {
@@ -403,6 +405,21 @@ func getBoolNested(m map[string]any, keys ...string) bool {
 		}
 	}
 	return false
+}
+
+func getFloatNested(m map[string]any, keys ...string) float64 {
+	current := m
+	for i, key := range keys {
+		if i == len(keys)-1 {
+			return getFloat(current, key)
+		}
+		if nested, ok := current[key].(map[string]any); ok {
+			current = nested
+		} else {
+			return 0
+		}
+	}
+	return 0
 }
 
 func maskIfNotEmpty(s string) string {

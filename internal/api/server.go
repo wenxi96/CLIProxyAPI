@@ -604,6 +604,10 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/quota-exceeded/auto-disable-auth-file-on-zero-quota", s.mgmt.PutAutoDisableAuthFileOnZeroQuota)
 		mgmt.PATCH("/quota-exceeded/auto-disable-auth-file-on-zero-quota", s.mgmt.PutAutoDisableAuthFileOnZeroQuota)
 
+		mgmt.GET("/quota-exceeded/auto-disable-auth-file-quota-threshold-percent", s.mgmt.GetAutoDisableAuthFileQuotaThresholdPercent)
+		mgmt.PUT("/quota-exceeded/auto-disable-auth-file-quota-threshold-percent", s.mgmt.PutAutoDisableAuthFileQuotaThresholdPercent)
+		mgmt.PATCH("/quota-exceeded/auto-disable-auth-file-quota-threshold-percent", s.mgmt.PatchAutoDisableAuthFileQuotaThresholdPercent)
+
 		mgmt.GET("/api-keys", s.mgmt.GetAPIKeys)
 		mgmt.PUT("/api-keys", s.mgmt.PutAPIKeys)
 		mgmt.PATCH("/api-keys", s.mgmt.PatchAPIKeys)

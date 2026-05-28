@@ -120,6 +120,10 @@ quota-exceeded:
   switch-project: true # Whether to automatically switch to another project when a quota is exceeded
   switch-preview-model: true # Whether to automatically switch to a preview model when a quota is exceeded
   auto-disable-auth-file-on-zero-quota: false # Whether to asynchronously confirm zero remaining quota and auto-disable supported auth files
+  # Global quota threshold percent for auto-disabling auth files (0..50).
+  # When set to a value greater than 0, auth files will be disabled when remaining quota percent <= threshold.
+  # A value of 0 preserves the legacy behavior (only disable on explicit zero quota / exhausted).
+  auto-disable-auth-file-quota-threshold-percent: 0
   antigravity-credits: true # Whether to retry Antigravity quota_exhausted 429s once with enabledCreditTypes=["GOOGLE_ONE_AI"]
 
 # Routing strategy for selecting credentials when multiple match.

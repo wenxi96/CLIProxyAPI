@@ -16,7 +16,8 @@ const (
 	ClassificationUnsupported    = "unsupported_provider"
 	ClassificationUnknown        = "unknown"
 
-	autoDisabledQuotaStatusMessage = "auto_disabled_quota_exhausted"
+	autoDisabledQuotaStatusMessage          = "auto_disabled_quota_exhausted"
+	autoDisabledQuotaThresholdStatusMessage = "auto_disabled_quota_threshold"
 )
 
 // QuotaCheckResult captures the minimal outcome needed by runtime auto-disable logic.
@@ -102,4 +103,35 @@ func hasQuotaSignal(message string) bool {
 		}
 	}
 	return false
+}
+
+// shouldAutoDisable checks whether a quota check result should trigger auto-disable.
+// It returns (shouldDisable bool, reason string).
+// When result.Exhausted is true, reason is "exhausted".
+// When threshold is hit (remaining_percent <= threshold), reason is "threshold".
+// Exhausted takes priority over threshold.
+func shouldAutoDisable(result QuotaCheckResult, threshold int) (bool, string) {
+	if result.Exhausted {
+		return true, "exhausted"
+	}
+	if threshold > 0 && result.RemainingPercent != nil && *result.RemainingPercent <= threshold {
+		return true, "threshold"
+	}
+	return false, ""
+}
+
+// effectiveAutoDisableThreshold returns the effective threshold from config.
+// Returns 0 if config is nil or threshold is not set.
+func effectiveAutoDisableThreshold(cfg *internalconfig.Config) int {
+	if cfg == nil {
+		return 0
+	}
+	threshold := cfg.QuotaExceeded.AutoDisableAuthFileQuotaThresholdPercent
+	if threshold < 0 {
+		return 0
+	}
+	if threshold > internalconfig.MaxAutoDisableQuotaThresholdPercent {
+		return internalconfig.MaxAutoDisableQuotaThresholdPercent
+	}
+	return threshold
 }

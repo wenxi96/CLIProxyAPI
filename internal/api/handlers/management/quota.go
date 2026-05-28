@@ -1,6 +1,11 @@
 package management
 
-import "github.com/gin-gonic/gin"
+import (
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+)
 
 // Quota exceeded toggles
 func (h *Handler) GetSwitchProject(c *gin.Context) {
@@ -22,4 +27,37 @@ func (h *Handler) GetAutoDisableAuthFileOnZeroQuota(c *gin.Context) {
 }
 func (h *Handler) PutAutoDisableAuthFileOnZeroQuota(c *gin.Context) {
 	h.updateBoolField(c, func(v bool) { h.cfg.QuotaExceeded.AutoDisableAuthFileOnZeroQuota = v })
+}
+
+// Auto-disable auth file quota threshold percent
+func (h *Handler) GetAutoDisableAuthFileQuotaThresholdPercent(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"auto-disable-auth-file-quota-threshold-percent": h.cfg.QuotaExceeded.AutoDisableAuthFileQuotaThresholdPercent})
+}
+
+func (h *Handler) PutAutoDisableAuthFileQuotaThresholdPercent(c *gin.Context) {
+	h.updateIntFieldClamped(c, func(v int) { h.cfg.QuotaExceeded.AutoDisableAuthFileQuotaThresholdPercent = v }, 0, config.MaxAutoDisableQuotaThresholdPercent)
+}
+
+func (h *Handler) PatchAutoDisableAuthFileQuotaThresholdPercent(c *gin.Context) {
+	h.updateIntFieldClamped(c, func(v int) { h.cfg.QuotaExceeded.AutoDisableAuthFileQuotaThresholdPercent = v }, 0, config.MaxAutoDisableQuotaThresholdPercent)
+}
+
+// updateIntFieldClamped updates an integer field with clamping to the specified range.
+func (h *Handler) updateIntFieldClamped(c *gin.Context, set func(int), minVal, maxVal int) {
+	var body struct {
+		Value *int `json:"value"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Value == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	v := *body.Value
+	if v < minVal {
+		v = minVal
+	}
+	if v > maxVal {
+		v = maxVal
+	}
+	set(v)
+	h.persist(c)
 }
