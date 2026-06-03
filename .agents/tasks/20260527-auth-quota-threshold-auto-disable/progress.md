@@ -1,5 +1,27 @@
 # Progress
 
+## 2026-05-29 Governance Document Fixes
+
+### Action
+
+修复计划与交接文档的真实偏差：补齐实际修改文件、兼容性补齐项和热重载归一化验收项，并将 handoff 从实现前交接状态更新为 closeout 状态。
+
+### Files
+
+- `.agents/tasks/20260527-auth-quota-threshold-auto-disable/plans/2026-05-27-auth-quota-threshold-auto-disable-implementation-plan.md`
+- `.agents/tasks/20260527-auth-quota-threshold-auto-disable/handoff.md`
+- `.agents/tasks/20260527-auth-quota-threshold-auto-disable/progress.md`
+
+### Verification
+
+- `rg "internal/config/parse.go|sdk/cliproxy/auth/quota_check.go|ParseConfigBytes|closeout|实现已完成" .agents/tasks/20260527-auth-quota-threshold-auto-disable` confirmed the plan and handoff now reflect the implemented state.
+
+### Result
+
+- Plan now lists `parse.go` and `quota_check.go` as modified files.
+- Plan now documents the old auto-disable switch TUI/diff compatibility additions.
+- Handoff no longer states that business code is unmodified.
+
 ## 2026-05-28 Review Fixes
 
 ### Action

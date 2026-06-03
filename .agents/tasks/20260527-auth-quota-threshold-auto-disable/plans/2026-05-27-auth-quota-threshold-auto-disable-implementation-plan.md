@@ -14,8 +14,14 @@
   - `internal/config/config.go`
     - 在 `QuotaExceeded` 中新增 `AutoDisableAuthFileQuotaThresholdPercent int`
     - 增加归一化逻辑，阈值 clamp 到 `0..50`
+    - 新增 `MaxAutoDisableQuotaThresholdPercent`，避免复用 scoped-pool 阈值常量
+  - `internal/config/parse.go`
+    - 在 `ParseConfigBytes()` 配置解析路径中调用 `SanitizeQuotaExceeded()`，确保配置热重载/字节解析路径同样归一化阈值
   - `config.example.yaml`
     - 增加 `auto-disable-auth-file-quota-threshold-percent: 0` 示例和说明
+  - `sdk/cliproxy/auth/quota_check.go`
+    - 新增 `shouldAutoDisable()` 和 `effectiveAutoDisableThreshold()` helper
+    - 新增 `autoDisabledQuotaThresholdStatusMessage`
   - `sdk/cliproxy/auth/quota_check_async.go`
     - 将 `result.Exhausted` 触发条件扩展为 `result.Exhausted || remainingPercent <= threshold`
     - 保持配置开关 `auto-disable-auth-file-on-zero-quota` 作为总开关
@@ -34,12 +40,15 @@
     - 覆盖阈值读写与 clamp/保存行为
   - `internal/watcher/diff/config_diff.go`
     - 增加阈值配置变更摘要
+    - 补齐既有 `auto-disable-auth-file-on-zero-quota` 开关的变更摘要
   - `internal/watcher/diff/config_diff_test.go`
     - 覆盖阈值 diff 输出
   - `internal/tui/config_tab.go`
-    - 在配置页暴露阈值字段，保持现有开关字段不变
+    - 在配置页暴露阈值字段
+    - 同步补齐既有 `auto-disable-auth-file-on-zero-quota` 总开关入口
+  - `.agents/README.md`
+    - 登记当前新任务目录
 - Read:
-  - `sdk/cliproxy/auth/quota_check.go`
   - `sdk/cliproxy/auth/scoped_pool.go`
   - `internal/config/routing_scoped_pool_test.go`
   - `internal/api/handlers/management/config_basic.go`
@@ -125,6 +134,7 @@
 - `RemainingPercent=nil` 且非耗尽分类不会按阈值自动禁用。
 - 耗尽触发写入 `auto_disabled_quota_exhausted`；阈值触发写入 `auto_disabled_quota_threshold`。
 - 阈值从 `0` 动态修改为非 `0` 后，新 quota check 使用新阈值。
+- 通过 `ParseConfigBytes()` 解析/热重载配置时，阈值同样按 `0..50` 归一化。
 - 并发/重复 quota check 不会造成重复禁用或错误状态消息。
 - `fill-first` 和 `round-robin` 下自动禁用阈值都生效。
 - scoped-pool 阈值仍只影响 round-robin scoped-pool 池内剔除，不持久禁用。
