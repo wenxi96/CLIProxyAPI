@@ -278,8 +278,13 @@ func TestFileRequestLogger_HomeEnabled_ForwardsStreamingRequestID(t *testing.T) 
 	writer, errLog := logger.LogStreamingRequest(
 		"/v1/responses",
 		http.MethodPost,
-		map[string][]string{"Content-Type": {"application/json"}},
-		[]byte(`{"input":"hello"}`),
+		map[string][]string{
+			"Authorization": {"Bearer secret"},
+			"Content-Type":  {"application/json"},
+			"Cookie":        {"super-secret-cookie"},
+			"X-Api-Key":     {"header-api-secret"},
+		},
+		[]byte(`{"input":"hello","password":"body-password","secret":"body-secret"}`),
 		"stream-req-1",
 	)
 	if errLog != nil {
@@ -289,7 +294,7 @@ func TestFileRequestLogger_HomeEnabled_ForwardsStreamingRequestID(t *testing.T) 
 	if errStatus := writer.WriteStatus(http.StatusOK, map[string][]string{"Content-Type": {"text/event-stream"}}); errStatus != nil {
 		t.Fatalf("WriteStatus error: %v", errStatus)
 	}
-	writer.WriteChunkAsync([]byte("data: ok\n\n"))
+	writer.WriteChunkAsync([]byte("data: {\"secret\":\"response-secret\"}\n\n"))
 	if errClose := writer.Close(); errClose != nil {
 		t.Fatalf("Close error: %v", errClose)
 	}
