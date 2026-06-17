@@ -2,6 +2,8 @@
 
 本目录用于保存当前仓库的持久化任务上下文与最小索引。
 
+Persistence Mode: git-visible
+
 ## 目录职责
 
 - `registry/`：仓库级稳定索引与验证入口。
@@ -20,6 +22,7 @@
 - `20260409-provider-scoped-routing-pool`：按供应商类别独立启用的范围轮询设计与后续实现。
 - `20260424-absorb-cliproxyapi2-fixes`：制定 CLIProxyAPI2 改动吸收计划并沉淀分批执行方案。
 - `20260424-evaluate-watcher-race-current-architecture`：评估当前 watcher 架构下是否存在与参考仓库同类竞态，并决定是否另起实施任务。
+- `20260612-sync-upstream-v7-fork-customizations`：规划前后端吸收最新上游版本，同时保留 fork 自定义功能。
 
 ## 说明
 

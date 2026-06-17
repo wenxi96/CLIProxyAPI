@@ -1,10 +1,12 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -154,6 +156,137 @@ func TestXAIExecutorExecuteShapesResponsesRequest(t *testing.T) {
 		if include.String() == "reasoning.encrypted_content" {
 			t.Fatalf("xai request must not ask for encrypted reasoning content: %s", string(gotBody))
 		}
+	}
+}
+
+func TestXAIExecutorCompactUsesCompactEndpoint(t *testing.T) {
+	var gotPath string
+	var gotAuth string
+	var gotAccept string
+	var gotBody []byte
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		gotAccept = r.Header.Get("Accept")
+		var errRead error
+		gotBody, errRead = io.ReadAll(r.Body)
+		if errRead != nil {
+			t.Fatalf("read body: %v", errRead)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response.compaction","output":[{"type":"compaction","encrypted_content":"opaque-out"}],"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}`))
+	}))
+	defer server.Close()
+
+	exec := NewXAIExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		Provider: "xai",
+		Attributes: map[string]string{
+			"base_url": server.URL,
+			"api_key":  "xai-token",
+		},
+	}
+
+	resp, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "grok-4.3",
+		Payload: []byte(`{"model":"grok-4.3","stream":true,"input":[{"type":"compaction","encrypted_content":"opaque-in"},{"role":"user","content":"hello"}]}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse,
+		Alt:          "responses/compact",
+		Stream:       false,
+	})
+	if err != nil {
+		t.Fatalf("Execute compact error: %v", err)
+	}
+	if gotPath != "/responses/compact" {
+		t.Fatalf("path = %q, want /responses/compact", gotPath)
+	}
+	if gotAuth != "Bearer xai-token" {
+		t.Fatalf("Authorization = %q, want Bearer xai-token", gotAuth)
+	}
+	if gotAccept != "application/json" {
+		t.Fatalf("Accept = %q, want application/json", gotAccept)
+	}
+	if gjson.GetBytes(gotBody, "stream").Exists() {
+		t.Fatalf("stream exists in compact body: %s", string(gotBody))
+	}
+	if got := gjson.GetBytes(gotBody, "input.0.encrypted_content").String(); got != "opaque-in" {
+		t.Fatalf("input.0.encrypted_content = %q, want opaque-in; body=%s", got, string(gotBody))
+	}
+	if string(resp.Payload) != `{"id":"resp_1","object":"response.compaction","output":[{"type":"compaction","encrypted_content":"opaque-out"}],"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}` {
+		t.Fatalf("payload = %s", string(resp.Payload))
+	}
+}
+
+func TestXAIExecutorExecuteStreamCompactionTriggerUsesCompactEndpoint(t *testing.T) {
+	var gotPath string
+	var gotAccept string
+	var gotBody []byte
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAccept = r.Header.Get("Accept")
+		var errRead error
+		gotBody, errRead = io.ReadAll(r.Body)
+		if errRead != nil {
+			t.Fatalf("read body: %v", errRead)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_xai_1","model":"grok-4.3","output":[{"type":"compaction","encrypted_content":"opaque"}],"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}`))
+	}))
+	defer server.Close()
+
+	exec := NewXAIExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		Provider: "xai",
+		Attributes: map[string]string{
+			"base_url": server.URL,
+			"api_key":  "xai-token",
+		},
+	}
+
+	result, err := exec.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "grok-4.3",
+		Payload: []byte(`{"model":"grok-4.3","stream":true,"input":[{"role":"user","content":"hello"},{"type":"compaction_trigger"}]}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse,
+		Stream:       true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream compaction trigger error: %v", err)
+	}
+	if gotPath != "/responses/compact" {
+		t.Fatalf("path = %q, want /responses/compact", gotPath)
+	}
+	if gotAccept != "application/json" {
+		t.Fatalf("Accept = %q, want application/json", gotAccept)
+	}
+	if xaiInputHasItemType(gotBody, "compaction_trigger") {
+		t.Fatalf("compaction_trigger reached xai compact body: %s", string(gotBody))
+	}
+	if gjson.GetBytes(gotBody, "stream").Exists() {
+		t.Fatalf("stream exists in compact body: %s", string(gotBody))
+	}
+
+	var streamed bytes.Buffer
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream chunk error = %v", chunk.Err)
+		}
+		streamed.Write(chunk.Payload)
+	}
+	output := streamed.String()
+	for _, eventName := range []string{"response.created", "response.in_progress", "response.output_item.added", "response.output_item.done", "response.completed"} {
+		if !strings.Contains(output, "event: "+eventName+"\n") {
+			t.Fatalf("missing %s event in stream: %s", eventName, output)
+		}
+	}
+	if !strings.Contains(output, `"type":"compaction"`) || !strings.Contains(output, `"encrypted_content":"opaque"`) {
+		t.Fatalf("compaction output missing from stream: %s", output)
+	}
+	if !strings.Contains(output, `"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}`) {
+		t.Fatalf("usage missing from completed stream: %s", output)
 	}
 }
 
@@ -590,5 +723,59 @@ func TestXAIExecutorExecuteVideosUsesNativeEndpointFromRequestPath(t *testing.T)
 				t.Fatalf("path = %q, want %s", gotPath, tt.wantPath)
 			}
 		})
+	}
+}
+
+func TestNormalizeXAIToolChoiceForTools_DropsWhenToolsEmpty(t *testing.T) {
+	body := []byte(`{"model":"grok-4","tools":[],"tool_choice":"auto","parallel_tool_calls":true,"input":"hi"}`)
+	out := normalizeXAIToolChoiceForTools(body)
+
+	if gjson.GetBytes(out, "tools").Exists() {
+		t.Fatalf("empty tools should be removed: %s", string(out))
+	}
+	if gjson.GetBytes(out, "tool_choice").Exists() {
+		t.Fatalf("tool_choice should be removed when tools empty: %s", string(out))
+	}
+	if gjson.GetBytes(out, "parallel_tool_calls").Exists() {
+		t.Fatalf("parallel_tool_calls should be removed when tools empty: %s", string(out))
+	}
+}
+
+func TestNormalizeXAIToolChoiceForTools_DropsWhenToolsMissing(t *testing.T) {
+	body := []byte(`{"model":"grok-4","tool_choice":"auto","input":"hi"}`)
+	out := normalizeXAIToolChoiceForTools(body)
+
+	if gjson.GetBytes(out, "tool_choice").Exists() {
+		t.Fatalf("tool_choice should be removed when tools missing: %s", string(out))
+	}
+}
+
+func TestNormalizeXAIToolChoiceForTools_DropsOrphanedParallelToolCalls(t *testing.T) {
+	body := []byte(`{"model":"grok-4","parallel_tool_calls":true,"input":"hi"}`)
+	out := normalizeXAIToolChoiceForTools(body)
+
+	if gjson.GetBytes(out, "parallel_tool_calls").Exists() {
+		t.Fatalf("parallel_tool_calls should be removed when tools missing even without tool_choice: %s", string(out))
+	}
+}
+
+func TestNormalizeXAIToolChoiceForTools_KeepsWhenToolsPresent(t *testing.T) {
+	body := []byte(`{"model":"grok-4","tools":[{"type":"function","name":"Bash"}],"tool_choice":"auto","input":"hi"}`)
+	out := normalizeXAIToolChoiceForTools(body)
+
+	if !gjson.GetBytes(out, "tools").Exists() {
+		t.Fatalf("tools should be kept: %s", string(out))
+	}
+	if got := gjson.GetBytes(out, "tool_choice").String(); got != "auto" {
+		t.Fatalf("tool_choice = %q, want auto: %s", got, string(out))
+	}
+}
+
+func TestNormalizeXAIToolChoiceForTools_NoOpWhenBothAbsent(t *testing.T) {
+	body := []byte(`{"model":"grok-4","input":"hi"}`)
+	out := normalizeXAIToolChoiceForTools(body)
+
+	if gjson.GetBytes(out, "tool_choice").Exists() {
+		t.Fatalf("tool_choice should not appear: %s", string(out))
 	}
 }
