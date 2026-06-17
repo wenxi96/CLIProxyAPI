@@ -17,6 +17,7 @@
 2026-06-17 独立评审发现项已本地处理：
 
 - 后端 `.github/workflows/rebuild-release-history.yml` 已支持无 `.goreleaser.yml` 的 rebuild fallback；旧 rebuild entries 仍可继续使用 GoReleaser。
+- release-history fallback 已补全为与主 release workflow 同名的 10 个 archive 资产，并增加 archive 数量检查；Evidence：`evidence/release-history-fallback-assets-2026-06-17.md`。
 - `master` 上最新 `.agents` master 验证记录已同步回 `dev`，并从 `dev` 合回本地 `master`。
 - Evidence：`evidence/review-fixes-2026-06-17.md`。
 
@@ -53,6 +54,7 @@
 - 从 YAML 解析出 `Rebuild release history` run block 后执行 `bash -n /tmp/rebuild-release-history-run.sh` exit 0。
 - `git diff --check` exit 0。
 - `git diff --name-status dev..master` 在 workflow fix 与既有 `.agents` 文档首次合并后为空。
+- fallback 资产补全后，在 `cliproxyapi-upstream-merge-builder` 容器中用 Go `1.26.4` 实际执行 fallback 构建，产出 10 个 archive 资产与 `checksums.txt` 后清理 `dist/`，命令 exit 0。
 
 ## Remaining Work
 
