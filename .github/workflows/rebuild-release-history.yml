@@ -147,32 +147,59 @@ jobs:
                     rm -rf dist
                     mkdir -p dist
 
-                    build_linux_archive() {
+                    build_fallback_archive() {
                       local target="$1"
-                      local cgo_enabled="$2"
-                      local asset_suffix="$3"
+                      local goos="$2"
+                      local goarch="$3"
+                      local asset_arch="$4"
+                      local archive_format="$5"
+                      local cgo_enabled="$6"
+                      local asset_suffix="${7:-}"
                       local archive_dir="dist/${target}/archive"
-                      local archive_name="CLIProxyAPI_${VERSION}_linux_amd64${asset_suffix}.tar.gz"
+                      local binary_name="cli-proxy-api"
+                      local archive_name="CLIProxyAPI_${VERSION}_${goos}_${asset_arch}${asset_suffix}.${archive_format}"
 
                       rm -rf "dist/${target}"
                       mkdir -p "${archive_dir}"
-                      CGO_ENABLED="${cgo_enabled}" GOOS=linux GOARCH=amd64 go build -buildvcs=false \
+                      if [[ "${goos}" == "windows" ]]; then
+                        binary_name="cli-proxy-api.exe"
+                      fi
+
+                      CGO_ENABLED="${cgo_enabled}" GOOS="${goos}" GOARCH="${goarch}" go build -buildvcs=false \
                         -ldflags="-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE} -X main.SourceRepository=${SOURCE_REPOSITORY}" \
-                        -o "${archive_dir}/cli-proxy-api" ./cmd/server/
+                        -o "${archive_dir}/${binary_name}" ./cmd/server/
                       cp LICENSE README.md README_CN.md config.example.yaml "${archive_dir}/"
-                      tar -C "${archive_dir}" -czf "dist/${archive_name}" \
-                        cli-proxy-api LICENSE README.md README_CN.md config.example.yaml
+                      if [[ "${archive_format}" == "zip" ]]; then
+                        python3 -c "import sys, zipfile; from pathlib import Path; archive_dir = Path(sys.argv[1]); archive_name = Path(sys.argv[2]); files = [sys.argv[3], \"LICENSE\", \"README.md\", \"README_CN.md\", \"config.example.yaml\"]; zf = zipfile.ZipFile(archive_name, \"w\", compression=zipfile.ZIP_DEFLATED); [zf.write(archive_dir / name, arcname=name) for name in files]; zf.close()" \
+                          "${archive_dir}" "dist/${archive_name}" "${binary_name}"
+                      else
+                        tar -C "${archive_dir}" -czf "dist/${archive_name}" \
+                          "${binary_name}" LICENSE README.md README_CN.md config.example.yaml
+                      fi
                     }
 
-                    build_linux_archive linux-amd64 1 ""
-                    build_linux_archive linux-amd64-no-plugin 0 "_no-plugin"
+                    # This fallback runs in a single Ubuntu job. It produces the same
+                    # asset name set as the primary release workflow, but uses CGO=0
+                    # for non-native targets where the primary workflow normally uses
+                    # hosted runners or dedicated cross-build tooling.
+                    build_fallback_archive darwin-amd64 darwin amd64 amd64 tar.gz 0
+                    build_fallback_archive darwin-arm64 darwin arm64 aarch64 tar.gz 0
+                    build_fallback_archive windows-amd64 windows amd64 amd64 zip 0
+                    build_fallback_archive windows-arm64 windows arm64 aarch64 zip 0
+                    build_fallback_archive linux-amd64 linux amd64 amd64 tar.gz 1
+                    build_fallback_archive linux-arm64 linux arm64 aarch64 tar.gz 0
+                    build_fallback_archive linux-amd64-no-plugin linux amd64 amd64 tar.gz 0 "_no-plugin"
+                    build_fallback_archive linux-arm64-no-plugin linux arm64 aarch64 tar.gz 0 "_no-plugin"
+                    build_fallback_archive freebsd-amd64 freebsd amd64 amd64 tar.gz 0
+                    build_fallback_archive freebsd-arm64-no-plugin freebsd arm64 aarch64 tar.gz 0 "_no-plugin"
 
                     (
                       cd dist
                       shopt -s nullglob
                       archives=(CLIProxyAPI_*.tar.gz CLIProxyAPI_*.zip)
-                      if [[ ${#archives[@]} -eq 0 ]]; then
-                        echo "expected archive assets, found none" >&2
+                      if [[ ${#archives[@]} -ne 10 ]]; then
+                        printf "expected 10 archive assets, found %s\n" "${#archives[@]}" >&2
+                        printf "%s\n" "${archives[@]}" >&2
                         exit 1
                       fi
                       sha256sum "${archives[@]}" | sort -k2 > checksums.txt
