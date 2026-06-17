@@ -153,4 +153,4 @@
 - Files: `.github/workflows/rebuild-release-history.yml`; `.agents/tasks/20260612-sync-upstream-v7-fork-customizations/evidence/master-merge-verification.md`; `.agents/tasks/20260612-sync-upstream-v7-fork-customizations/evidence/review-fixes-2026-06-17.md`; `.agents/tasks/20260612-sync-upstream-v7-fork-customizations/progress.md`; `.agents/tasks/20260612-sync-upstream-v7-fork-customizations/handoff.md`
 - Verification: `python3` + `yaml.safe_load(.github/workflows/rebuild-release-history.yml)` exit 0；从 YAML 解析出 `Rebuild release history` run block 后执行 `bash -n /tmp/rebuild-release-history-run.sh` exit 0；`git diff --check` exit 0；首次合并 review fix 后 `git diff --name-status dev..master` 为空。
 - Result: RFX-1 / RFX-2 均已采纳并本地修复；未执行任何 push、tag、release、management.html 上传或凭证写入。
-- Next: 将本轮 review-fix evidence / progress / handoff 从 `dev` 再合回本地 `master`，随后执行完成前验证；仍停在远端推送与发布授权门禁。
+- Next: 本轮 review-fix evidence / progress / handoff 已从 `dev` 合回本地 `master` 并完成静态验证；仍停在远端推送与发布授权门禁。
