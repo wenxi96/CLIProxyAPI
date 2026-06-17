@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	sigcompat "github.com/router-for-me/CLIProxyAPI/v7/internal/signature"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -439,8 +440,8 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 }
 
 func convertResponsesReasoningToClaudeThinking(item gjson.Result) []byte {
-	signature := item.Get("encrypted_content").String()
-	if signature == "" {
+	signature, ok := sigcompat.CompatibleSignatureForProvider(sigcompat.SignatureProviderClaude, item.Get("encrypted_content").String())
+	if !ok {
 		return nil
 	}
 
@@ -619,6 +620,51 @@ func qualifyResponsesNamespaceToolName(namespaceName, childName string) string {
 		return namespaceName + childName
 	}
 	return namespaceName + "__" + childName
+}
+
+func splitResponsesQualifiedFunctionCallFromRequest(requestRawJSON []byte, qualifiedName string) (name, namespace string) {
+	qualifiedName = strings.TrimSpace(qualifiedName)
+	if qualifiedName == "" {
+		return "", ""
+	}
+
+	tools := gjson.GetBytes(requestRawJSON, "tools")
+	if !tools.Exists() || !tools.IsArray() {
+		return qualifiedName, ""
+	}
+
+	var bestNamespace string
+	var bestChild string
+	tools.ForEach(func(_, tool gjson.Result) bool {
+		if strings.TrimSpace(tool.Get("type").String()) != "namespace" {
+			return true
+		}
+		namespaceName := strings.TrimSpace(tool.Get("name").String())
+		if namespaceName == "" {
+			return true
+		}
+		children := tool.Get("tools")
+		if !children.Exists() || !children.IsArray() {
+			return true
+		}
+		children.ForEach(func(_, child gjson.Result) bool {
+			childName := responsesToolName(child)
+			if childName == "" {
+				return true
+			}
+			if qualifyResponsesNamespaceToolName(namespaceName, childName) == qualifiedName {
+				bestNamespace = namespaceName
+				bestChild = childName
+			}
+			return true
+		})
+		return true
+	})
+
+	if bestNamespace == "" || bestChild == "" {
+		return qualifiedName, ""
+	}
+	return bestChild, bestNamespace
 }
 
 func isUnsupportedOpenAIBuiltinToolType(toolType string) bool {

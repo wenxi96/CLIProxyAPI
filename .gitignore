@@ -12,6 +12,8 @@ logs/*
 conv/*
 temp/*
 refs/*
+plugins/*
+examples/plugin/bin/*
 
 # Storage backends
 pgstore/*
@@ -44,6 +46,7 @@ GEMINI.md
 .gemini/*
 .serena/*
 .agent/*
+.agents
 .agents/*
 !.agents/README.md
 
@@ -69,3 +72,6 @@ _bmad-output/*
 .DS_Store
 ._*
 .gocache/
+
+# codegraph 本地索引缓存
+.codegraph/
