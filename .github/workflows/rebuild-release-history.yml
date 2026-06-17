@@ -41,7 +41,7 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Install GoReleaser
+      - name: Install GoReleaser for legacy rebuild entries
         uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
@@ -123,18 +123,78 @@ jobs:
             short_commit="$(git -C "${build_dir}" rev-parse --short HEAD)"
             build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-            run_with_log "build ${tag}" \
-              env \
-                BUILD_DIR="${build_dir}" \
-                VERSION="${version}" \
-                COMMIT="${short_commit}" \
-                BUILD_DATE="${build_date}" \
-                SOURCE_REPOSITORY="${SOURCE_REPOSITORY}" \
-                GITHUB_TOKEN="${GH_TOKEN}" \
-                bash -lc 'cd "${BUILD_DIR}" && goreleaser release --snapshot --clean --skip=validate'
+            if [[ -f "${build_dir}/.goreleaser.yml" ]]; then
+              run_with_log "build ${tag}" \
+                env \
+                  BUILD_DIR="${build_dir}" \
+                  VERSION="${version}" \
+                  COMMIT="${short_commit}" \
+                  BUILD_DATE="${build_date}" \
+                  SOURCE_REPOSITORY="${SOURCE_REPOSITORY}" \
+                  GITHUB_TOKEN="${GH_TOKEN}" \
+                  bash -lc 'cd "${BUILD_DIR}" && goreleaser release --snapshot --clean --skip=validate'
+            else
+              run_with_log "build ${tag}" \
+                env \
+                  BUILD_DIR="${build_dir}" \
+                  VERSION="${version}" \
+                  COMMIT="${short_commit}" \
+                  BUILD_DATE="${build_date}" \
+                  SOURCE_REPOSITORY="${SOURCE_REPOSITORY}" \
+                  bash -lc '
+                    set -euo pipefail
+                    cd "${BUILD_DIR}"
+                    rm -rf dist
+                    mkdir -p dist
+
+                    build_linux_archive() {
+                      local target="$1"
+                      local cgo_enabled="$2"
+                      local asset_suffix="$3"
+                      local archive_dir="dist/${target}/archive"
+                      local archive_name="CLIProxyAPI_${VERSION}_linux_amd64${asset_suffix}.tar.gz"
+
+                      rm -rf "dist/${target}"
+                      mkdir -p "${archive_dir}"
+                      CGO_ENABLED="${cgo_enabled}" GOOS=linux GOARCH=amd64 go build -buildvcs=false \
+                        -ldflags="-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE} -X main.SourceRepository=${SOURCE_REPOSITORY}" \
+                        -o "${archive_dir}/cli-proxy-api" ./cmd/server/
+                      cp LICENSE README.md README_CN.md config.example.yaml "${archive_dir}/"
+                      tar -C "${archive_dir}" -czf "dist/${archive_name}" \
+                        cli-proxy-api LICENSE README.md README_CN.md config.example.yaml
+                    }
+
+                    build_linux_archive linux-amd64 1 ""
+                    build_linux_archive linux-amd64-no-plugin 0 "_no-plugin"
+
+                    (
+                      cd dist
+                      shopt -s nullglob
+                      archives=(CLIProxyAPI_*.tar.gz CLIProxyAPI_*.zip)
+                      if [[ ${#archives[@]} -eq 0 ]]; then
+                        echo "expected archive assets, found none" >&2
+                        exit 1
+                      fi
+                      sha256sum "${archives[@]}" | sort -k2 > checksums.txt
+                    )
+                  '
+            fi
 
             python3 ./scripts/delete-release.py "${tag}"
             git push origin ":refs/tags/${tag}" >/dev/null 2>&1 || true
+
+            shopt -s nullglob
+            release_archives=("${build_dir}"/dist/*.tar.gz "${build_dir}"/dist/*.zip)
+            checksums_file="${build_dir}/dist/checksums.txt"
+            if [[ ${#release_archives[@]} -eq 0 ]]; then
+              emit_error "publish ${tag}" "expected release assets under ${build_dir}/dist"
+              exit 1
+            fi
+            if [[ ! -f "${checksums_file}" ]]; then
+              emit_error "publish ${tag}" "expected ${checksums_file}"
+              exit 1
+            fi
+            release_assets=("${release_archives[@]}" "${checksums_file}")
 
             run_with_log "publish ${tag}" \
               env \
@@ -144,9 +204,7 @@ jobs:
                 RELEASE_NOTES_FILE="${notes_file}" \
                 GH_TOKEN="${GH_TOKEN}" \
                 python3 ./scripts/publish-release.py \
-                "${build_dir}"/dist/*.tar.gz \
-                "${build_dir}"/dist/*.zip \
-                "${build_dir}"/dist/checksums.txt
+                "${release_assets[@]}"
 
             git worktree remove --force "${build_dir}"
             rm -f "${notes_file}"
