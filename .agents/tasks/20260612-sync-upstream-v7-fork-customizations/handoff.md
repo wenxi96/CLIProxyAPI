@@ -2,17 +2,23 @@
 
 ## Current State
 
-本任务处于 `task_11_master_merged_waiting_push_release_authorization`。
+本任务处于 `task_11_master_merged_review_fixes_applied_waiting_push_release_authorization`。
 
 已完成本地 `dev -> master` 合入与 master 后自动化验证：
 
 - 后端已吸收到 `upstream/main@8d2c00c107b2` / `v7.2.12`。
 - 前端已吸收到 `upstream/main@b0db1dfd5da5` / `v1.16.7`。
 - 后端 `origin/main` / 本地 `main` 已同步上游；前端 `origin/main` / 本地 `main` 已同步上游。
-- 后端本地 `dev = cec8c1476a00`，本地 `master = 475dadf6236c`。
+- 后端本地 `dev` / `master` 已包含本轮上游合并与 review-fix 变更；推送前必须重新执行 `git rev-parse --short=12 dev master` 与 FRESHNESS。
 - 前端本地 `dev = b38985210ce8`，本地 `master = 4d46037b4dce`。
 - 后端 backup anchor：`backup/pre-merge-2026-06-17-c9fa502d = c9fa502d85b8`。
 - 前端 backup anchor：`backup/pre-merge-2026-06-17-c54efc0e = c54efc0e1ffc`。
+
+2026-06-17 独立评审发现项已本地处理：
+
+- 后端 `.github/workflows/rebuild-release-history.yml` 已支持无 `.goreleaser.yml` 的 rebuild fallback；旧 rebuild entries 仍可继续使用 GoReleaser。
+- `master` 上最新 `.agents` master 验证记录已同步回 `dev`，并从 `dev` 合回本地 `master`。
+- Evidence：`evidence/review-fixes-2026-06-17.md`。
 
 未执行：
 
@@ -40,6 +46,13 @@
 - 前端：`git merge-base --is-ancestor a02ebbcbf69549b87e81054151eba02d1ade59cb master` exit 0；`bun install --frozen-lockfile` exit 0；`bun run build` exit 0。
 - 后端 / 前端 unmerged file 检查为空，conflict marker 检查为空。
 - Evidence：`evidence/master-merge-verification.md`。
+
+本轮 review-fix 验证：
+
+- `python3` + `yaml.safe_load(.github/workflows/rebuild-release-history.yml)` exit 0。
+- 从 YAML 解析出 `Rebuild release history` run block 后执行 `bash -n /tmp/rebuild-release-history-run.sh` exit 0。
+- `git diff --check` exit 0。
+- `git diff --name-status dev..master` 在 workflow fix 与既有 `.agents` 文档首次合并后为空。
 
 ## Remaining Work
 
