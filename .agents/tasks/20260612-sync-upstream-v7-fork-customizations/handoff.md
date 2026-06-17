@@ -2,15 +2,14 @@
 
 ## Current State
 
-本任务处于 `task_11_master_merged_review_fixes_applied_waiting_push_release_authorization`。
+本任务处于 `task_11_latest_upstream_absorbed_master_verified_waiting_push_release_authorization`。
 
-已完成本地 `dev -> master` 合入与 master 后自动化验证：
+已完成最新 upstream 漂移的再次吸收、本地 `dev -> master` 合入与 master 后自动化验证：
 
-- 后端已吸收到 `upstream/main@8d2c00c107b2` / `v7.2.12`。
-- 前端已吸收到 `upstream/main@b0db1dfd5da5` / `v1.16.7`。
-- 后端 `origin/main` / 本地 `main` 已同步上游；前端 `origin/main` / 本地 `main` 已同步上游。
-- 后端本地 `dev` / `master` 已包含本轮上游合并与 review-fix 变更；推送前必须重新执行 `git rev-parse --short=12 dev master` 与 FRESHNESS。
-- 前端本地 `dev = b38985210ce8`，本地 `master = 4d46037b4dce`。
+- 后端已吸收到 `upstream/main@f23fb122e77a` / `v7.2.15`，且 `origin/main = upstream/main = f23fb122e77a`。
+- 前端已吸收到 `upstream/main@c74fa6d400de` / `v1.16.10` 到本地 `dev` / `master`；当前 `origin/main = c595ada80d20` / `v1.16.9` 仍落后 upstream 3 个提交，本地 `main` 已对齐 `origin/main`。
+- 后端本地 `dev = d8bef623...`，本地 `master` 已合入该修复与最新 upstream。
+- 前端本地 `dev = 9e67c88...`，本地 `master` 已合入该修复与最新 upstream。
 - 后端 backup anchor：`backup/pre-merge-2026-06-17-c9fa502d = c9fa502d85b8`。
 - 前端 backup anchor：`backup/pre-merge-2026-06-17-c54efc0e = c54efc0e1ffc`。
 
@@ -32,19 +31,20 @@
 
 ## Completed Scope
 
-- 后端任务 4/5/6 已完成并重新验证到 `v7.2.12`。
-- 前端任务 7/8/9 已完成并验证到 `v1.16.7`。
+- 后端任务 4/5/6 已完成并刷新验证到 `v7.2.15`。
+- 前端任务 7/8/9 已完成并刷新验证到 `v1.16.10`（本地 `dev` / `master`），同时保留前端 `origin/main` 落后 upstream 的远端镜像差异待授权同步。
 - 任务 10 management panel 本地链路验证已完成；下一前端 release 目标 tag 记录为 `v1.16.7-wx-2.7`，线上 latest release 仍是旧面板，真实发布仍需授权。
 - 任务 11 自动化联合验证已完成。
 - 用户确认 AMP/Ampcode 跟随上游移除，后端模块/API/测试与前端类型/API/provider/i18n/README 已按移除路径处理。
+- 最新收口项：后端修复 `xai_executor` 对不支持 reasoning 的模型残留空 `reasoning:{}` 的回归；前端修复 `rebuild-release-history.yml` 以兼容 bun/npm 历史提交，并清理未使用的 `chart.js` / `react-chartjs-2` 依赖。
 - Fork 定制保留：后端默认面板源、scoped pool、quota auto-disable、usage persistence、plugin callback 非递归相关测试；前端 DisplayName、Scoped Pool / Scoped Poll、Auth Files 批量检查、ZIP 下载、fork tag-only release、`a02ebbc` lockfile 修复。
 
 ## Verification
 
 最新 master 后验证：
 
-- 后端：`go test ./...` exit 0；`go build -o test-output ./cmd/server && rm test-output` exit 0。验证在 Docker builder 中执行，显式设置 `PATH=/usr/local/go/bin:$PATH`。
-- 前端：`git merge-base --is-ancestor a02ebbcbf69549b87e81054151eba02d1ade59cb master` exit 0；`bun install --frozen-lockfile` exit 0；`bun run build` exit 0。
+- 后端：在 `cliproxyapi-upstream-merge-builder` 容器中执行 `go test -run TestXAIExecutorOmitsUnsupportedReasoningEffort ./internal/runtime/executor` exit 0；随后执行 `go test ./...` exit 0；`go build -o test-output ./cmd/server && rm test-output` exit 0。
+- 前端：`.github/workflows/rebuild-release-history.yml` 与 `.github/workflows/release.yml` YAML parse exit 0；提取 rebuild script 后 `bash -n` exit 0；`/home/cheng/.bun/bin/bun install --frozen-lockfile` exit 0；`/home/cheng/.bun/bin/bun run build` exit 0。
 - 后端 / 前端 unmerged file 检查为空，conflict marker 检查为空。
 - Evidence：`evidence/master-merge-verification.md`。
 
@@ -62,6 +62,7 @@
 
 - push 后端 `dev` / `master`。
 - push 前端 `dev` / `master`。
+- 同步前端 `origin/main` 到 `upstream/main@c74fa6d400de`。
 - 创建 / 推送 release tag。
 - 触发 GitHub release。
 - 上传或发布 `management.html`。
