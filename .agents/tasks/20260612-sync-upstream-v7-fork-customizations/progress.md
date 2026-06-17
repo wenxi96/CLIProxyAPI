@@ -4,11 +4,11 @@
 
 - Plan Path: `.agents/tasks/20260612-sync-upstream-v7-fork-customizations/plans/2026-06-12-sync-upstream-v7-fork-customizations-implementation-plan.md`
 - Execution Route: ulw_governed
-- Current Task: 任务 11 已完成本地 `dev -> master` 合入与 master 后验证，停在 push / release 授权门禁
-- Task Status: task_11_master_merged_waiting_push_release_authorization
-- Last Verification: backend_master_go_test_build_passed_and_frontend_master_frozen_build_passed
+- Current Task: 任务 11 已完成本地 `dev -> master` 合入与 master 后验证；本轮独立评审发现项已在后端本地 `dev` / `master` 收口，停在 push / release 授权门禁
+- Task Status: task_11_master_merged_review_fixes_applied_waiting_push_release_authorization
+- Last Verification: review_fix_workflow_yaml_parse_and_bash_syntax_passed
 - Current Stop Condition: push_tag_release_management_html_upload_require_user_authorization
-- Next Step: 等待用户明确授权后端 / 前端 `dev` 与 `master` 推送、tag / release 与 management.html 上传；未授权前不得继续。
+- Next Step: 等待用户明确授权后端 / 前端 `dev` 与 `master` 推送、tag / release 与 management.html 上传；未授权前不得继续。若授权前上游再次漂移，先执行 FRESHNESS 并按计划停止刷新。
 - Updated At: 2026-06-17 HKT
 
 ### 2026-06-12 11:59 HKT 新建联合上游同步任务
@@ -146,3 +146,11 @@
 - Verification: 后端合入前 freshness 为 `upstream/main=origin/main=8d2c00c107b2`、tag `v7.2.12`；前端合入前 freshness 为 `upstream/main=origin/main=b0db1dfd5da5`、tag `v1.16.7`。后端 `dev=cec8c1476a00`，`master=475dadf6236c`，backup `backup/pre-merge-2026-06-17-c9fa502d=c9fa502d85b8`；前端 `dev=b38985210ce8`，`master=4d46037b4dce`，backup `backup/pre-merge-2026-06-17-c54efc0e=c54efc0e1ffc`。后端 unmerged/conflict-marker checks 均为空；重建 Docker builder 后执行 `go test ./...` 与 `go build -o test-output ./cmd/server && rm test-output` exit 0。前端 `git merge-base --is-ancestor a02ebbcbf69549b87e81054151eba02d1ade59cb master` exit 0，`bun install --frozen-lockfile` exit 0，`bun run build` exit 0。
 - Result: 两仓本地 `master` 已合入已验证的 `dev`；后端 `master` ahead `origin/master` 213，前端 `master` ahead `origin/master` 156；未执行任何 push、tag、release、management.html 上传或凭证写入。
 - Next: 停在 push / release 授权门禁。后续若用户授权推送，需先再次执行 FRESHNESS；如上游漂移则停止并刷新计划 / findings。
+
+### 2026-06-17 HKT 独立评审发现项修复
+
+- Action: 按用户要求处理本次独立评审发现的问题。将 `master` 上的最新 `.agents` master 验证记录 cherry-pick 回 `dev`；修复 `.github/workflows/rebuild-release-history.yml`，使 release history rebuild 对旧提交继续使用 GoReleaser，对无 `.goreleaser.yml` 的新提交使用直接 `go build` fallback 生成 Linux amd64 默认包、no-plugin 包和 checksums；随后从 `dev` 合回本地 `master`。
+- Files: `.github/workflows/rebuild-release-history.yml`; `.agents/tasks/20260612-sync-upstream-v7-fork-customizations/evidence/master-merge-verification.md`; `.agents/tasks/20260612-sync-upstream-v7-fork-customizations/evidence/review-fixes-2026-06-17.md`; `.agents/tasks/20260612-sync-upstream-v7-fork-customizations/progress.md`; `.agents/tasks/20260612-sync-upstream-v7-fork-customizations/handoff.md`
+- Verification: `python3` + `yaml.safe_load(.github/workflows/rebuild-release-history.yml)` exit 0；从 YAML 解析出 `Rebuild release history` run block 后执行 `bash -n /tmp/rebuild-release-history-run.sh` exit 0；`git diff --check` exit 0；首次合并 review fix 后 `git diff --name-status dev..master` 为空。
+- Result: RFX-1 / RFX-2 均已采纳并本地修复；未执行任何 push、tag、release、management.html 上传或凭证写入。
+- Next: 将本轮 review-fix evidence / progress / handoff 从 `dev` 再合回本地 `master`，随后执行完成前验证；仍停在远端推送与发布授权门禁。
