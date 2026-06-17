@@ -161,4 +161,4 @@
 - Files: `.github/workflows/rebuild-release-history.yml`; `.agents/tasks/20260612-sync-upstream-v7-fork-customizations/evidence/release-history-fallback-assets-2026-06-17.md`; `.agents/tasks/20260612-sync-upstream-v7-fork-customizations/progress.md`; `.agents/tasks/20260612-sync-upstream-v7-fork-customizations/handoff.md`
 - Verification: `python3` + `yaml.safe_load(.github/workflows/rebuild-release-history.yml)` exit 0；从 YAML 解析出 `Rebuild release history` run block 后执行 `bash -n /tmp/rebuild-release-history-run.sh` exit 0；`git diff --check` exit 0；在 `cliproxyapi-upstream-merge-builder` 容器中用 Go `1.26.4` 实际执行 fallback 构建，产出 10 个 archive 资产与 `checksums.txt` 后清理 `dist/`，命令 exit 0。
 - Result: release-history fallback 不再只发布 linux amd64 子集；本地未执行 push、tag、release、management.html 上传或凭证写入。
-- Next: 本轮 fallback 资产补全需随 `dev` 合回本地 `master` 并完成最终静态验证；仍停在远端推送与发布授权门禁。
+- Next: 本轮 fallback 资产补全已随 `dev` 合回本地 `master` 并完成最终静态验证；仍停在远端推送与发布授权门禁。
