@@ -4,12 +4,12 @@
 
 - Plan Path: `.agents/tasks/20260612-sync-upstream-v7-fork-customizations/plans/2026-06-12-sync-upstream-v7-fork-customizations-implementation-plan.md`
 - Execution Route: ulw_governed
-- Current Task: 后端已刷新吸收到 `upstream/main@2884a67e` / `v7.2.9` 并通过任务 4/5/6 验证，等待用户确认进入前端任务 7
-- Task Status: task_6_verified_v7.2.9_checkpoint_waiting_user_confirmation
-- Last Verification: backend_task_6_go_test_all_build_and_docker_build_passed_for_2884a67e
-- Current Stop Condition: checkpoint_after_refreshed_task_6_waiting_user_confirmation
-- Next Step: 用户确认后进入前端任务 7；进入任何前端 merge 前必须再次执行 FRESHNESS 并创建 backup 分支或 tag。
-- Updated At: 2026-06-16 HKT
+- Current Task: 任务 11 已完成本地 `dev -> master` 合入与 master 后验证，停在 push / release 授权门禁
+- Task Status: task_11_master_merged_waiting_push_release_authorization
+- Last Verification: backend_master_go_test_build_passed_and_frontend_master_frozen_build_passed
+- Current Stop Condition: push_tag_release_management_html_upload_require_user_authorization
+- Next Step: 等待用户明确授权后端 / 前端 `dev` 与 `master` 推送、tag / release 与 management.html 上传；未授权前不得继续。
+- Updated At: 2026-06-17 HKT
 
 ### 2026-06-12 11:59 HKT 新建联合上游同步任务
 
@@ -138,3 +138,11 @@
 - Verification: 第一次 `git push origin upstream/main:main` 在写入前因连接关闭失败；第二次成功 `907e3493..2884a67e upstream/main -> main`；本地 `main` 对齐 `origin/main`; `git diff --binary --full-index 907e3493..2884a67e | git apply --check --index` exit 0; `git apply --index` exit 0; container `gofmt` over staged existing Go files exit 0; `git diff --cached --check` exit 0; `git diff --name-only --diff-filter=U` empty; `rg -n '^<<<<<<<|^=======|^>>>>>>>'` empty; fork 面板源仍为 `wenxi96/Cli-Proxy-API-Management-Center`; GoReleaser 无引用; AMP 搜索仅剩 `removeMapKey(root, "ampcode")` 迁移清理和无关 `API_RESPONSE_TIMESTAMP`; container `go test ./internal/managementasset ./cmd/server ./internal/watcher/diff` exit 0; container `go test ./sdk/cliproxy/... ./internal/api/...` exit 0; container `go test ./...` exit 0; container `go build -o test-output ./cmd/server && rm test-output` exit 0; `docker build --progress=plain -t cliproxyapi-upstream-merge-verify .` exit 0; 最终 FRESHNESS 后端 `2884a67ed02a / 2884a67ed02a / f52451d8ac42 / 0 0 / 90 198 / 17`，前端 `b0db1dfd5da5 / b0db1dfd5da5 / a02ebbcbf695 / 0 0 / 58 153 / 60`。
 - Result: 后端任务 4/5/6 已刷新到 `v7.2.9` 并重新验证通过；当前仍 staged 未提交，未 push dev、未合入 master、未 release、未写凭证。
 - Next: 在 refreshed task 6 checkpoint 停下等待用户确认；确认后进入前端任务 7，开始前再次执行两仓 FRESHNESS 并创建前端 backup 分支或 tag。
+
+### 2026-06-17 HKT 任务 11 本地 master 合入与验证
+
+- Action: 用户同意 master 合入后，重新执行两仓 FRESHNESS 并确认无上游漂移；提交两仓 `dev` merge 结果，创建 master 合入前 backup anchor，并本地合入 `dev -> master`。
+- Files: `.agents/tasks/20260612-sync-upstream-v7-fork-customizations/evidence/master-merge-verification.md`; `.agents/tasks/20260612-sync-upstream-v7-fork-customizations/progress.md`; `.agents/tasks/20260612-sync-upstream-v7-fork-customizations/handoff.md`
+- Verification: 后端合入前 freshness 为 `upstream/main=origin/main=8d2c00c107b2`、tag `v7.2.12`；前端合入前 freshness 为 `upstream/main=origin/main=b0db1dfd5da5`、tag `v1.16.7`。后端 `dev=cec8c1476a00`，`master=475dadf6236c`，backup `backup/pre-merge-2026-06-17-c9fa502d=c9fa502d85b8`；前端 `dev=b38985210ce8`，`master=4d46037b4dce`，backup `backup/pre-merge-2026-06-17-c54efc0e=c54efc0e1ffc`。后端 unmerged/conflict-marker checks 均为空；重建 Docker builder 后执行 `go test ./...` 与 `go build -o test-output ./cmd/server && rm test-output` exit 0。前端 `git merge-base --is-ancestor a02ebbcbf69549b87e81054151eba02d1ade59cb master` exit 0，`bun install --frozen-lockfile` exit 0，`bun run build` exit 0。
+- Result: 两仓本地 `master` 已合入已验证的 `dev`；后端 `master` ahead `origin/master` 213，前端 `master` ahead `origin/master` 156；未执行任何 push、tag、release、management.html 上传或凭证写入。
+- Next: 停在 push / release 授权门禁。后续若用户授权推送，需先再次执行 FRESHNESS；如上游漂移则停止并刷新计划 / findings。
