@@ -375,9 +375,7 @@ func ConvertOpenAIResponsesRequestToGemini(modelName string, inputRawJSON []byte
 	contents := gjson.GetBytes(out, "contents")
 	if contents.Exists() && contents.IsArray() {
 		arr := contents.Array()
-		if len(arr) > 0 &&
-			arr[len(arr)-1].Get("role").String() == "model" &&
-			!geminiContentHasThoughtPart(arr[len(arr)-1]) {
+		if len(arr) > 0 && arr[len(arr)-1].Get("role").String() == "model" && isTrailingModelPrefill(arr[len(arr)-1]) {
 			out, _ = sjson.DeleteBytes(out, fmt.Sprintf("contents.%d", len(arr)-1))
 		}
 	}
@@ -473,15 +471,28 @@ func openAIResponsesGeminiThoughtSignature(rawSignature string) string {
 	return sigcompat.GeminiReplaySignatureOrBypass(rawSignature, sigcompat.SignatureBlockKindGeminiModelPart)
 }
 
-func geminiContentHasThoughtPart(content gjson.Result) bool {
+func isTrailingModelPrefill(content gjson.Result) bool {
 	parts := content.Get("parts")
 	if !parts.Exists() || !parts.IsArray() {
 		return false
 	}
-	for _, part := range parts.Array() {
+
+	partArray := parts.Array()
+	if len(partArray) == 0 {
+		return false
+	}
+
+	for _, part := range partArray {
 		if part.Get("thought").Bool() || part.Get("thoughtSignature").String() != "" {
-			return true
+			return false
+		}
+		if part.Get("functionCall").Exists() || part.Get("functionResponse").Exists() {
+			return false
+		}
+		if part.Get("text").String() == "" {
+			return false
 		}
 	}
-	return false
+
+	return true
 }
