@@ -26,6 +26,8 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.UsageStatisticsPersistIntervalSeconds = 30
 	cfg.RedisUsageQueueRetentionSeconds = 60
 	cfg.DisableCooling = false
+	cfg.SaveCooldownStatus = false
+	cfg.TransientErrorCooldownSeconds = 0
 	cfg.DisableImageGeneration = DisableImageGenerationOff
 	cfg.Pprof.Enable = false
 	cfg.Pprof.Addr = DefaultPprofAddr
