@@ -437,11 +437,10 @@ func (s *Service) registerModelRefreshCallback() {
 	})
 }
 
-// newDefaultAuthManager creates a default authentication manager with all supported providers.
+// newDefaultAuthManager creates a default authentication manager with supported OAuth providers.
 func newDefaultAuthManager() *sdkAuth.Manager {
 	return sdkAuth.NewManager(
 		sdkAuth.GetTokenStore(),
-		sdkAuth.NewGeminiAuthenticator(),
 		sdkAuth.NewCodexAuthenticator(),
 		sdkAuth.NewClaudeAuthenticator(),
 		sdkAuth.NewXAIAuthenticator(),
@@ -1050,11 +1049,16 @@ func openAICompatInfoFromAuth(a *coreauth.Auth) (providerKey string, compatName 
 			if providerKey == "" {
 				providerKey = compatName
 			}
-			return strings.ToLower(providerKey), compatName, true
+			return util.OpenAICompatibleProviderKey(providerKey), compatName, true
 		}
 	}
 	if strings.EqualFold(strings.TrimSpace(a.Provider), "openai-compatibility") {
-		return "openai-compatibility", strings.TrimSpace(a.Label), true
+		compatName = strings.TrimSpace(a.Label)
+		providerKey = compatName
+		if providerKey == "" {
+			providerKey = "openai-compatibility"
+		}
+		return util.OpenAICompatibleProviderKey(providerKey), compatName, true
 	}
 	return "", "", false
 }
@@ -1150,7 +1154,6 @@ func baselineExecutorAuths() []*coreauth.Auth {
 		"claude",
 		"gemini",
 		"vertex",
-		"gemini-cli",
 		"aistudio",
 		"antigravity",
 		"kimi",
@@ -1222,8 +1225,6 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 		s.coreManager.RegisterExecutor(executor.NewGeminiExecutor(s.cfg))
 	case "vertex":
 		s.coreManager.RegisterExecutor(executor.NewGeminiVertexExecutor(s.cfg))
-	case "gemini-cli":
-		s.coreManager.RegisterExecutor(executor.NewGeminiCLIExecutor(s.cfg))
 	case "aistudio":
 		if s.wsGateway != nil {
 			s.coreManager.RegisterExecutor(executor.NewAIStudioExecutor(s.cfg, a.ID, s.wsGateway))
@@ -1580,7 +1581,6 @@ func forceHomeRuntimeConfig(cfg *config.Config) {
 	cfg.DisableCooling = true
 	cfg.SaveCooldownStatus = false
 	cfg.WebsocketAuth = false
-	cfg.EnableGeminiCLIEndpoint = false
 	cfg.RemoteManagement.AllowRemote = false
 	cfg.RemoteManagement.DisableControlPanel = true
 }
@@ -2067,12 +2067,6 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 			authKind = "apikey"
 		}
 	}
-	if a.Attributes != nil {
-		if v := strings.TrimSpace(a.Attributes["gemini_virtual_primary"]); strings.EqualFold(v, "true") {
-			GlobalModelRegistry().UnregisterClient(a.ID)
-			return
-		}
-	}
 	// Unregister legacy client ID (if present) to avoid double counting
 	if a.Runtime != nil {
 		if idGetter, ok := a.Runtime.(interface{ GetClientID() string }); ok {
@@ -2121,9 +2115,6 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 				excluded = entry.ExcludedModels
 			}
 		}
-		models = applyExcludedModels(models, excluded)
-	case "gemini-cli":
-		models = registry.GetGeminiCLIModels()
 		models = applyExcludedModels(models, excluded)
 	case "aistudio":
 		models = registry.GetAIStudioModels()
