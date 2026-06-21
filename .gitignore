@@ -25,6 +25,7 @@ static/*
 
 # Authentication data
 auths/*
+/auths
 !auths/.gitkeep
 
 # Documentation
@@ -43,6 +44,7 @@ GEMINI.md
 .codex
 .codex/*
 .claude/*
+.claude
 .gemini/*
 .serena/*
 .agent/*
