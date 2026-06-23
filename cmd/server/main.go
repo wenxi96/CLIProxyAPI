@@ -22,6 +22,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cmd"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/homeplugins"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
@@ -309,6 +310,13 @@ func main() {
 			return
 		}
 		cfg = applyHomeRuntimeDefaults(parsed, homeCfg)
+		ctxHomePlugins, cancelHomePlugins := context.WithTimeout(context.Background(), 30*time.Second)
+		errHomePlugins := homeplugins.Sync(ctxHomePlugins, cfg, pluginHost)
+		cancelHomePlugins()
+		if errHomePlugins != nil {
+			log.Errorf("failed to fetch plugins from home: %v", errHomePlugins)
+			return
+		}
 
 		// Keep a non-empty config path for downstream components (log paths, management assets, etc),
 		// but do not require the file to exist when loading config from home.

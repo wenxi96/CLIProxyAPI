@@ -17,9 +17,9 @@ func isRuntimeOnlyAuth(auth *Auth) bool {
 	return strings.EqualFold(strings.TrimSpace(auth.Attributes["runtime_only"]), "true")
 }
 
-func (m *Manager) autoDisableAuthFileOnZeroQuotaEnabled() bool {
+func (m *Manager) autoDisableAuthFileOnLowQuotaEnabled() bool {
 	cfg := m.CurrentConfig()
-	return cfg != nil && cfg.QuotaExceeded.AutoDisableAuthFileOnZeroQuota
+	return cfg != nil && cfg.QuotaExceeded.AutoDisableAuthFileOnLowQuota
 }
 
 func (m *Manager) tryEnqueueQuotaCheck(authID string) {
@@ -39,7 +39,7 @@ func (m *Manager) tryEnqueueQuotaCheck(authID string) {
 	if !ok || snapshot == nil {
 		return
 	}
-	if !m.autoDisableAuthFileOnZeroQuotaEnabled() && !scopedPoolEnabledForAuth(m.CurrentConfig(), snapshot) {
+	if !m.autoDisableAuthFileOnLowQuotaEnabled() && !scopedPoolEnabledForAuth(m.CurrentConfig(), snapshot) {
 		return
 	}
 
@@ -164,7 +164,7 @@ func (m *Manager) runQuotaCheck(authID string) {
 }
 
 func (m *Manager) applyAutoDisableFromQuotaCheck(authID string, result QuotaCheckResult) {
-	if m == nil || !m.autoDisableAuthFileOnZeroQuotaEnabled() {
+	if m == nil || !m.autoDisableAuthFileOnLowQuotaEnabled() {
 		return
 	}
 

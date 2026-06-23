@@ -98,8 +98,8 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.QuotaExceeded.SwitchPreviewModel != newCfg.QuotaExceeded.SwitchPreviewModel {
 		changes = append(changes, fmt.Sprintf("quota-exceeded.switch-preview-model: %t -> %t", oldCfg.QuotaExceeded.SwitchPreviewModel, newCfg.QuotaExceeded.SwitchPreviewModel))
 	}
-	if oldCfg.QuotaExceeded.AutoDisableAuthFileOnZeroQuota != newCfg.QuotaExceeded.AutoDisableAuthFileOnZeroQuota {
-		changes = append(changes, fmt.Sprintf("quota-exceeded.auto-disable-auth-file-on-zero-quota: %t -> %t", oldCfg.QuotaExceeded.AutoDisableAuthFileOnZeroQuota, newCfg.QuotaExceeded.AutoDisableAuthFileOnZeroQuota))
+	if oldCfg.QuotaExceeded.AutoDisableAuthFileOnLowQuota != newCfg.QuotaExceeded.AutoDisableAuthFileOnLowQuota {
+		changes = append(changes, fmt.Sprintf("quota-exceeded.auto-disable-auth-file-on-low-quota: %t -> %t", oldCfg.QuotaExceeded.AutoDisableAuthFileOnLowQuota, newCfg.QuotaExceeded.AutoDisableAuthFileOnLowQuota))
 	}
 	if oldCfg.QuotaExceeded.AutoDisableAuthFileQuotaThresholdPercent != newCfg.QuotaExceeded.AutoDisableAuthFileQuotaThresholdPercent {
 		changes = append(changes, fmt.Sprintf("quota-exceeded.auto-disable-auth-file-quota-threshold-percent: %d -> %d", oldCfg.QuotaExceeded.AutoDisableAuthFileQuotaThresholdPercent, newCfg.QuotaExceeded.AutoDisableAuthFileQuotaThresholdPercent))

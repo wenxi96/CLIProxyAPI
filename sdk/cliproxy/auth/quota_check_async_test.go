@@ -63,7 +63,7 @@ func TestMarkResult_EnqueuesQuotaCheckAsynchronously(t *testing.T) {
 	mgr.SetQuotaChecker(checker)
 	mgr.SetConfig(&internalconfig.Config{
 		QuotaExceeded: internalconfig.QuotaExceeded{
-			AutoDisableAuthFileOnZeroQuota: true,
+			AutoDisableAuthFileOnLowQuota: true,
 		},
 	})
 
@@ -116,7 +116,7 @@ func TestMarkResult_DeduplicatesConcurrentQuotaChecksPerAuth(t *testing.T) {
 	mgr.SetQuotaChecker(checker)
 	mgr.SetConfig(&internalconfig.Config{
 		QuotaExceeded: internalconfig.QuotaExceeded{
-			AutoDisableAuthFileOnZeroQuota: true,
+			AutoDisableAuthFileOnLowQuota: true,
 		},
 	})
 
@@ -170,7 +170,7 @@ func TestMarkResult_AutoDisablesAuthAfterConfirmedZeroQuota(t *testing.T) {
 	mgr.SetQuotaChecker(checker)
 	mgr.SetConfig(&internalconfig.Config{
 		QuotaExceeded: internalconfig.QuotaExceeded{
-			AutoDisableAuthFileOnZeroQuota: true,
+			AutoDisableAuthFileOnLowQuota: true,
 		},
 	})
 
@@ -261,7 +261,7 @@ func TestMarkResult_DoesNotEnqueueQuotaCheckForTransientStreamError(t *testing.T
 	mgr.SetQuotaChecker(checker)
 	mgr.SetConfig(&internalconfig.Config{
 		QuotaExceeded: internalconfig.QuotaExceeded{
-			AutoDisableAuthFileOnZeroQuota: true,
+			AutoDisableAuthFileOnLowQuota: true,
 		},
 	})
 
@@ -309,7 +309,7 @@ func TestMarkResult_AutoDisablesAuthOnThresholdHit(t *testing.T) {
 	mgr.SetQuotaChecker(checker)
 	mgr.SetConfig(&internalconfig.Config{
 		QuotaExceeded: internalconfig.QuotaExceeded{
-			AutoDisableAuthFileOnZeroQuota:           true,
+			AutoDisableAuthFileOnLowQuota:            true,
 			AutoDisableAuthFileQuotaThresholdPercent: 10,
 		},
 	})
@@ -367,7 +367,7 @@ func TestMarkResult_DoesNotDisableOnThresholdWhenAboveThreshold(t *testing.T) {
 	mgr.SetQuotaChecker(checker)
 	mgr.SetConfig(&internalconfig.Config{
 		QuotaExceeded: internalconfig.QuotaExceeded{
-			AutoDisableAuthFileOnZeroQuota:           true,
+			AutoDisableAuthFileOnLowQuota:            true,
 			AutoDisableAuthFileQuotaThresholdPercent: 10,
 		},
 	})
@@ -415,7 +415,7 @@ func TestMarkResult_DoesNotDisableOnThresholdWhenRemainingPercentNil(t *testing.
 	mgr.SetQuotaChecker(checker)
 	mgr.SetConfig(&internalconfig.Config{
 		QuotaExceeded: internalconfig.QuotaExceeded{
-			AutoDisableAuthFileOnZeroQuota:           true,
+			AutoDisableAuthFileOnLowQuota:            true,
 			AutoDisableAuthFileQuotaThresholdPercent: 10,
 		},
 	})
@@ -463,7 +463,7 @@ func TestMarkResult_DisablesOnZeroThresholdOnlyWhenExhausted(t *testing.T) {
 	mgr.SetQuotaChecker(checker)
 	mgr.SetConfig(&internalconfig.Config{
 		QuotaExceeded: internalconfig.QuotaExceeded{
-			AutoDisableAuthFileOnZeroQuota:           true,
+			AutoDisableAuthFileOnLowQuota:            true,
 			AutoDisableAuthFileQuotaThresholdPercent: 0, // Zero threshold = legacy behavior
 		},
 	})
@@ -622,7 +622,7 @@ func TestMarkResult_UsesUpdatedThresholdConfigForNextQuotaCheck(t *testing.T) {
 	mgr.SetQuotaChecker(checker)
 	mgr.SetConfig(&internalconfig.Config{
 		QuotaExceeded: internalconfig.QuotaExceeded{
-			AutoDisableAuthFileOnZeroQuota:           true,
+			AutoDisableAuthFileOnLowQuota:            true,
 			AutoDisableAuthFileQuotaThresholdPercent: 0,
 		},
 	})
@@ -658,7 +658,7 @@ func TestMarkResult_UsesUpdatedThresholdConfigForNextQuotaCheck(t *testing.T) {
 
 	mgr.SetConfig(&internalconfig.Config{
 		QuotaExceeded: internalconfig.QuotaExceeded{
-			AutoDisableAuthFileOnZeroQuota:           true,
+			AutoDisableAuthFileOnLowQuota:            true,
 			AutoDisableAuthFileQuotaThresholdPercent: 10,
 		},
 	})
@@ -682,7 +682,7 @@ func TestMarkResult_DeduplicatesConcurrentThresholdQuotaChecks(t *testing.T) {
 	mgr.SetQuotaChecker(checker)
 	mgr.SetConfig(&internalconfig.Config{
 		QuotaExceeded: internalconfig.QuotaExceeded{
-			AutoDisableAuthFileOnZeroQuota:           true,
+			AutoDisableAuthFileOnLowQuota:            true,
 			AutoDisableAuthFileQuotaThresholdPercent: 10,
 		},
 	})
@@ -741,7 +741,7 @@ func TestMarkResult_AutoDisableThresholdAppliesWhenFillFirstDisablesScopedPool(t
 	mgr.SetQuotaChecker(checker)
 	mgr.SetConfig(&internalconfig.Config{
 		QuotaExceeded: internalconfig.QuotaExceeded{
-			AutoDisableAuthFileOnZeroQuota:           true,
+			AutoDisableAuthFileOnLowQuota:            true,
 			AutoDisableAuthFileQuotaThresholdPercent: 10,
 		},
 		Routing: internalconfig.RoutingConfig{
@@ -798,7 +798,7 @@ func TestMarkResult_AutoDisableThresholdTakesPriorityOverScopedPoolLowQuota(t *t
 	mgr.SetQuotaChecker(checker)
 	mgr.SetConfig(&internalconfig.Config{
 		QuotaExceeded: internalconfig.QuotaExceeded{
-			AutoDisableAuthFileOnZeroQuota:           true,
+			AutoDisableAuthFileOnLowQuota:            true,
 			AutoDisableAuthFileQuotaThresholdPercent: 10,
 		},
 		Routing: internalconfig.RoutingConfig{

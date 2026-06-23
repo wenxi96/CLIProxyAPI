@@ -32,6 +32,8 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.Pprof.Enable = false
 	cfg.Pprof.Addr = DefaultPprofAddr
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
+	cfg.QuotaExceeded.SwitchProject = true
+	cfg.QuotaExceeded.SwitchPreviewModel = true
 
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config payload: %w", err)

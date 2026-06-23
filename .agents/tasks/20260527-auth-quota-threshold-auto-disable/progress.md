@@ -162,3 +162,54 @@
 ### Next
 
 - 代码实现完成，可以提交
+
+## 2026-06-22 API 兼容与任务记录修正
+
+### Action
+
+根据当前审核结论，补回旧 `auto-disable-auth-file-on-zero-quota` 管理 API 路由兼容，并修正任务文档中“保留旧字段作为总开关”的表述为“新命名 + 旧配置/API 兼容”。
+
+### Files
+
+- `internal/api/server.go`
+- `internal/api/server_test.go`
+- `.agents/tasks/20260527-auth-quota-threshold-auto-disable/task.md`
+- `.agents/tasks/20260527-auth-quota-threshold-auto-disable/findings.md`
+- `.agents/tasks/20260527-auth-quota-threshold-auto-disable/handoff.md`
+- `.agents/tasks/20260527-auth-quota-threshold-auto-disable/progress.md`
+
+### Verification
+
+- Docker builder `go test ./internal/api ./internal/api/handlers/management ./internal/config ./internal/watcher/diff ./sdk/cliproxy/auth` 通过。
+- Docker builder 中配置 `git config --global --add safe.directory /src` 后，`go build -o test-output ./cmd/server && rm test-output` 通过。
+
+### Result
+
+- 旧管理 API 路由恢复注册，委托到新 low-quota handler。
+- 任务记录已补充字段重命名决策与旧端点兼容策略。
+
+### Next
+
+- 运行聚焦后端验证，确认兼容路由、管理 handler、配置兼容层和构建均通过。
+
+## 2026-06-22 治理文档命名一致性复核
+
+### Action
+
+根据当前上游同步修复后的实现重新核对任务治理文档，修正历史 plan / spec 中仍将旧 `auto-disable-auth-file-on-zero-quota` 描述为“总开关”的过期表述。
+
+### Files
+
+- `.agents/tasks/20260527-auth-quota-threshold-auto-disable/plans/2026-05-27-auth-quota-threshold-auto-disable-implementation-plan.md`
+- `.agents/tasks/20260527-auth-quota-threshold-auto-disable/specs/2026-05-27-auth-quota-threshold-auto-disable-design.md`
+- `.agents/tasks/20260527-auth-quota-threshold-auto-disable/progress.md`
+
+### Verification
+
+- `rg` 复核 `.agents` 与当前代码中的 `auto-disable-auth-file-on-zero-quota` / `auto-disable-auth-file-on-low-quota` 命名分布。
+- 当前结论：`auto-disable-auth-file-on-low-quota` 是主配置键与新管理 API 命名；旧 `auto-disable-auth-file-on-zero-quota` 仅作为兼容配置输入和旧管理 API 路由保留；保存配置时收敛为 low-quota key。
+
+### Result
+
+- plan / spec 已与当前实现和测试契约对齐。
+- 旧零额度历史任务 `20260408-auth-zero-quota-auto-disable` 未改写，仍作为历史能力记录保留。

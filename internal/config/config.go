@@ -331,9 +331,9 @@ type QuotaExceeded struct {
 	// SwitchPreviewModel indicates whether to automatically switch to a preview model when a quota is exceeded.
 	SwitchPreviewModel bool `yaml:"switch-preview-model" json:"switch-preview-model"`
 
-	// AutoDisableAuthFileOnZeroQuota indicates whether file-backed auths with real quota inspection
-	// should be automatically disabled after an async confirmation that remaining quota is zero.
-	AutoDisableAuthFileOnZeroQuota bool `yaml:"auto-disable-auth-file-on-zero-quota" json:"auto-disable-auth-file-on-zero-quota"`
+	// AutoDisableAuthFileOnLowQuota indicates whether file-backed auths with real quota inspection
+	// should be automatically disabled after the configured low-quota condition is confirmed.
+	AutoDisableAuthFileOnLowQuota bool `yaml:"auto-disable-auth-file-on-low-quota" json:"auto-disable-auth-file-on-low-quota"`
 
 	// AutoDisableAuthFileQuotaThresholdPercent sets a global quota threshold (0..50) for auto-disabling auth files.
 	// When set to a value greater than 0, auth files will be disabled when remaining quota percent is less than or equal to this threshold.
@@ -343,6 +343,73 @@ type QuotaExceeded struct {
 	// AntigravityCredits indicates whether to retry Antigravity quota_exhausted 429s once
 	// on the same credential with enabledCreditTypes=["GOOGLE_ONE_AI"].
 	AntigravityCredits bool `yaml:"antigravity-credits" json:"antigravity-credits"`
+}
+
+func (q *QuotaExceeded) UnmarshalYAML(value *yaml.Node) error {
+	type quotaExceededYAML struct {
+		SwitchProject                            *bool `yaml:"switch-project"`
+		SwitchPreviewModel                       *bool `yaml:"switch-preview-model"`
+		AutoDisableAuthFileOnLowQuota            *bool `yaml:"auto-disable-auth-file-on-low-quota"`
+		AutoDisableAuthFileOnZeroQuotaLegacy     *bool `yaml:"auto-disable-auth-file-on-zero-quota"`
+		AutoDisableAuthFileQuotaThresholdPercent int   `yaml:"auto-disable-auth-file-quota-threshold-percent"`
+		AntigravityCredits                       bool  `yaml:"antigravity-credits"`
+	}
+	var raw quotaExceededYAML
+	if err := value.Decode(&raw); err != nil {
+		return err
+	}
+
+	if raw.SwitchProject != nil {
+		q.SwitchProject = *raw.SwitchProject
+	}
+	if raw.SwitchPreviewModel != nil {
+		q.SwitchPreviewModel = *raw.SwitchPreviewModel
+	}
+	if raw.AutoDisableAuthFileOnLowQuota != nil {
+		q.AutoDisableAuthFileOnLowQuota = *raw.AutoDisableAuthFileOnLowQuota
+	} else if raw.AutoDisableAuthFileOnZeroQuotaLegacy != nil {
+		q.AutoDisableAuthFileOnLowQuota = *raw.AutoDisableAuthFileOnZeroQuotaLegacy
+	}
+	q.AutoDisableAuthFileQuotaThresholdPercent = raw.AutoDisableAuthFileQuotaThresholdPercent
+	q.AntigravityCredits = raw.AntigravityCredits
+	return nil
+}
+
+func (q *QuotaExceeded) UnmarshalJSON(data []byte) error {
+	type quotaExceededJSON struct {
+		SwitchProject                            *bool `json:"switch-project"`
+		SwitchPreviewModel                       *bool `json:"switch-preview-model"`
+		AutoDisableAuthFileOnLowQuota            *bool `json:"auto-disable-auth-file-on-low-quota"`
+		AutoDisableAuthFileOnLowQuotaCamel       *bool `json:"autoDisableAuthFileOnLowQuota"`
+		AutoDisableAuthFileOnZeroQuotaLegacy     *bool `json:"auto-disable-auth-file-on-zero-quota"`
+		AutoDisableAuthFileOnZeroQuotaCamel      *bool `json:"autoDisableAuthFileOnZeroQuota"`
+		AutoDisableAuthFileQuotaThresholdPercent int   `json:"auto-disable-auth-file-quota-threshold-percent"`
+		AntigravityCredits                       bool  `json:"antigravity-credits"`
+	}
+	var raw quotaExceededJSON
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	if raw.SwitchProject != nil {
+		q.SwitchProject = *raw.SwitchProject
+	}
+	if raw.SwitchPreviewModel != nil {
+		q.SwitchPreviewModel = *raw.SwitchPreviewModel
+	}
+	switch {
+	case raw.AutoDisableAuthFileOnLowQuota != nil:
+		q.AutoDisableAuthFileOnLowQuota = *raw.AutoDisableAuthFileOnLowQuota
+	case raw.AutoDisableAuthFileOnLowQuotaCamel != nil:
+		q.AutoDisableAuthFileOnLowQuota = *raw.AutoDisableAuthFileOnLowQuotaCamel
+	case raw.AutoDisableAuthFileOnZeroQuotaLegacy != nil:
+		q.AutoDisableAuthFileOnLowQuota = *raw.AutoDisableAuthFileOnZeroQuotaLegacy
+	case raw.AutoDisableAuthFileOnZeroQuotaCamel != nil:
+		q.AutoDisableAuthFileOnLowQuota = *raw.AutoDisableAuthFileOnZeroQuotaCamel
+	}
+	q.AutoDisableAuthFileQuotaThresholdPercent = raw.AutoDisableAuthFileQuotaThresholdPercent
+	q.AntigravityCredits = raw.AntigravityCredits
+	return nil
 }
 
 // RoutingConfig configures how credentials are selected for requests.
@@ -774,6 +841,8 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.Pprof.Enable = false
 	cfg.Pprof.Addr = DefaultPprofAddr
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
+	cfg.QuotaExceeded.SwitchProject = true
+	cfg.QuotaExceeded.SwitchPreviewModel = true
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		if optional {
 			// In cloud deploy mode, if YAML parsing fails, return empty config instead of error.
@@ -1402,6 +1471,7 @@ func SaveConfigPreserveComments(configFile string, cfg *Config) error {
 	removeLegacyOpenAICompatAPIKeys(original.Content[0])
 	removeRemovedIntegrationKeys(original.Content[0])
 	removeLegacyGenerativeLanguageKeys(original.Content[0])
+	removeLegacyQuotaExceededKeys(original.Content[0])
 
 	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "oauth-excluded-models")
 	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "oauth-model-alias")
@@ -2190,4 +2260,19 @@ func removeLegacyAuthBlock(root *yaml.Node) {
 		return
 	}
 	removeMapKey(root, "auth")
+}
+
+func removeLegacyQuotaExceededKeys(root *yaml.Node) {
+	if root == nil || root.Kind != yaml.MappingNode {
+		return
+	}
+	idx := findMapKeyIndex(root, "quota-exceeded")
+	if idx < 0 || idx+1 >= len(root.Content) {
+		return
+	}
+	quotaExceeded := root.Content[idx+1]
+	if quotaExceeded == nil || quotaExceeded.Kind != yaml.MappingNode {
+		return
+	}
+	removeMapKey(quotaExceeded, "auto-disable-auth-file-on-zero-quota")
 }

@@ -6,7 +6,7 @@
 
 ## 范围
 
-- 保留 `quota-exceeded.auto-disable-auth-file-on-zero-quota` 作为自动禁用总开关
+- 自动禁用总开关以新命名 `quota-exceeded.auto-disable-auth-file-on-low-quota` 表达低额度语义，同时兼容读取旧配置键 `quota-exceeded.auto-disable-auth-file-on-zero-quota`
 - 新增全局阈值配置 `quota-exceeded.auto-disable-auth-file-quota-threshold-percent`
 - 扩展异步 quota check 后的自动禁用判断
 - 明确该能力对 `fill-first` 和 `round-robin` 都生效
@@ -32,4 +32,6 @@
 - `fill-first` 和 `round-robin` 下自动禁用阈值都生效
 - scoped-pool 阈值只影响 round-robin scoped-pool 池内剔除，不持久禁用
 - 同时命中 scoped-pool 阈值和自动禁用阈值时，最终状态为 `disabled`
+- 旧配置键 `auto-disable-auth-file-on-zero-quota` 可读取为新总开关值，保存时收敛到 `auto-disable-auth-file-on-low-quota`
+- 管理 API 新端点使用 `auto-disable-auth-file-on-low-quota`，旧 `auto-disable-auth-file-on-zero-quota` 端点继续兼容并委托到同一配置
 - 管理 API、示例配置、TUI 配置项、配置 diff 与测试同步更新

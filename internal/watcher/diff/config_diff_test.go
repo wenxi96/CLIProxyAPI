@@ -202,7 +202,7 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 		QuotaExceeded: config.QuotaExceeded{
 			SwitchProject:                            false,
 			SwitchPreviewModel:                       false,
-			AutoDisableAuthFileOnZeroQuota:           false,
+			AutoDisableAuthFileOnLowQuota:            false,
 			AutoDisableAuthFileQuotaThresholdPercent: 0,
 			AntigravityCredits:                       false,
 		},
@@ -233,7 +233,7 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 		QuotaExceeded: config.QuotaExceeded{
 			SwitchProject:                            true,
 			SwitchPreviewModel:                       true,
-			AutoDisableAuthFileOnZeroQuota:           true,
+			AutoDisableAuthFileOnLowQuota:            true,
 			AutoDisableAuthFileQuotaThresholdPercent: 10,
 			AntigravityCredits:                       true,
 		},
@@ -279,7 +279,7 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 	expectContains(t, details, "nonstream-keepalive-interval: 0 -> 5")
 	expectContains(t, details, "quota-exceeded.switch-project: false -> true")
 	expectContains(t, details, "quota-exceeded.switch-preview-model: false -> true")
-	expectContains(t, details, "quota-exceeded.auto-disable-auth-file-on-zero-quota: false -> true")
+	expectContains(t, details, "quota-exceeded.auto-disable-auth-file-on-low-quota: false -> true")
 	expectContains(t, details, "quota-exceeded.auto-disable-auth-file-quota-threshold-percent: 0 -> 10")
 	expectContains(t, details, "quota-exceeded.antigravity-credits: false -> true")
 	expectContains(t, details, "api-keys count: 1 -> 2")
@@ -308,7 +308,7 @@ func TestBuildConfigChangeDetails_AllBranches(t *testing.T) {
 		QuotaExceeded: config.QuotaExceeded{
 			SwitchProject:                            false,
 			SwitchPreviewModel:                       false,
-			AutoDisableAuthFileOnZeroQuota:           false,
+			AutoDisableAuthFileOnLowQuota:            false,
 			AutoDisableAuthFileQuotaThresholdPercent: 0,
 			AntigravityCredits:                       false,
 		},
@@ -363,7 +363,7 @@ func TestBuildConfigChangeDetails_AllBranches(t *testing.T) {
 		QuotaExceeded: config.QuotaExceeded{
 			SwitchProject:                            true,
 			SwitchPreviewModel:                       true,
-			AutoDisableAuthFileOnZeroQuota:           true,
+			AutoDisableAuthFileOnLowQuota:            true,
 			AutoDisableAuthFileQuotaThresholdPercent: 10,
 			AntigravityCredits:                       true,
 		},
@@ -426,7 +426,7 @@ func TestBuildConfigChangeDetails_AllBranches(t *testing.T) {
 	expectContains(t, changes, "ws-auth: false -> true")
 	expectContains(t, changes, "quota-exceeded.switch-project: false -> true")
 	expectContains(t, changes, "quota-exceeded.switch-preview-model: false -> true")
-	expectContains(t, changes, "quota-exceeded.auto-disable-auth-file-on-zero-quota: false -> true")
+	expectContains(t, changes, "quota-exceeded.auto-disable-auth-file-on-low-quota: false -> true")
 	expectContains(t, changes, "quota-exceeded.auto-disable-auth-file-quota-threshold-percent: 0 -> 10")
 	expectContains(t, changes, "quota-exceeded.antigravity-credits: false -> true")
 	expectContains(t, changes, "api-keys: values updated (count unchanged, redacted)")

@@ -22,7 +22,7 @@ func TestQuotaExceededAutoDisableConfigEndpoints(t *testing.T) {
 
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(configPath, []byte("quota-exceeded:\n  auto-disable-auth-file-on-zero-quota: false\n"), 0o600); err != nil {
+	if err := os.WriteFile(configPath, []byte("quota-exceeded:\n  auto-disable-auth-file-on-low-quota: false\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
@@ -31,8 +31,8 @@ func TestQuotaExceededAutoDisableConfigEndpoints(t *testing.T) {
 
 	recGet := httptest.NewRecorder()
 	ctxGet, _ := gin.CreateTestContext(recGet)
-	ctxGet.Request = httptest.NewRequest(http.MethodGet, "/v0/management/quota-exceeded/auto-disable-auth-file-on-zero-quota", nil)
-	h.GetAutoDisableAuthFileOnZeroQuota(ctxGet)
+	ctxGet.Request = httptest.NewRequest(http.MethodGet, "/v0/management/quota-exceeded/auto-disable-auth-file-on-low-quota", nil)
+	h.GetAutoDisableAuthFileOnLowQuota(ctxGet)
 
 	if recGet.Code != http.StatusOK {
 		t.Fatalf("GET status = %d, body=%s", recGet.Code, recGet.Body.String())
@@ -40,14 +40,14 @@ func TestQuotaExceededAutoDisableConfigEndpoints(t *testing.T) {
 
 	recPut := httptest.NewRecorder()
 	ctxPut, _ := gin.CreateTestContext(recPut)
-	ctxPut.Request = httptest.NewRequest(http.MethodPut, "/v0/management/quota-exceeded/auto-disable-auth-file-on-zero-quota", bytes.NewReader([]byte(`{"value":true}`)))
+	ctxPut.Request = httptest.NewRequest(http.MethodPut, "/v0/management/quota-exceeded/auto-disable-auth-file-on-low-quota", bytes.NewReader([]byte(`{"value":true}`)))
 	ctxPut.Request.Header.Set("Content-Type", "application/json")
-	h.PutAutoDisableAuthFileOnZeroQuota(ctxPut)
+	h.PutAutoDisableAuthFileOnLowQuota(ctxPut)
 
 	if recPut.Code != http.StatusOK {
 		t.Fatalf("PUT status = %d, body=%s", recPut.Code, recPut.Body.String())
 	}
-	if !cfg.QuotaExceeded.AutoDisableAuthFileOnZeroQuota {
+	if !cfg.QuotaExceeded.AutoDisableAuthFileOnLowQuota {
 		t.Fatal("expected config to be updated to true")
 	}
 

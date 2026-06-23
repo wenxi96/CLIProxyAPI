@@ -654,6 +654,11 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PATCH("/quota-exceeded/switch-preview-model", s.mgmt.PutSwitchPreviewModel)
 		mgmt.POST("/reset-quota", s.mgmt.ResetQuota)
 
+		mgmt.GET("/quota-exceeded/auto-disable-auth-file-on-low-quota", s.mgmt.GetAutoDisableAuthFileOnLowQuota)
+		mgmt.PUT("/quota-exceeded/auto-disable-auth-file-on-low-quota", s.mgmt.PutAutoDisableAuthFileOnLowQuota)
+		mgmt.PATCH("/quota-exceeded/auto-disable-auth-file-on-low-quota", s.mgmt.PutAutoDisableAuthFileOnLowQuota)
+
+		// Keep the legacy zero-quota endpoint names available for existing clients.
 		mgmt.GET("/quota-exceeded/auto-disable-auth-file-on-zero-quota", s.mgmt.GetAutoDisableAuthFileOnZeroQuota)
 		mgmt.PUT("/quota-exceeded/auto-disable-auth-file-on-zero-quota", s.mgmt.PutAutoDisableAuthFileOnZeroQuota)
 		mgmt.PATCH("/quota-exceeded/auto-disable-auth-file-on-zero-quota", s.mgmt.PutAutoDisableAuthFileOnZeroQuota)

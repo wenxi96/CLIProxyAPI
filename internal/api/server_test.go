@@ -241,6 +241,55 @@ func TestNewServerWithoutPluginHostLeavesHandlerInterceptorsDisabled(t *testing.
 	}
 }
 
+func TestManagementQuotaAutoDisableLegacyRouteCompatibility(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+
+	server := newTestServer(t)
+	if err := os.WriteFile(server.configFilePath, []byte("quota-exceeded:\n  auto-disable-auth-file-on-low-quota: false\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	doRequest := func(method, path, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer test-management-key")
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+		return rr
+	}
+
+	getRR := doRequest(http.MethodGet, "/v0/management/quota-exceeded/auto-disable-auth-file-on-zero-quota", "")
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("legacy GET status = %d, want %d body=%s", getRR.Code, http.StatusOK, getRR.Body.String())
+	}
+	var getPayload map[string]bool
+	if errUnmarshal := json.Unmarshal(getRR.Body.Bytes(), &getPayload); errUnmarshal != nil {
+		t.Fatalf("unmarshal legacy GET response: %v body=%s", errUnmarshal, getRR.Body.String())
+	}
+	if getPayload["auto-disable-auth-file-on-low-quota"] || getPayload["auto-disable-auth-file-on-zero-quota"] {
+		t.Fatalf("legacy GET payload = %#v, want both fields false", getPayload)
+	}
+
+	putRR := doRequest(http.MethodPut, "/v0/management/quota-exceeded/auto-disable-auth-file-on-zero-quota", `{"value":true}`)
+	if putRR.Code != http.StatusOK {
+		t.Fatalf("legacy PUT status = %d, want %d body=%s", putRR.Code, http.StatusOK, putRR.Body.String())
+	}
+	if !server.cfg.QuotaExceeded.AutoDisableAuthFileOnLowQuota {
+		t.Fatal("legacy PUT did not update low-quota auto-disable config")
+	}
+
+	patchRR := doRequest(http.MethodPatch, "/v0/management/quota-exceeded/auto-disable-auth-file-on-zero-quota", `{"value":false}`)
+	if patchRR.Code != http.StatusOK {
+		t.Fatalf("legacy PATCH status = %d, want %d body=%s", patchRR.Code, http.StatusOK, patchRR.Body.String())
+	}
+	if server.cfg.QuotaExceeded.AutoDisableAuthFileOnLowQuota {
+		t.Fatal("legacy PATCH did not update low-quota auto-disable config")
+	}
+}
+
 func TestManagementUsageRequiresManagementAuthAndPopsArray(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
 

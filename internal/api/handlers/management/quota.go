@@ -24,11 +24,23 @@ func (h *Handler) PutSwitchPreviewModel(c *gin.Context) {
 	h.updateBoolField(c, func(v bool) { h.cfg.QuotaExceeded.SwitchPreviewModel = v })
 }
 
-func (h *Handler) GetAutoDisableAuthFileOnZeroQuota(c *gin.Context) {
-	c.JSON(200, gin.H{"auto-disable-auth-file-on-zero-quota": h.cfg.QuotaExceeded.AutoDisableAuthFileOnZeroQuota})
+func (h *Handler) GetAutoDisableAuthFileOnLowQuota(c *gin.Context) {
+	enabled := h.cfg.QuotaExceeded.AutoDisableAuthFileOnLowQuota
+	c.JSON(200, gin.H{
+		"auto-disable-auth-file-on-low-quota":  enabled,
+		"auto-disable-auth-file-on-zero-quota": enabled,
+	})
 }
+func (h *Handler) PutAutoDisableAuthFileOnLowQuota(c *gin.Context) {
+	h.updateBoolField(c, func(v bool) { h.cfg.QuotaExceeded.AutoDisableAuthFileOnLowQuota = v })
+}
+
+func (h *Handler) GetAutoDisableAuthFileOnZeroQuota(c *gin.Context) {
+	h.GetAutoDisableAuthFileOnLowQuota(c)
+}
+
 func (h *Handler) PutAutoDisableAuthFileOnZeroQuota(c *gin.Context) {
-	h.updateBoolField(c, func(v bool) { h.cfg.QuotaExceeded.AutoDisableAuthFileOnZeroQuota = v })
+	h.PutAutoDisableAuthFileOnLowQuota(c)
 }
 
 // Auto-disable auth file quota threshold percent

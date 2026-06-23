@@ -48,20 +48,20 @@ GEMINI.md
 .gemini/*
 .serena/*
 .agent/*
-.agents
-.agents/*
-!.agents/README.md
+
+# Agent workspace transient files
+.agents/scratch/**
+!.agents/scratch/
+!.agents/scratch/.gitkeep
+.agents/workers/**
+!.agents/workers/
+!.agents/workers/.gitkeep
+.agents/agents/**
+!.agents/agents/
+!.agents/agents/.gitkeep
 
 # Local build/test scratch (Go cache, throwaway binaries, etc.)
 .tmp/
-!.agents/registry/
-!.agents/registry/**
-!.agents/tasks/
-!.agents/tasks/**
-!.agents/archive/
-!.agents/archive/**
-.agents/scratch/
-.agents/agents/
 .opencode/*
 .playwright-mcp/
 .idea/*
