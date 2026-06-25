@@ -107,6 +107,18 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.QuotaExceeded.AntigravityCredits != newCfg.QuotaExceeded.AntigravityCredits {
 		changes = append(changes, fmt.Sprintf("quota-exceeded.antigravity-credits: %t -> %t", oldCfg.QuotaExceeded.AntigravityCredits, newCfg.QuotaExceeded.AntigravityCredits))
 	}
+	if oldCfg.QuotaExceeded.ActiveQuotaRefresh.Enabled != newCfg.QuotaExceeded.ActiveQuotaRefresh.Enabled {
+		changes = append(changes, fmt.Sprintf("quota-exceeded.active-quota-refresh.enabled: %t -> %t", oldCfg.QuotaExceeded.ActiveQuotaRefresh.Enabled, newCfg.QuotaExceeded.ActiveQuotaRefresh.Enabled))
+	}
+	if oldCfg.QuotaExceeded.ActiveQuotaRefresh.ScanIntervalSeconds != newCfg.QuotaExceeded.ActiveQuotaRefresh.ScanIntervalSeconds {
+		changes = append(changes, fmt.Sprintf("quota-exceeded.active-quota-refresh.scan-interval-seconds: %d -> %d", oldCfg.QuotaExceeded.ActiveQuotaRefresh.ScanIntervalSeconds, newCfg.QuotaExceeded.ActiveQuotaRefresh.ScanIntervalSeconds))
+	}
+	if oldCfg.QuotaExceeded.ActiveQuotaRefresh.ActiveTTLSeconds != newCfg.QuotaExceeded.ActiveQuotaRefresh.ActiveTTLSeconds {
+		changes = append(changes, fmt.Sprintf("quota-exceeded.active-quota-refresh.active-ttl-seconds: %d -> %d", oldCfg.QuotaExceeded.ActiveQuotaRefresh.ActiveTTLSeconds, newCfg.QuotaExceeded.ActiveQuotaRefresh.ActiveTTLSeconds))
+	}
+	if oldCfg.QuotaExceeded.ActiveQuotaRefresh.Workers != newCfg.QuotaExceeded.ActiveQuotaRefresh.Workers {
+		changes = append(changes, fmt.Sprintf("quota-exceeded.active-quota-refresh.workers: %d -> %d", oldCfg.QuotaExceeded.ActiveQuotaRefresh.Workers, newCfg.QuotaExceeded.ActiveQuotaRefresh.Workers))
+	}
 
 	if oldCfg.Codex.IdentityConfuse != newCfg.Codex.IdentityConfuse {
 		changes = append(changes, fmt.Sprintf("codex.identity-confuse: %t -> %t", oldCfg.Codex.IdentityConfuse, newCfg.Codex.IdentityConfuse))

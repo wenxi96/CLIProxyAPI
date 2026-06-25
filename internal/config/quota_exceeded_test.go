@@ -83,3 +83,51 @@ func TestQuotaExceededLowQuotaKeyTakesPrecedenceOverLegacyAlias(t *testing.T) {
 		t.Fatalf("threshold = %d, want %d", got, MaxAutoDisableQuotaThresholdPercent)
 	}
 }
+
+func TestActiveQuotaRefreshConfigDefaults(t *testing.T) {
+	cfg, err := ParseConfigBytes([]byte(`quota-exceeded:
+  auto-disable-auth-file-on-low-quota: true
+`))
+	if err != nil {
+		t.Fatalf("ParseConfigBytes() error = %v", err)
+	}
+	active := cfg.QuotaExceeded.ActiveQuotaRefresh
+	if active.Enabled {
+		t.Fatal("active quota refresh should default to disabled")
+	}
+	if active.ScanIntervalSeconds != DefaultActiveQuotaRefreshScanSec {
+		t.Fatalf("scan interval = %d, want %d", active.ScanIntervalSeconds, DefaultActiveQuotaRefreshScanSec)
+	}
+	if active.ActiveTTLSeconds != DefaultActiveQuotaRefreshTTLSec {
+		t.Fatalf("active ttl = %d, want %d", active.ActiveTTLSeconds, DefaultActiveQuotaRefreshTTLSec)
+	}
+	if active.Workers != DefaultActiveQuotaRefreshWorkers {
+		t.Fatalf("workers = %d, want %d", active.Workers, DefaultActiveQuotaRefreshWorkers)
+	}
+}
+
+func TestActiveQuotaRefreshConfigParsesAndSanitizes(t *testing.T) {
+	cfg, err := ParseConfigBytes([]byte(`quota-exceeded:
+  active-quota-refresh:
+    enabled: true
+    scan-interval-seconds: 1
+    active-ttl-seconds: 10
+    workers: 0
+`))
+	if err != nil {
+		t.Fatalf("ParseConfigBytes() error = %v", err)
+	}
+	active := cfg.QuotaExceeded.ActiveQuotaRefresh
+	if !active.Enabled {
+		t.Fatal("active quota refresh enabled flag was not parsed")
+	}
+	if active.ScanIntervalSeconds != MinActiveQuotaRefreshScanSec {
+		t.Fatalf("scan interval = %d, want %d", active.ScanIntervalSeconds, MinActiveQuotaRefreshScanSec)
+	}
+	if active.ActiveTTLSeconds != MinActiveQuotaRefreshTTLSec {
+		t.Fatalf("active ttl = %d, want %d", active.ActiveTTLSeconds, MinActiveQuotaRefreshTTLSec)
+	}
+	if active.Workers != DefaultActiveQuotaRefreshWorkers {
+		t.Fatalf("workers = %d, want %d", active.Workers, DefaultActiveQuotaRefreshWorkers)
+	}
+}

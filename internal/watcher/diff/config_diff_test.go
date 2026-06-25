@@ -205,6 +205,12 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 			AutoDisableAuthFileOnLowQuota:            false,
 			AutoDisableAuthFileQuotaThresholdPercent: 0,
 			AntigravityCredits:                       false,
+			ActiveQuotaRefresh: config.ActiveQuotaRefreshConfig{
+				Enabled:             false,
+				ScanIntervalSeconds: 30,
+				ActiveTTLSeconds:    600,
+				Workers:             1,
+			},
 		},
 		ClaudeKey:        []config.ClaudeKey{{APIKey: "c1"}},
 		CodexKey:         []config.CodexKey{{APIKey: "x1"}},
@@ -236,6 +242,12 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 			AutoDisableAuthFileOnLowQuota:            true,
 			AutoDisableAuthFileQuotaThresholdPercent: 10,
 			AntigravityCredits:                       true,
+			ActiveQuotaRefresh: config.ActiveQuotaRefreshConfig{
+				Enabled:             true,
+				ScanIntervalSeconds: 60,
+				ActiveTTLSeconds:    900,
+				Workers:             2,
+			},
 		},
 		ClaudeKey: []config.ClaudeKey{
 			{APIKey: "c1", BaseURL: "http://new", ProxyURL: "http://p", Headers: map[string]string{"H": "1"}, ExcludedModels: []string{"a"}},
@@ -282,6 +294,10 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 	expectContains(t, details, "quota-exceeded.auto-disable-auth-file-on-low-quota: false -> true")
 	expectContains(t, details, "quota-exceeded.auto-disable-auth-file-quota-threshold-percent: 0 -> 10")
 	expectContains(t, details, "quota-exceeded.antigravity-credits: false -> true")
+	expectContains(t, details, "quota-exceeded.active-quota-refresh.enabled: false -> true")
+	expectContains(t, details, "quota-exceeded.active-quota-refresh.scan-interval-seconds: 30 -> 60")
+	expectContains(t, details, "quota-exceeded.active-quota-refresh.active-ttl-seconds: 600 -> 900")
+	expectContains(t, details, "quota-exceeded.active-quota-refresh.workers: 1 -> 2")
 	expectContains(t, details, "api-keys count: 1 -> 2")
 	expectContains(t, details, "claude-api-key count: 1 -> 2")
 	expectContains(t, details, "codex-api-key count: 1 -> 2")
@@ -311,6 +327,12 @@ func TestBuildConfigChangeDetails_AllBranches(t *testing.T) {
 			AutoDisableAuthFileOnLowQuota:            false,
 			AutoDisableAuthFileQuotaThresholdPercent: 0,
 			AntigravityCredits:                       false,
+			ActiveQuotaRefresh: config.ActiveQuotaRefreshConfig{
+				Enabled:             false,
+				ScanIntervalSeconds: 30,
+				ActiveTTLSeconds:    600,
+				Workers:             1,
+			},
 		},
 		GeminiKey: []config.GeminiKey{
 			{APIKey: "g-old", BaseURL: "http://g-old", ProxyURL: "http://gp-old", Headers: map[string]string{"A": "1"}},
@@ -366,6 +388,12 @@ func TestBuildConfigChangeDetails_AllBranches(t *testing.T) {
 			AutoDisableAuthFileOnLowQuota:            true,
 			AutoDisableAuthFileQuotaThresholdPercent: 10,
 			AntigravityCredits:                       true,
+			ActiveQuotaRefresh: config.ActiveQuotaRefreshConfig{
+				Enabled:             true,
+				ScanIntervalSeconds: 60,
+				ActiveTTLSeconds:    900,
+				Workers:             2,
+			},
 		},
 		GeminiKey: []config.GeminiKey{
 			{APIKey: "g-new", BaseURL: "http://g-new", ProxyURL: "http://gp-new", Headers: map[string]string{"A": "2"}, ExcludedModels: []string{"x", "y"}},
@@ -429,6 +457,10 @@ func TestBuildConfigChangeDetails_AllBranches(t *testing.T) {
 	expectContains(t, changes, "quota-exceeded.auto-disable-auth-file-on-low-quota: false -> true")
 	expectContains(t, changes, "quota-exceeded.auto-disable-auth-file-quota-threshold-percent: 0 -> 10")
 	expectContains(t, changes, "quota-exceeded.antigravity-credits: false -> true")
+	expectContains(t, changes, "quota-exceeded.active-quota-refresh.enabled: false -> true")
+	expectContains(t, changes, "quota-exceeded.active-quota-refresh.scan-interval-seconds: 30 -> 60")
+	expectContains(t, changes, "quota-exceeded.active-quota-refresh.active-ttl-seconds: 600 -> 900")
+	expectContains(t, changes, "quota-exceeded.active-quota-refresh.workers: 1 -> 2")
 	expectContains(t, changes, "api-keys: values updated (count unchanged, redacted)")
 	expectContains(t, changes, "gemini[0].base-url: http://g-old -> http://g-new")
 	expectContains(t, changes, "gemini[0].proxy-url: http://gp-old -> http://gp-new")

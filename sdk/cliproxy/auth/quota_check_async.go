@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -20,6 +21,184 @@ func isRuntimeOnlyAuth(auth *Auth) bool {
 func (m *Manager) autoDisableAuthFileOnLowQuotaEnabled() bool {
 	cfg := m.CurrentConfig()
 	return cfg != nil && cfg.QuotaExceeded.AutoDisableAuthFileOnLowQuota
+}
+
+func (m *Manager) activeQuotaRefreshConfig() internalconfig.ActiveQuotaRefreshConfig {
+	cfg := m.CurrentConfig()
+	if cfg == nil {
+		return internalconfig.NormalizeActiveQuotaRefreshConfig(internalconfig.ActiveQuotaRefreshConfig{})
+	}
+	return internalconfig.NormalizeActiveQuotaRefreshConfig(cfg.QuotaExceeded.ActiveQuotaRefresh)
+}
+
+func (m *Manager) reconcileActiveQuotaRefresh() {
+	if m == nil {
+		return
+	}
+	cfg := m.activeQuotaRefreshConfig()
+	if !cfg.Enabled || m.getQuotaChecker() == nil {
+		m.stopActiveQuotaRefresh()
+		return
+	}
+	m.startActiveQuotaRefresh(cfg)
+}
+
+func (m *Manager) startActiveQuotaRefresh(cfg internalconfig.ActiveQuotaRefreshConfig) {
+	if m == nil {
+		return
+	}
+	scanInterval := time.Duration(cfg.ScanIntervalSeconds) * time.Second
+	if scanInterval <= 0 {
+		scanInterval = time.Duration(internalconfig.DefaultActiveQuotaRefreshScanSec) * time.Second
+	}
+	ttl := time.Duration(cfg.ActiveTTLSeconds) * time.Second
+	if ttl <= 0 {
+		ttl = time.Duration(internalconfig.DefaultActiveQuotaRefreshTTLSec) * time.Second
+	}
+	workers := cfg.Workers
+	if workers < 1 {
+		workers = internalconfig.DefaultActiveQuotaRefreshWorkers
+	}
+
+	m.activeQuotaMu.Lock()
+	if m.activeQuotaCancel != nil &&
+		m.activeQuotaPool != nil &&
+		m.activeQuotaPool.ttl == ttl &&
+		m.activeQuotaScan == scanInterval &&
+		m.activeQuotaWorkers == workers {
+		m.activeQuotaMu.Unlock()
+		return
+	}
+	if m.activeQuotaCancel != nil {
+		m.activeQuotaCancel()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	pool := newActiveQuotaRefreshPool(ttl)
+	m.activeQuotaPool = pool
+	m.activeQuotaCancel = cancel
+	m.activeQuotaScan = scanInterval
+	m.activeQuotaWorkers = workers
+	m.activeQuotaMu.Unlock()
+
+	go m.runActiveQuotaRefresh(ctx, pool, scanInterval, workers)
+}
+
+func (m *Manager) stopActiveQuotaRefresh() {
+	if m == nil {
+		return
+	}
+	m.activeQuotaMu.Lock()
+	cancel := m.activeQuotaCancel
+	m.activeQuotaCancel = nil
+	m.activeQuotaPool = nil
+	m.activeQuotaScan = 0
+	m.activeQuotaWorkers = 0
+	m.activeQuotaMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (m *Manager) touchActiveQuotaRefresh(authID string) {
+	if m == nil || strings.TrimSpace(authID) == "" {
+		return
+	}
+	cfg := m.activeQuotaRefreshConfig()
+	if !cfg.Enabled {
+		return
+	}
+	checker := m.getQuotaChecker()
+	if checker == nil {
+		return
+	}
+	snapshot, ok := m.quotaCheckSnapshot(authID, checker)
+	if !ok || snapshot == nil {
+		return
+	}
+	m.reconcileActiveQuotaRefresh()
+
+	m.activeQuotaMu.Lock()
+	pool := m.activeQuotaPool
+	m.activeQuotaMu.Unlock()
+	if pool == nil {
+		return
+	}
+	pool.touch(authID, time.Now())
+}
+
+func (m *Manager) removeActiveQuotaRefresh(authID string) {
+	if m == nil || strings.TrimSpace(authID) == "" {
+		return
+	}
+	m.activeQuotaMu.Lock()
+	pool := m.activeQuotaPool
+	m.activeQuotaMu.Unlock()
+	if pool == nil {
+		return
+	}
+	pool.remove(authID)
+}
+
+func (m *Manager) runActiveQuotaRefresh(ctx context.Context, pool *activeQuotaRefreshPool, scanInterval time.Duration, workers int) {
+	if m == nil || pool == nil {
+		return
+	}
+	if scanInterval <= 0 {
+		scanInterval = time.Duration(internalconfig.DefaultActiveQuotaRefreshScanSec) * time.Second
+	}
+	if workers < 1 {
+		workers = internalconfig.DefaultActiveQuotaRefreshWorkers
+	}
+	ticker := time.NewTicker(scanInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			m.scanActiveQuotaRefresh(ctx, pool, now, workers)
+		}
+	}
+}
+
+func (m *Manager) scanActiveQuotaRefresh(ctx context.Context, pool *activeQuotaRefreshPool, now time.Time, workers int) {
+	if m == nil || pool == nil {
+		return
+	}
+	for _, authID := range pool.due(now, workers) {
+		go m.runActiveQuotaRefreshCheck(ctx, pool, authID)
+	}
+}
+
+func (m *Manager) runActiveQuotaRefreshCheck(parent context.Context, pool *activeQuotaRefreshPool, authID string) {
+	checker := m.getQuotaChecker()
+	if checker == nil {
+		pool.markFailed(authID)
+		return
+	}
+	snapshot, ok := m.quotaCheckSnapshot(authID, checker)
+	if !ok || snapshot == nil {
+		pool.markFailed(authID)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(parent, quotaCheckTimeout)
+	defer cancel()
+
+	result, err := checker.Check(ctx, snapshot)
+	if err != nil {
+		log.WithError(err).Warnf("auth manager: active quota refresh failed for %s", authID)
+		pool.markFailed(authID)
+		return
+	}
+	disabled := m.ApplyQuotaCheckResult(authID, result)
+	if disabled {
+		pool.remove(authID)
+		return
+	}
+	threshold := effectiveAutoDisableThreshold(m.CurrentConfig())
+	pool.markComplete(authID, result, threshold, time.Now())
 }
 
 func (m *Manager) tryEnqueueQuotaCheck(authID string) {
@@ -151,29 +330,38 @@ func (m *Manager) runQuotaCheck(authID string) {
 		log.WithError(err).Warnf("auth manager: quota check failed for %s", authID)
 		return
 	}
+	m.ApplyQuotaCheckResult(authID, result)
+}
+
+// ApplyQuotaCheckResult applies an already-fetched quota check result to the
+// scheduler and auto-disable state without performing another quota request.
+// It returns true when the result actually disabled an auth.
+func (m *Manager) ApplyQuotaCheckResult(authID string, result QuotaCheckResult) bool {
+	if m == nil {
+		return false
+	}
 	if m.scheduler != nil {
 		m.scheduler.applyScopedPoolQuotaCheck(authID, result)
 	}
 
-	// Check if auto-disable should be triggered (exhausted or threshold hit)
 	cfg := m.CurrentConfig()
 	threshold := effectiveAutoDisableThreshold(cfg)
 	if shouldDisable, _ := shouldAutoDisable(result, threshold); shouldDisable {
-		m.applyAutoDisableFromQuotaCheck(authID, result)
+		return m.applyAutoDisableFromQuotaCheck(authID, result)
 	}
+	return false
 }
 
-func (m *Manager) applyAutoDisableFromQuotaCheck(authID string, result QuotaCheckResult) {
+func (m *Manager) applyAutoDisableFromQuotaCheck(authID string, result QuotaCheckResult) bool {
 	if m == nil || !m.autoDisableAuthFileOnLowQuotaEnabled() {
-		return
+		return false
 	}
 
-	// Determine if we should disable based on exhausted or threshold
 	cfg := m.CurrentConfig()
 	threshold := effectiveAutoDisableThreshold(cfg)
 	shouldDisable, reason := shouldAutoDisable(result, threshold)
 	if !shouldDisable {
-		return
+		return false
 	}
 
 	var authSnapshot *Auth
@@ -183,7 +371,7 @@ func (m *Manager) applyAutoDisableFromQuotaCheck(authID string, result QuotaChec
 	current := m.auths[authID]
 	if current == nil || current.Disabled || isRuntimeOnlyAuth(current) {
 		m.mu.Unlock()
-		return
+		return false
 	}
 
 	// Determine status message based on trigger reason
@@ -234,4 +422,6 @@ func (m *Manager) applyAutoDisableFromQuotaCheck(authID string, result QuotaChec
 		log.WithFields(fields).Warn("auth manager: auto disabled auth after quota check")
 		m.hook.OnAuthUpdated(context.Background(), authSnapshot.Clone())
 	}
+	m.removeActiveQuotaRefresh(authID)
+	return authSnapshot != nil
 }

@@ -29,6 +29,11 @@ const (
 	DefaultScopedPoolIdleLogSec         = 60
 	MaxScopedPoolQuotaPercent           = 50
 	MaxAutoDisableQuotaThresholdPercent = 50
+	DefaultActiveQuotaRefreshScanSec    = 30
+	DefaultActiveQuotaRefreshTTLSec     = 600
+	DefaultActiveQuotaRefreshWorkers    = 1
+	MinActiveQuotaRefreshScanSec        = 5
+	MinActiveQuotaRefreshTTLSec         = 60
 	DefaultAuthDir                      = "~/.cli-proxy-api"
 )
 
@@ -343,16 +348,35 @@ type QuotaExceeded struct {
 	// AntigravityCredits indicates whether to retry Antigravity quota_exhausted 429s once
 	// on the same credential with enabledCreditTypes=["GOOGLE_ONE_AI"].
 	AntigravityCredits bool `yaml:"antigravity-credits" json:"antigravity-credits"`
+
+	// ActiveQuotaRefresh configures the background quota refresh pool for recently used auth files.
+	ActiveQuotaRefresh ActiveQuotaRefreshConfig `yaml:"active-quota-refresh" json:"active-quota-refresh"`
+}
+
+// ActiveQuotaRefreshConfig controls the background quota refresh pool for recently used auth files.
+type ActiveQuotaRefreshConfig struct {
+	// Enabled turns on background quota checks for recently used auth files.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+
+	// ScanIntervalSeconds controls how often the pool scans active auth entries.
+	ScanIntervalSeconds int `yaml:"scan-interval-seconds" json:"scan-interval-seconds"`
+
+	// ActiveTTLSeconds controls how long an auth remains in the pool without new runtime use.
+	ActiveTTLSeconds int `yaml:"active-ttl-seconds" json:"active-ttl-seconds"`
+
+	// Workers controls the maximum concurrent background quota checks.
+	Workers int `yaml:"workers" json:"workers"`
 }
 
 func (q *QuotaExceeded) UnmarshalYAML(value *yaml.Node) error {
 	type quotaExceededYAML struct {
-		SwitchProject                            *bool `yaml:"switch-project"`
-		SwitchPreviewModel                       *bool `yaml:"switch-preview-model"`
-		AutoDisableAuthFileOnLowQuota            *bool `yaml:"auto-disable-auth-file-on-low-quota"`
-		AutoDisableAuthFileOnZeroQuotaLegacy     *bool `yaml:"auto-disable-auth-file-on-zero-quota"`
-		AutoDisableAuthFileQuotaThresholdPercent int   `yaml:"auto-disable-auth-file-quota-threshold-percent"`
-		AntigravityCredits                       bool  `yaml:"antigravity-credits"`
+		SwitchProject                            *bool                    `yaml:"switch-project"`
+		SwitchPreviewModel                       *bool                    `yaml:"switch-preview-model"`
+		AutoDisableAuthFileOnLowQuota            *bool                    `yaml:"auto-disable-auth-file-on-low-quota"`
+		AutoDisableAuthFileOnZeroQuotaLegacy     *bool                    `yaml:"auto-disable-auth-file-on-zero-quota"`
+		AutoDisableAuthFileQuotaThresholdPercent int                      `yaml:"auto-disable-auth-file-quota-threshold-percent"`
+		AntigravityCredits                       bool                     `yaml:"antigravity-credits"`
+		ActiveQuotaRefresh                       ActiveQuotaRefreshConfig `yaml:"active-quota-refresh"`
 	}
 	var raw quotaExceededYAML
 	if err := value.Decode(&raw); err != nil {
@@ -372,19 +396,21 @@ func (q *QuotaExceeded) UnmarshalYAML(value *yaml.Node) error {
 	}
 	q.AutoDisableAuthFileQuotaThresholdPercent = raw.AutoDisableAuthFileQuotaThresholdPercent
 	q.AntigravityCredits = raw.AntigravityCredits
+	q.ActiveQuotaRefresh = raw.ActiveQuotaRefresh
 	return nil
 }
 
 func (q *QuotaExceeded) UnmarshalJSON(data []byte) error {
 	type quotaExceededJSON struct {
-		SwitchProject                            *bool `json:"switch-project"`
-		SwitchPreviewModel                       *bool `json:"switch-preview-model"`
-		AutoDisableAuthFileOnLowQuota            *bool `json:"auto-disable-auth-file-on-low-quota"`
-		AutoDisableAuthFileOnLowQuotaCamel       *bool `json:"autoDisableAuthFileOnLowQuota"`
-		AutoDisableAuthFileOnZeroQuotaLegacy     *bool `json:"auto-disable-auth-file-on-zero-quota"`
-		AutoDisableAuthFileOnZeroQuotaCamel      *bool `json:"autoDisableAuthFileOnZeroQuota"`
-		AutoDisableAuthFileQuotaThresholdPercent int   `json:"auto-disable-auth-file-quota-threshold-percent"`
-		AntigravityCredits                       bool  `json:"antigravity-credits"`
+		SwitchProject                            *bool                    `json:"switch-project"`
+		SwitchPreviewModel                       *bool                    `json:"switch-preview-model"`
+		AutoDisableAuthFileOnLowQuota            *bool                    `json:"auto-disable-auth-file-on-low-quota"`
+		AutoDisableAuthFileOnLowQuotaCamel       *bool                    `json:"autoDisableAuthFileOnLowQuota"`
+		AutoDisableAuthFileOnZeroQuotaLegacy     *bool                    `json:"auto-disable-auth-file-on-zero-quota"`
+		AutoDisableAuthFileOnZeroQuotaCamel      *bool                    `json:"autoDisableAuthFileOnZeroQuota"`
+		AutoDisableAuthFileQuotaThresholdPercent int                      `json:"auto-disable-auth-file-quota-threshold-percent"`
+		AntigravityCredits                       bool                     `json:"antigravity-credits"`
+		ActiveQuotaRefresh                       ActiveQuotaRefreshConfig `json:"active-quota-refresh"`
 	}
 	var raw quotaExceededJSON
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -409,6 +435,7 @@ func (q *QuotaExceeded) UnmarshalJSON(data []byte) error {
 	}
 	q.AutoDisableAuthFileQuotaThresholdPercent = raw.AutoDisableAuthFileQuotaThresholdPercent
 	q.AntigravityCredits = raw.AntigravityCredits
+	q.ActiveQuotaRefresh = raw.ActiveQuotaRefresh
 	return nil
 }
 
@@ -970,6 +997,25 @@ func (cfg *Config) SanitizeQuotaExceeded() {
 	if cfg.QuotaExceeded.AutoDisableAuthFileQuotaThresholdPercent > MaxAutoDisableQuotaThresholdPercent {
 		cfg.QuotaExceeded.AutoDisableAuthFileQuotaThresholdPercent = MaxAutoDisableQuotaThresholdPercent
 	}
+	cfg.QuotaExceeded.ActiveQuotaRefresh = NormalizeActiveQuotaRefreshConfig(cfg.QuotaExceeded.ActiveQuotaRefresh)
+}
+
+// NormalizeActiveQuotaRefreshConfig normalizes background quota refresh settings.
+func NormalizeActiveQuotaRefreshConfig(cfg ActiveQuotaRefreshConfig) ActiveQuotaRefreshConfig {
+	if cfg.ScanIntervalSeconds <= 0 {
+		cfg.ScanIntervalSeconds = DefaultActiveQuotaRefreshScanSec
+	} else if cfg.ScanIntervalSeconds < MinActiveQuotaRefreshScanSec {
+		cfg.ScanIntervalSeconds = MinActiveQuotaRefreshScanSec
+	}
+	if cfg.ActiveTTLSeconds <= 0 {
+		cfg.ActiveTTLSeconds = DefaultActiveQuotaRefreshTTLSec
+	} else if cfg.ActiveTTLSeconds < MinActiveQuotaRefreshTTLSec {
+		cfg.ActiveTTLSeconds = MinActiveQuotaRefreshTTLSec
+	}
+	if cfg.Workers < 1 {
+		cfg.Workers = DefaultActiveQuotaRefreshWorkers
+	}
+	return cfg
 }
 
 // DefaultRoutingScopedPoolProviderConfig returns the normalized default values for scoped-pool entries.

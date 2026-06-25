@@ -272,6 +272,11 @@ type Manager struct {
 	quotaCheckPending   map[string]struct{}
 	quotaCheckRunning   map[string]struct{}
 	quotaCheckWake      chan struct{}
+	activeQuotaMu       sync.Mutex
+	activeQuotaPool     *activeQuotaRefreshPool
+	activeQuotaCancel   context.CancelFunc
+	activeQuotaScan     time.Duration
+	activeQuotaWorkers  int
 
 	requestPrepareLocks sync.Map
 }
@@ -535,6 +540,7 @@ func (m *Manager) SetConfig(cfg *internalconfig.Config) {
 	if clearedCooldowns {
 		m.persistCooldownStates(context.Background())
 	}
+	m.reconcileActiveQuotaRefresh()
 }
 
 func (m *Manager) cooldownDisabledForAuth(auth *Auth) bool {
@@ -3550,6 +3556,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	if shouldEnqueueQuotaCheck(result) {
 		m.tryEnqueueQuotaCheck(result.AuthID)
 	}
+	m.touchActiveQuotaRefresh(result.AuthID)
 	if authSnapshot != nil && cooldownStateChanged {
 		m.persistCooldownStates(context.Background())
 	}
@@ -5190,6 +5197,7 @@ func (m *Manager) StopAutoRefresh() {
 	if cancel != nil {
 		cancel()
 	}
+	m.stopActiveQuotaRefresh()
 	// Stop selector if it implements StoppableSelector (e.g., SessionAffinitySelector)
 	if stoppable, ok := m.selector.(StoppableSelector); ok {
 		stoppable.Stop()

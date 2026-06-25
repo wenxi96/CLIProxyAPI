@@ -216,9 +216,40 @@ func TestMarkResult_AutoDisablesAuthAfterConfirmedZeroQuota(t *testing.T) {
 	if got := store.saveCount.Load(); got == 0 {
 		t.Fatal("expected auto-disable to trigger persistence")
 	}
-	saved := store.lastAuth.Load()
-	if saved == nil || !saved.Disabled {
-		t.Fatalf("expected persisted auth to be disabled, got %#v", saved)
+	waitForPersistedDisabledAuth(t, store)
+}
+
+func TestApplyQuotaCheckResultReturnsFalseWhenAutoDisableDisabled(t *testing.T) {
+	mgr := NewManager(nil, nil, nil)
+	mgr.SetConfig(&internalconfig.Config{})
+
+	auth := &Auth{
+		ID:       "auth-apply-result-disabled-config",
+		Provider: "codex",
+		Status:   StatusActive,
+		Metadata: map[string]any{
+			"chatgpt_account_id": "acct-1",
+			"access_token":       "token-1",
+		},
+	}
+	if _, err := mgr.Register(WithSkipPersist(context.Background()), auth); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	disabled := mgr.ApplyQuotaCheckResult(auth.ID, QuotaCheckResult{
+		Exhausted:        true,
+		Classification:   ClassificationNoQuota,
+		RemainingPercent: intPtr(0),
+	})
+	if disabled {
+		t.Fatal("ApplyQuotaCheckResult() reported disabled while auto-disable config is off")
+	}
+	current, ok := mgr.GetByID(auth.ID)
+	if !ok || current == nil {
+		t.Fatal("expected auth to remain registered")
+	}
+	if current.Disabled {
+		t.Fatal("auth should not be disabled when auto-disable config is off")
 	}
 }
 
@@ -252,6 +283,372 @@ func TestMarkResult_DoesNotEnqueueQuotaCheckWhenConfigDisabled(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 	if got := checker.callCount.Load(); got != 0 {
 		t.Fatalf("expected no quota checks when config disabled, got %d", got)
+	}
+}
+
+func TestMarkResult_DoesNotEnqueueQuotaCheckAfterSuccessfulRequestWhenThresholdEnabled(t *testing.T) {
+	checker := &quotaCheckerStub{}
+	mgr := NewManager(nil, nil, nil)
+	mgr.SetQuotaChecker(checker)
+	mgr.SetConfig(&internalconfig.Config{
+		QuotaExceeded: internalconfig.QuotaExceeded{
+			AutoDisableAuthFileOnLowQuota:            true,
+			AutoDisableAuthFileQuotaThresholdPercent: 10,
+		},
+	})
+
+	auth := &Auth{
+		ID:       "auth-success-threshold",
+		Provider: "codex",
+		Status:   StatusActive,
+		Metadata: map[string]any{
+			"chatgpt_account_id": "acct-1",
+			"access_token":       "token-1",
+		},
+	}
+	if _, err := mgr.Register(WithSkipPersist(context.Background()), auth); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	mgr.MarkResult(context.Background(), Result{
+		AuthID:   auth.ID,
+		Provider: auth.Provider,
+		Model:    "gpt-5",
+		Success:  true,
+	})
+
+	time.Sleep(150 * time.Millisecond)
+	if got := checker.callCount.Load(); got != 0 {
+		t.Fatalf("expected successful request not to trigger quota checks, got %d", got)
+	}
+}
+
+func TestMarkResult_ActiveQuotaRefreshTouchesSuccessfulRuntimeAuth(t *testing.T) {
+	checker := &quotaCheckerStub{
+		started: make(chan struct{}, 1),
+		result: QuotaCheckResult{
+			Classification:   ClassificationOK,
+			RemainingPercent: intPtr(41),
+		},
+	}
+	mgr := NewManager(nil, nil, nil)
+	mgr.SetQuotaChecker(checker)
+	mgr.SetConfig(&internalconfig.Config{
+		QuotaExceeded: internalconfig.QuotaExceeded{
+			AutoDisableAuthFileOnLowQuota:            true,
+			AutoDisableAuthFileQuotaThresholdPercent: 40,
+			ActiveQuotaRefresh: internalconfig.ActiveQuotaRefreshConfig{
+				Enabled:             true,
+				ScanIntervalSeconds: 1,
+				ActiveTTLSeconds:    60,
+				Workers:             1,
+			},
+		},
+	})
+	defer mgr.StopAutoRefresh()
+
+	auth := &Auth{
+		ID:       "auth-active-quota-refresh-success",
+		Provider: "codex",
+		Status:   StatusActive,
+		Metadata: map[string]any{
+			"chatgpt_account_id": "acct-1",
+			"access_token":       "token-1",
+		},
+	}
+	if _, err := mgr.Register(WithSkipPersist(context.Background()), auth); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	mgr.MarkResult(context.Background(), Result{
+		AuthID:   auth.ID,
+		Provider: auth.Provider,
+		Model:    "gpt-5",
+		Success:  true,
+	})
+
+	if got := checker.callCount.Load(); got != 0 {
+		t.Fatalf("successful request should only touch active pool synchronously, got %d calls", got)
+	}
+
+	mgr.activeQuotaMu.Lock()
+	pool := mgr.activeQuotaPool
+	mgr.activeQuotaMu.Unlock()
+	if pool == nil {
+		t.Fatal("expected active quota refresh pool")
+	}
+	if _, ok := pool.snapshot(auth.ID); !ok {
+		t.Fatal("expected successful runtime auth to be touched into active pool")
+	}
+
+	mgr.scanActiveQuotaRefresh(context.Background(), pool, time.Now(), 1)
+	select {
+	case <-checker.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("active quota refresh did not start")
+	}
+	if got := checker.callCount.Load(); got != 1 {
+		t.Fatalf("quota checks = %d, want 1", got)
+	}
+}
+
+func TestMarkResult_ActiveQuotaRefreshDisabledDoesNotTouchPool(t *testing.T) {
+	checker := &quotaCheckerStub{
+		started: make(chan struct{}, 1),
+		result: QuotaCheckResult{
+			Classification:   ClassificationOK,
+			RemainingPercent: intPtr(41),
+		},
+	}
+	mgr := NewManager(nil, nil, nil)
+	mgr.SetQuotaChecker(checker)
+	mgr.SetConfig(&internalconfig.Config{
+		QuotaExceeded: internalconfig.QuotaExceeded{
+			AutoDisableAuthFileOnLowQuota:            true,
+			AutoDisableAuthFileQuotaThresholdPercent: 40,
+			ActiveQuotaRefresh: internalconfig.ActiveQuotaRefreshConfig{
+				Enabled:             false,
+				ScanIntervalSeconds: 1,
+				ActiveTTLSeconds:    60,
+				Workers:             1,
+			},
+		},
+	})
+	defer mgr.StopAutoRefresh()
+
+	auth := &Auth{
+		ID:       "auth-active-quota-refresh-disabled",
+		Provider: "codex",
+		Status:   StatusActive,
+		Metadata: map[string]any{
+			"chatgpt_account_id": "acct-1",
+			"access_token":       "token-1",
+		},
+	}
+	if _, err := mgr.Register(WithSkipPersist(context.Background()), auth); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	mgr.MarkResult(context.Background(), Result{
+		AuthID:   auth.ID,
+		Provider: auth.Provider,
+		Model:    "gpt-5",
+		Success:  true,
+	})
+
+	mgr.activeQuotaMu.Lock()
+	pool := mgr.activeQuotaPool
+	cancel := mgr.activeQuotaCancel
+	mgr.activeQuotaMu.Unlock()
+	if pool != nil || cancel != nil {
+		t.Fatal("active quota refresh pool should not start when disabled")
+	}
+	if got := checker.callCount.Load(); got != 0 {
+		t.Fatalf("quota checks = %d, want 0", got)
+	}
+}
+
+func TestActiveQuotaRefreshRemovesAuthAfterThresholdAutoDisable(t *testing.T) {
+	store := &snapshotStore{}
+	checker := &quotaCheckerStub{
+		started: make(chan struct{}, 1),
+		result: QuotaCheckResult{
+			Classification:   ClassificationOK,
+			RemainingPercent: intPtr(40),
+		},
+	}
+	mgr := NewManager(store, nil, nil)
+	mgr.SetQuotaChecker(checker)
+	mgr.SetConfig(&internalconfig.Config{
+		QuotaExceeded: internalconfig.QuotaExceeded{
+			AutoDisableAuthFileOnLowQuota:            true,
+			AutoDisableAuthFileQuotaThresholdPercent: 40,
+			ActiveQuotaRefresh: internalconfig.ActiveQuotaRefreshConfig{
+				Enabled:             true,
+				ScanIntervalSeconds: 30,
+				ActiveTTLSeconds:    600,
+				Workers:             1,
+			},
+		},
+	})
+	defer mgr.StopAutoRefresh()
+
+	auth := &Auth{
+		ID:       "auth-active-quota-refresh-threshold",
+		Provider: "codex",
+		Status:   StatusActive,
+		Metadata: map[string]any{
+			"chatgpt_account_id": "acct-1",
+			"access_token":       "token-1",
+		},
+	}
+	if _, err := mgr.Register(WithSkipPersist(context.Background()), auth); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	mgr.MarkResult(context.Background(), Result{
+		AuthID:   auth.ID,
+		Provider: auth.Provider,
+		Model:    "gpt-5",
+		Success:  true,
+	})
+
+	mgr.activeQuotaMu.Lock()
+	pool := mgr.activeQuotaPool
+	mgr.activeQuotaMu.Unlock()
+	if pool == nil {
+		t.Fatal("expected active quota refresh pool")
+	}
+	mgr.scanActiveQuotaRefresh(context.Background(), pool, time.Now(), 1)
+	select {
+	case <-checker.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("active quota refresh did not start")
+	}
+
+	waitForDisabledAuth(t, mgr, auth.ID, autoDisabledQuotaThresholdStatusMessage)
+	if _, ok := pool.snapshot(auth.ID); ok {
+		t.Fatal("expected disabled auth to be removed from active quota refresh pool")
+	}
+	waitForStoreSave(t, store)
+}
+
+func TestActiveQuotaRefreshUpdatesScopedPoolQuotaSnapshot(t *testing.T) {
+	checker := &quotaCheckerStub{
+		started: make(chan struct{}, 1),
+		result: QuotaCheckResult{
+			Classification:   ClassificationOK,
+			RemainingPercent: intPtr(45),
+		},
+	}
+	mgr := NewManager(nil, &RoundRobinSelector{}, nil)
+	mgr.SetQuotaChecker(checker)
+	mgr.SetConfig(&internalconfig.Config{
+		QuotaExceeded: internalconfig.QuotaExceeded{
+			AutoDisableAuthFileOnLowQuota:            true,
+			AutoDisableAuthFileQuotaThresholdPercent: 40,
+			ActiveQuotaRefresh: internalconfig.ActiveQuotaRefreshConfig{
+				Enabled:             true,
+				ScanIntervalSeconds: 30,
+				ActiveTTLSeconds:    600,
+				Workers:             1,
+			},
+		},
+		Routing: internalconfig.RoutingConfig{
+			Strategy: "round-robin",
+			ScopedPool: internalconfig.RoutingScopedPoolConfig{
+				Providers: map[string]internalconfig.RoutingScopedPoolProviderConfig{
+					"codex": {Enabled: true, Limit: 1, QuotaThresholdPercent: 50},
+				},
+			},
+		},
+	})
+	defer mgr.StopAutoRefresh()
+
+	auth := &Auth{
+		ID:       "auth-active-quota-refresh-scoped-pool",
+		Provider: "codex",
+		Status:   StatusActive,
+		Metadata: map[string]any{
+			"chatgpt_account_id": "acct-1",
+			"access_token":       "token-1",
+		},
+	}
+	if _, err := mgr.Register(WithSkipPersist(context.Background()), auth); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	mgr.MarkResult(context.Background(), Result{
+		AuthID:   auth.ID,
+		Provider: auth.Provider,
+		Model:    "gpt-5",
+		Success:  true,
+	})
+
+	mgr.activeQuotaMu.Lock()
+	pool := mgr.activeQuotaPool
+	mgr.activeQuotaMu.Unlock()
+	if pool == nil {
+		t.Fatal("expected active quota refresh pool")
+	}
+	mgr.scanActiveQuotaRefresh(context.Background(), pool, time.Now(), 1)
+	select {
+	case <-checker.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("active quota refresh did not start")
+	}
+
+	poolAuth := waitForScopedPoolAuthState(t, mgr, auth.ID, PoolStateEjected, PoolReasonLowQuota)
+	if poolAuth.State != PoolStateEjected {
+		t.Fatalf("scoped-pool state = %q, want %q", poolAuth.State, PoolStateEjected)
+	}
+	if poolAuth.Reason != PoolReasonLowQuota {
+		t.Fatalf("scoped-pool reason = %q, want %q", poolAuth.Reason, PoolReasonLowQuota)
+	}
+	current, ok := mgr.GetByID(auth.ID)
+	if !ok || current == nil {
+		t.Fatal("expected auth to remain registered")
+	}
+	if current.Disabled {
+		t.Fatal("auth should not be disabled when active refresh result is above auto-disable threshold")
+	}
+}
+
+func TestActiveQuotaRefreshRestartsWhenScanIntervalChanges(t *testing.T) {
+	checker := &quotaCheckerStub{
+		result: QuotaCheckResult{
+			Classification:   ClassificationOK,
+			RemainingPercent: intPtr(80),
+		},
+	}
+	mgr := NewManager(nil, nil, nil)
+	mgr.SetQuotaChecker(checker)
+	mgr.SetConfig(&internalconfig.Config{
+		QuotaExceeded: internalconfig.QuotaExceeded{
+			ActiveQuotaRefresh: internalconfig.ActiveQuotaRefreshConfig{
+				Enabled:             true,
+				ScanIntervalSeconds: 30,
+				ActiveTTLSeconds:    600,
+				Workers:             1,
+			},
+		},
+	})
+	defer mgr.StopAutoRefresh()
+
+	mgr.activeQuotaMu.Lock()
+	firstPool := mgr.activeQuotaPool
+	firstScan := mgr.activeQuotaScan
+	mgr.activeQuotaMu.Unlock()
+	if firstPool == nil {
+		t.Fatal("expected initial active quota refresh pool")
+	}
+	if firstScan != 30*time.Second {
+		t.Fatalf("initial scan interval = %v, want 30s", firstScan)
+	}
+
+	mgr.SetConfig(&internalconfig.Config{
+		QuotaExceeded: internalconfig.QuotaExceeded{
+			ActiveQuotaRefresh: internalconfig.ActiveQuotaRefreshConfig{
+				Enabled:             true,
+				ScanIntervalSeconds: 60,
+				ActiveTTLSeconds:    600,
+				Workers:             1,
+			},
+		},
+	})
+
+	mgr.activeQuotaMu.Lock()
+	secondPool := mgr.activeQuotaPool
+	secondScan := mgr.activeQuotaScan
+	mgr.activeQuotaMu.Unlock()
+	if secondPool == nil {
+		t.Fatal("expected active quota refresh pool after config update")
+	}
+	if secondPool == firstPool {
+		t.Fatal("expected active quota refresh pool to restart after scan interval changed")
+	}
+	if secondScan != time.Minute {
+		t.Fatalf("updated scan interval = %v, want 1m", secondScan)
 	}
 }
 
@@ -888,6 +1285,54 @@ func waitForDisabledAuth(t *testing.T, mgr *Manager, authID, wantStatusMessage s
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("auth was not auto disabled in time")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func waitForStoreSave(t *testing.T, store *snapshotStore) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if store.saveCount.Load() > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("expected persistence save to run in time")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func waitForPersistedDisabledAuth(t *testing.T, store *snapshotStore) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		saved := store.lastAuth.Load()
+		if saved != nil && saved.Disabled {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected persisted auth to be disabled, got %#v", saved)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func waitForScopedPoolAuthState(t *testing.T, mgr *Manager, authID string, wantState PoolState, wantReason PoolReason) PoolAuthSnapshot {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		snapshot := mgr.ScopedPoolSnapshot()
+		poolAuth, ok := snapshot.Auths[authID]
+		if ok && poolAuth.State == wantState && poolAuth.Reason == wantReason {
+			return poolAuth
+		}
+		if time.Now().After(deadline) {
+			if ok {
+				t.Fatalf("scoped-pool auth state = %q/%q, want %q/%q", poolAuth.State, poolAuth.Reason, wantState, wantReason)
+			}
+			t.Fatalf("scoped-pool auth %q not found", authID)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

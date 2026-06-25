@@ -168,6 +168,12 @@ quota-exceeded:
   # When set to a value greater than 0, auth files will be disabled when remaining quota percent <= threshold.
   # A value of 0 preserves the legacy behavior (only disable on explicit zero quota / exhausted).
   auto-disable-auth-file-quota-threshold-percent: 0
+  # Background quota refresh for recently used auth files. Disabled by default to avoid extra provider quota calls.
+  active-quota-refresh:
+    enabled: false
+    scan-interval-seconds: 30 # How often to scan the active pool; not the per-auth quota check interval
+    active-ttl-seconds: 600 # Remove auths that have no runtime activity for 10 minutes
+    workers: 1 # Maximum concurrent background quota checks
   antigravity-credits: true # Whether to retry Antigravity quota_exhausted 429s once with enabledCreditTypes=["GOOGLE_ONE_AI"]
 
 # Routing strategy for selecting credentials when multiple match.
