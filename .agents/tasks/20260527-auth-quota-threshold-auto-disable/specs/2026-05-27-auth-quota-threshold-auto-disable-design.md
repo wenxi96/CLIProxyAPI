@@ -6,7 +6,11 @@
 
 ## Configuration Semantics
 
-保留现有开关作为兼容入口：
+当前总开关使用低额度语义命名：
+
+- `quota-exceeded.auto-disable-auth-file-on-low-quota`
+
+保留旧开关作为兼容入口：
 
 - `quota-exceeded.auto-disable-auth-file-on-zero-quota`
 
@@ -59,9 +63,9 @@ disabled > scoped-pool low_quota ejected > normal routing
 
 ## Compatibility
 
-旧配置无需迁移。未配置新阈值时，默认 `0`，行为与原零额度禁用一致。
+旧配置无需用户手动迁移。读取配置时兼容旧 `auto-disable-auth-file-on-zero-quota`，保存配置时收敛为当前 `auto-disable-auth-file-on-low-quota`。未配置新阈值时，默认 `0`，行为与原零额度禁用一致。
 
-管理 API 和示例配置新增阈值入口；旧开关 API 保留。
+管理 API 新端点使用 `auto-disable-auth-file-on-low-quota`，旧 `auto-disable-auth-file-on-zero-quota` 端点保留并委托到同一配置。示例配置使用当前 low-quota key。
 
 ## Non-Goals
 

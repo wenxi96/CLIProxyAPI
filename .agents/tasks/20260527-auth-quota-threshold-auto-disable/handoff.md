@@ -6,11 +6,12 @@
 
 ## Completed Scope
 
-- 保留 `quota-exceeded.auto-disable-auth-file-on-zero-quota` 作为自动禁用总开关。
+- 自动禁用总开关以 `quota-exceeded.auto-disable-auth-file-on-low-quota` 为当前命名，兼容旧 `quota-exceeded.auto-disable-auth-file-on-zero-quota` 配置键和管理 API 端点。
 - 新增 `quota-exceeded.auto-disable-auth-file-quota-threshold-percent` 全局阈值配置。
 - 扩展异步 quota check 自动禁用逻辑，支持 `remaining_percent <= threshold`。
 - 区分 `auto_disabled_quota_exhausted` 与 `auto_disabled_quota_threshold`。
 - 管理 API、TUI 配置页、示例配置和 watcher diff 已同步。
+- 新旧 quota auto-disable 管理 API 端点都可用，旧端点委托到新配置字段。
 - fill-first、round-robin、scoped-pool 关系已有回归测试覆盖。
 
 ## Verification

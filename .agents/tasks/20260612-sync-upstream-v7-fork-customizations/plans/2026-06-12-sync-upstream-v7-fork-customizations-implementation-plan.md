@@ -237,9 +237,37 @@
 ### 任务 8：前端 dev 吸收 Provider、Auth Files、Plugin、Quota、Logs 与 Ampcode 处置
 
 - 目标: 在前端 `dev` 上吸收 `v1.16.7` Provider Workbench、Plugin Store、plugin management、quota reset / subscription expiry、连接测试、模型发现、UI state persistence、fullscreen / error logs、logs pagination、auth-files 修复，同时重建 DisplayName、Scoped Poll、批量检查和多选 zip 下载能力。
-- 文件:
-  - 新建:
-    - None
+	- 文件:
+	  - 新建:
+	    - `/home/cheng/git-project/Cli-Proxy-API-Management-Center/src/components/usage/ApiDetailsCard.tsx`
+	    - `/home/cheng/git-project/Cli-Proxy-API-Management-Center/src/components/usage/ChartLineSelector.tsx`
+	    - `/home/cheng/git-project/Cli-Proxy-API-Management-Center/src/components/usage/CostTrendChart.tsx`
+	    - `/home/cheng/git-project/Cli-Proxy-API-Management-Center/src/components/usage/CredentialStatsCard.tsx`
+	    - `/home/cheng/git-project/Cli-Proxy-API-Management-Center/src/components/usage/ModelStatsCard.tsx`
+	    - `/home/cheng/git-project/Cli-Proxy-API-Management-Center/src/components/usage/PriceSettingsCard.tsx`
+	    - `/home/cheng/git-project/Cli-Proxy-API-Management-Center/src/components/usage/RequestEventsDetailsCard.tsx`
+	    - `/home/cheng/git-project/Cli-Proxy-API-Management-Center/src/components/usage/ServiceHealthCard.tsx`
+	    - `/home/cheng/git-project/Cli-Proxy-API-Management-Center/src/components/usage/StatCards.tsx`
+	    - `/home/cheng/git-project/Cli-Proxy-API-Management-Center/src/components/usage/TokenBreakdownChart.tsx`
+	    - `/home/cheng/git-project/Cli-Proxy-API-Management-Center/src/components/usage/UsageChart.tsx`
+	    - `/home/cheng/git-project/Cli-Proxy-API-Management-Center/src/components/usage/hooks/index.ts`
+	    - `/home/cheng/git-project/Cli-Proxy-API-Management-Center/src/components/usage/hooks/useChartData.ts`
+	    - `/home/cheng/git-project/Cli-Proxy-API-Management-Center/src/components/usage/hooks/useSparklines.ts`
+	    - `/home/cheng/git-project/Cli-Proxy-API-Management-Center/src/components/usage/hooks/useUsageData.ts`
+	    - `/home/cheng/git-project/Cli-Proxy-API-Management-Center/src/components/usage/index.ts`
+	    - `/home/cheng/git-project/Cli-Proxy-API-Management-Center/src/features/authFiles/hooks/useAuthFilesStats.ts`
+	    - `/home/cheng/git-project/Cli-Proxy-API-Management-Center/src/pages/UsagePage.module.scss`
+	    - `/home/cheng/git-project/Cli-Proxy-API-Management-Center/src/pages/UsagePage.tsx`
+	    - `/home/cheng/git-project/Cli-Proxy-API-Management-Center/src/services/api/usage.ts`
+	    - `/home/cheng/git-project/Cli-Proxy-API-Management-Center/src/stores/useUsageStatsStore.ts`
+	    - `/home/cheng/git-project/Cli-Proxy-API-Management-Center/src/types/sourceInfo.ts`
+	    - `/home/cheng/git-project/Cli-Proxy-API-Management-Center/src/types/usage.ts`
+	    - `/home/cheng/git-project/Cli-Proxy-API-Management-Center/src/utils/sourceResolver.ts`
+	    - `/home/cheng/git-project/Cli-Proxy-API-Management-Center/src/utils/usage.ts`
+	    - `/home/cheng/git-project/Cli-Proxy-API-Management-Center/src/utils/usage/chartConfig.ts`
+	    - `/home/cheng/git-project/Cli-Proxy-API-Management-Center/src/utils/usage/index.ts`
+	    - `/home/cheng/git-project/Cli-Proxy-API-Management-Center/src/utils/usage/latency.ts`
+	    - `/home/cheng/git-project/Cli-Proxy-API-Management-Center/src/utils/usageIndex.ts`
   - 修改:
     - `/home/cheng/git-project/Cli-Proxy-API-Management-Center/bun.lock`
     - `/home/cheng/git-project/Cli-Proxy-API-Management-Center/src/components/providers/`
@@ -264,7 +292,7 @@
   - 测试:
     - `/home/cheng/git-project/Cli-Proxy-API-Management-Center/src/`
 - 依赖: 任务 7
-- 验证: 以任务 7 的 60 个 merge-tree 冲突文件全集为权威输入逐项解决，并分三批 checkpoint：8a 核心架构层（`bun.lock`、`package.json`、stores、types、utils、styles、hooks）、8b 功能域（providers、authFiles、quota、logs、plugins）、8c 文案与配置（i18n、README、VisualConfigEditor、MainLayout、release 相关）；每批后至少运行 `bun run type-check`，可行时同步运行 `bun run build`；人工检查 DisplayName 输入和展示、Auth Files 批量检查跨页状态、Scoped Poll 总开关、多选 zip 下载入口、Plugin Store、plugin delete / install warning、quota reset / subscription expiry、logs pagination；在 evidence 中记录 Ampcode 最终处置依据。
+- 验证: 以任务 7 的 60 个 merge-tree 冲突文件全集为权威输入逐项解决，并分三批 checkpoint：8a 核心架构层（`bun.lock`、`package.json`、stores、types、utils、styles、hooks）、8b 功能域（providers、authFiles、quota、logs、plugins、usage）、8c 文案与配置（i18n、README、VisualConfigEditor、MainLayout、release 相关）；每批后至少运行 `bun run type-check`，可行时同步运行 `bun run build`；人工检查 DisplayName 输入和展示、Auth Files 批量检查跨页状态、Scoped Poll 总开关、多选 zip 下载入口、Plugin Store、plugin delete / install warning、quota reset / subscription expiry、logs pagination、Usage 统计卡片、Usage 图表时间范围与图表线持久化、Usage 模型/API 统计、Usage 导出/导入和移动端布局；在 evidence 中记录 Ampcode 最终处置依据。
 - 停止条件: 需要保留被上游删除的旧 provider 编辑页作为主路径、i18n key 大面积缺失、批量检查 / Scoped Poll 任一 fork 定制无法迁移到新架构、AMP/Ampcode 移除后仍残留前端入口或 API client 调用已删除后端接口，或发现新的冲突文件未补入 evidence / findings。
 - 接口 / 契约: provider payload 仍需序列化 fork 的 `display-name` 和 scoped-pool 相关字段；Auth Files API 仍需兼容后端批量检查与 zip 下载接口。
 

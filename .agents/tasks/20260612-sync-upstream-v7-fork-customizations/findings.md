@@ -208,3 +208,24 @@
   - 前后端合并前建立 backup 分支或 tag。
   - fork 回归断言必须是可执行测试或明确的人工回归 evidence。
   - 计划任务 1 必须包含停止条件；若发现任务数量与停止条件数量不一致，不得进入实施。
+
+## 2026-06-22 审核补充
+
+- 本任务目录缺失 `task.md`，但 `progress.md` 曾把 `task.md` 列为文件；已补建 `task.md` 作为当前任务的静态权威入口，live 状态继续以 `progress.md` / `handoff.md` 为准。
+- 前端旧任务 `/home/cheng/git-project/Cli-Proxy-API-Management-Center/.agents/tasks/20260527-sync-upstream/` 仍是 predecessor/reference；当前 canonical plan 继续以本任务为准。
+- 旧任务 `20260527-sync-upstream` 中 `b25f722` 与 `632be0b` 的 `continue_skip` 决策基于旧基线 `upstream/main@87702bb` 和旧 provider / usage 架构。
+- 本任务以 `v1.16.7` 新布局为基底重新保留 fork Usage 页面；因此旧 skip 决策不再禁止当前 Usage 功能落地，但仍可作为“不要普通 merge 间接吸收旧大范围变更”的历史审计证据。
+- 当前前端 Usage 新增文件应作为本任务 8/9 的显式范围跟踪：
+  - `src/components/usage/`
+  - `src/features/authFiles/hooks/useAuthFilesStats.ts`
+  - `src/pages/UsagePage.tsx`
+  - `src/pages/UsagePage.module.scss`
+  - `src/services/api/usage.ts`
+  - `src/stores/useUsageStatsStore.ts`
+  - `src/types/sourceInfo.ts`
+  - `src/types/usage.ts`
+  - `src/utils/sourceResolver.ts`
+  - `src/utils/usage.ts`
+  - `src/utils/usage/`
+  - `src/utils/usageIndex.ts`
+- Usage 验收需要覆盖：统计卡片、时间范围切换、图表线选择持久化、模型/API 统计、导出/导入、4 语言 i18n、移动端布局，以及后端 `/usage` / `/usage/export` / `/usage/import` 契约一致性。

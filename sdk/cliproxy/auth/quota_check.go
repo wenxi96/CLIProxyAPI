@@ -52,6 +52,7 @@ func (m *Manager) SetQuotaChecker(checker QuotaChecker) {
 		})
 		m.syncScheduler()
 	}
+	m.reconcileActiveQuotaRefresh()
 }
 
 func (m *Manager) getQuotaChecker() QuotaChecker {

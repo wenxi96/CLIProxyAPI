@@ -12,6 +12,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	sigcompat "github.com/router-for-me/CLIProxyAPI/v7/internal/signature"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -371,6 +372,7 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 				if callID == "" {
 					callID = genToolCallID()
 				}
+				callID = util.SanitizeClaudeToolID(callID)
 				name := item.Get("name").String()
 				argsStr := item.Get("arguments").String()
 
@@ -399,6 +401,7 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 				flushPendingReasoning()
 				// Map to user tool_result
 				callID := item.Get("call_id").String()
+				callID = util.SanitizeClaudeToolID(callID)
 				flushPendingToolUseFor(callID)
 				outputStr := item.Get("output").String()
 				toolResult := []byte(`{"type":"tool_result","tool_use_id":"","content":""}`)
@@ -519,6 +522,9 @@ func convertResponsesToolToClaudeTools(tool gjson.Result, toolNameMap map[string
 			return [][]byte{tJSON}
 		}
 	default:
+		if isOpenAIResponsesApplyPatchCustomTool(toolType, tool) {
+			return nil
+		}
 		if isUnsupportedOpenAIBuiltinToolType(toolType) {
 			return nil
 		}
@@ -527,6 +533,10 @@ func convertResponsesToolToClaudeTools(tool gjson.Result, toolNameMap map[string
 		}
 	}
 	return nil
+}
+
+func isOpenAIResponsesApplyPatchCustomTool(toolType string, tool gjson.Result) bool {
+	return toolType == "custom" && strings.TrimSpace(tool.Get("name").String()) == "apply_patch"
 }
 
 func convertResponsesNamespaceToolToClaude(tool gjson.Result, toolNameMap map[string]string) [][]byte {

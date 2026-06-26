@@ -345,7 +345,7 @@ func (m configTabModel) parseConfig(cfg map[string]any) []configField {
 	// Quota exceeded
 	fields = append(fields, configField{"Switch Project on Quota", "quota-exceeded/switch-project", "bool", fmt.Sprintf("%v", getBoolNested(cfg, "quota-exceeded", "switch-project")), nil})
 	fields = append(fields, configField{"Switch Preview Model", "quota-exceeded/switch-preview-model", "bool", fmt.Sprintf("%v", getBoolNested(cfg, "quota-exceeded", "switch-preview-model")), nil})
-	fields = append(fields, configField{"Auto Disable on Zero Quota", "quota-exceeded/auto-disable-auth-file-on-zero-quota", "bool", fmt.Sprintf("%v", getBoolNested(cfg, "quota-exceeded", "auto-disable-auth-file-on-zero-quota")), nil})
+	fields = append(fields, configField{"Auto Disable on Low Quota", "quota-exceeded/auto-disable-auth-file-on-low-quota", "bool", fmt.Sprintf("%v", getBoolNested(cfg, "quota-exceeded", "auto-disable-auth-file-on-low-quota")), nil})
 	fields = append(fields, configField{"Auto Disable Threshold %", "quota-exceeded/auto-disable-auth-file-quota-threshold-percent", "int", fmt.Sprintf("%.0f", getFloatNested(cfg, "quota-exceeded", "auto-disable-auth-file-quota-threshold-percent")), nil})
 
 	// Routing

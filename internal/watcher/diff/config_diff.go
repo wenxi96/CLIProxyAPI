@@ -45,6 +45,12 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.DisableCooling != newCfg.DisableCooling {
 		changes = append(changes, fmt.Sprintf("disable-cooling: %t -> %t", oldCfg.DisableCooling, newCfg.DisableCooling))
 	}
+	if oldCfg.SaveCooldownStatus != newCfg.SaveCooldownStatus {
+		changes = append(changes, fmt.Sprintf("save-cooldown-status: %t -> %t", oldCfg.SaveCooldownStatus, newCfg.SaveCooldownStatus))
+	}
+	if oldCfg.TransientErrorCooldownSeconds != newCfg.TransientErrorCooldownSeconds {
+		changes = append(changes, fmt.Sprintf("transient-error-cooldown-seconds: %d -> %d", oldCfg.TransientErrorCooldownSeconds, newCfg.TransientErrorCooldownSeconds))
+	}
 	if oldCfg.DisableClaudeCloakMode != newCfg.DisableClaudeCloakMode {
 		changes = append(changes, fmt.Sprintf("disable-claude-cloak-mode: %t -> %t", oldCfg.DisableClaudeCloakMode, newCfg.DisableClaudeCloakMode))
 	}
@@ -92,14 +98,26 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.QuotaExceeded.SwitchPreviewModel != newCfg.QuotaExceeded.SwitchPreviewModel {
 		changes = append(changes, fmt.Sprintf("quota-exceeded.switch-preview-model: %t -> %t", oldCfg.QuotaExceeded.SwitchPreviewModel, newCfg.QuotaExceeded.SwitchPreviewModel))
 	}
-	if oldCfg.QuotaExceeded.AutoDisableAuthFileOnZeroQuota != newCfg.QuotaExceeded.AutoDisableAuthFileOnZeroQuota {
-		changes = append(changes, fmt.Sprintf("quota-exceeded.auto-disable-auth-file-on-zero-quota: %t -> %t", oldCfg.QuotaExceeded.AutoDisableAuthFileOnZeroQuota, newCfg.QuotaExceeded.AutoDisableAuthFileOnZeroQuota))
+	if oldCfg.QuotaExceeded.AutoDisableAuthFileOnLowQuota != newCfg.QuotaExceeded.AutoDisableAuthFileOnLowQuota {
+		changes = append(changes, fmt.Sprintf("quota-exceeded.auto-disable-auth-file-on-low-quota: %t -> %t", oldCfg.QuotaExceeded.AutoDisableAuthFileOnLowQuota, newCfg.QuotaExceeded.AutoDisableAuthFileOnLowQuota))
 	}
 	if oldCfg.QuotaExceeded.AutoDisableAuthFileQuotaThresholdPercent != newCfg.QuotaExceeded.AutoDisableAuthFileQuotaThresholdPercent {
 		changes = append(changes, fmt.Sprintf("quota-exceeded.auto-disable-auth-file-quota-threshold-percent: %d -> %d", oldCfg.QuotaExceeded.AutoDisableAuthFileQuotaThresholdPercent, newCfg.QuotaExceeded.AutoDisableAuthFileQuotaThresholdPercent))
 	}
 	if oldCfg.QuotaExceeded.AntigravityCredits != newCfg.QuotaExceeded.AntigravityCredits {
 		changes = append(changes, fmt.Sprintf("quota-exceeded.antigravity-credits: %t -> %t", oldCfg.QuotaExceeded.AntigravityCredits, newCfg.QuotaExceeded.AntigravityCredits))
+	}
+	if oldCfg.QuotaExceeded.ActiveQuotaRefresh.Enabled != newCfg.QuotaExceeded.ActiveQuotaRefresh.Enabled {
+		changes = append(changes, fmt.Sprintf("quota-exceeded.active-quota-refresh.enabled: %t -> %t", oldCfg.QuotaExceeded.ActiveQuotaRefresh.Enabled, newCfg.QuotaExceeded.ActiveQuotaRefresh.Enabled))
+	}
+	if oldCfg.QuotaExceeded.ActiveQuotaRefresh.ScanIntervalSeconds != newCfg.QuotaExceeded.ActiveQuotaRefresh.ScanIntervalSeconds {
+		changes = append(changes, fmt.Sprintf("quota-exceeded.active-quota-refresh.scan-interval-seconds: %d -> %d", oldCfg.QuotaExceeded.ActiveQuotaRefresh.ScanIntervalSeconds, newCfg.QuotaExceeded.ActiveQuotaRefresh.ScanIntervalSeconds))
+	}
+	if oldCfg.QuotaExceeded.ActiveQuotaRefresh.ActiveTTLSeconds != newCfg.QuotaExceeded.ActiveQuotaRefresh.ActiveTTLSeconds {
+		changes = append(changes, fmt.Sprintf("quota-exceeded.active-quota-refresh.active-ttl-seconds: %d -> %d", oldCfg.QuotaExceeded.ActiveQuotaRefresh.ActiveTTLSeconds, newCfg.QuotaExceeded.ActiveQuotaRefresh.ActiveTTLSeconds))
+	}
+	if oldCfg.QuotaExceeded.ActiveQuotaRefresh.Workers != newCfg.QuotaExceeded.ActiveQuotaRefresh.Workers {
+		changes = append(changes, fmt.Sprintf("quota-exceeded.active-quota-refresh.workers: %d -> %d", oldCfg.QuotaExceeded.ActiveQuotaRefresh.Workers, newCfg.QuotaExceeded.ActiveQuotaRefresh.Workers))
 	}
 
 	if oldCfg.Codex.IdentityConfuse != newCfg.Codex.IdentityConfuse {
@@ -184,6 +202,9 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 			newExcluded := SummarizeExcludedModels(n.ExcludedModels)
 			if oldExcluded.hash != newExcluded.hash {
 				changes = append(changes, fmt.Sprintf("claude[%d].excluded-models: updated (%d -> %d entries)", i, oldExcluded.count, newExcluded.count))
+			}
+			if o.RebuildMidSystemMessage != n.RebuildMidSystemMessage {
+				changes = append(changes, fmt.Sprintf("claude[%d].rebuild-mid-system-message: %t -> %t", i, o.RebuildMidSystemMessage, n.RebuildMidSystemMessage))
 			}
 			if o.Cloak != nil && n.Cloak != nil {
 				if strings.TrimSpace(o.Cloak.Mode) != strings.TrimSpace(n.Cloak.Mode) {

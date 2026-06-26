@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/geminicli"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/proxyutil"
 	log "github.com/sirupsen/logrus"
@@ -132,6 +131,11 @@ type window struct {
 	Used             *int
 	ResetHint        string
 	ModelIDs         []string
+}
+
+type sharedOAuthMetadata interface {
+	MetadataSnapshot() map[string]any
+	MergeMetadata(map[string]any) map[string]any
 }
 
 // NewService constructs a runtime quota inspector for providers with real quota APIs.
@@ -1115,7 +1119,7 @@ func tokenValueForAuth(auth *coreauth.Auth) string {
 			return v
 		}
 	}
-	if shared := geminicli.ResolveSharedCredential(auth.Runtime); shared != nil {
+	if shared := sharedOAuthMetadataFromRuntime(auth.Runtime); shared != nil {
 		if v := tokenValueFromMetadata(shared.MetadataSnapshot()); v != "" {
 			return v
 		}
@@ -1127,7 +1131,7 @@ func geminiOAuthMetadata(auth *coreauth.Auth) (map[string]any, func(map[string]a
 	if auth == nil {
 		return nil, nil
 	}
-	if shared := geminicli.ResolveSharedCredential(auth.Runtime); shared != nil {
+	if shared := sharedOAuthMetadataFromRuntime(auth.Runtime); shared != nil {
 		snapshot := shared.MetadataSnapshot()
 		return snapshot, func(fields map[string]any) { shared.MergeMetadata(fields) }
 	}
@@ -1139,6 +1143,17 @@ func geminiOAuthMetadata(auth *coreauth.Auth) (map[string]any, func(map[string]a
 			auth.Metadata[k] = v
 		}
 	}
+}
+
+func sharedOAuthMetadataFromRuntime(runtime any) sharedOAuthMetadata {
+	if runtime == nil {
+		return nil
+	}
+	shared, ok := runtime.(sharedOAuthMetadata)
+	if !ok {
+		return nil
+	}
+	return shared
 }
 
 func stringValue(metadata map[string]any, key string) string {

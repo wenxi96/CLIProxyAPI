@@ -29,6 +29,11 @@ const (
 	DefaultScopedPoolIdleLogSec         = 60
 	MaxScopedPoolQuotaPercent           = 50
 	MaxAutoDisableQuotaThresholdPercent = 50
+	DefaultActiveQuotaRefreshScanSec    = 30
+	DefaultActiveQuotaRefreshTTLSec     = 600
+	DefaultActiveQuotaRefreshWorkers    = 1
+	MinActiveQuotaRefreshScanSec        = 5
+	MinActiveQuotaRefreshTTLSec         = 60
 	DefaultAuthDir                      = "~/.cli-proxy-api"
 )
 
@@ -91,6 +96,13 @@ type Config struct {
 
 	// DisableCooling disables quota cooldown scheduling when true.
 	DisableCooling bool `yaml:"disable-cooling" json:"disable-cooling"`
+
+	// SaveCooldownStatus persists runtime cooldown status next to auth files when true.
+	SaveCooldownStatus bool `yaml:"save-cooldown-status" json:"save-cooldown-status"`
+
+	// TransientErrorCooldownSeconds controls cooldowns for transient upstream errors.
+	// 0 keeps the legacy default cooldown. Negative values disable these cooldowns.
+	TransientErrorCooldownSeconds int `yaml:"transient-error-cooldown-seconds" json:"transient-error-cooldown-seconds"`
 
 	// AuthAutoRefreshWorkers overrides the size of the core auth auto-refresh worker pool.
 	// When <= 0, the default worker count is used.
@@ -160,7 +172,7 @@ type Config struct {
 
 	// OAuthModelAlias defines global model name aliases for OAuth/file-backed auth channels.
 	// These aliases affect both model listing and model routing for supported channels:
-	// gemini-cli, vertex, aistudio, antigravity, claude, codex, kimi, xai.
+	// vertex, aistudio, antigravity, claude, codex, kimi, xai.
 	//
 	// NOTE: This does not apply to existing per-credential model alias features under:
 	// gemini-api-key, codex-api-key, claude-api-key, openai-compatibility, and vertex-api-key.
@@ -324,9 +336,9 @@ type QuotaExceeded struct {
 	// SwitchPreviewModel indicates whether to automatically switch to a preview model when a quota is exceeded.
 	SwitchPreviewModel bool `yaml:"switch-preview-model" json:"switch-preview-model"`
 
-	// AutoDisableAuthFileOnZeroQuota indicates whether file-backed auths with real quota inspection
-	// should be automatically disabled after an async confirmation that remaining quota is zero.
-	AutoDisableAuthFileOnZeroQuota bool `yaml:"auto-disable-auth-file-on-zero-quota" json:"auto-disable-auth-file-on-zero-quota"`
+	// AutoDisableAuthFileOnLowQuota indicates whether file-backed auths with real quota inspection
+	// should be automatically disabled after the configured low-quota condition is confirmed.
+	AutoDisableAuthFileOnLowQuota bool `yaml:"auto-disable-auth-file-on-low-quota" json:"auto-disable-auth-file-on-low-quota"`
 
 	// AutoDisableAuthFileQuotaThresholdPercent sets a global quota threshold (0..50) for auto-disabling auth files.
 	// When set to a value greater than 0, auth files will be disabled when remaining quota percent is less than or equal to this threshold.
@@ -336,6 +348,95 @@ type QuotaExceeded struct {
 	// AntigravityCredits indicates whether to retry Antigravity quota_exhausted 429s once
 	// on the same credential with enabledCreditTypes=["GOOGLE_ONE_AI"].
 	AntigravityCredits bool `yaml:"antigravity-credits" json:"antigravity-credits"`
+
+	// ActiveQuotaRefresh configures the background quota refresh pool for recently used auth files.
+	ActiveQuotaRefresh ActiveQuotaRefreshConfig `yaml:"active-quota-refresh" json:"active-quota-refresh"`
+}
+
+// ActiveQuotaRefreshConfig controls the background quota refresh pool for recently used auth files.
+type ActiveQuotaRefreshConfig struct {
+	// Enabled turns on background quota checks for recently used auth files.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+
+	// ScanIntervalSeconds controls how often the pool scans active auth entries.
+	ScanIntervalSeconds int `yaml:"scan-interval-seconds" json:"scan-interval-seconds"`
+
+	// ActiveTTLSeconds controls how long an auth remains in the pool without new runtime use.
+	ActiveTTLSeconds int `yaml:"active-ttl-seconds" json:"active-ttl-seconds"`
+
+	// Workers controls the maximum concurrent background quota checks.
+	Workers int `yaml:"workers" json:"workers"`
+}
+
+func (q *QuotaExceeded) UnmarshalYAML(value *yaml.Node) error {
+	type quotaExceededYAML struct {
+		SwitchProject                            *bool                    `yaml:"switch-project"`
+		SwitchPreviewModel                       *bool                    `yaml:"switch-preview-model"`
+		AutoDisableAuthFileOnLowQuota            *bool                    `yaml:"auto-disable-auth-file-on-low-quota"`
+		AutoDisableAuthFileOnZeroQuotaLegacy     *bool                    `yaml:"auto-disable-auth-file-on-zero-quota"`
+		AutoDisableAuthFileQuotaThresholdPercent int                      `yaml:"auto-disable-auth-file-quota-threshold-percent"`
+		AntigravityCredits                       bool                     `yaml:"antigravity-credits"`
+		ActiveQuotaRefresh                       ActiveQuotaRefreshConfig `yaml:"active-quota-refresh"`
+	}
+	var raw quotaExceededYAML
+	if err := value.Decode(&raw); err != nil {
+		return err
+	}
+
+	if raw.SwitchProject != nil {
+		q.SwitchProject = *raw.SwitchProject
+	}
+	if raw.SwitchPreviewModel != nil {
+		q.SwitchPreviewModel = *raw.SwitchPreviewModel
+	}
+	if raw.AutoDisableAuthFileOnLowQuota != nil {
+		q.AutoDisableAuthFileOnLowQuota = *raw.AutoDisableAuthFileOnLowQuota
+	} else if raw.AutoDisableAuthFileOnZeroQuotaLegacy != nil {
+		q.AutoDisableAuthFileOnLowQuota = *raw.AutoDisableAuthFileOnZeroQuotaLegacy
+	}
+	q.AutoDisableAuthFileQuotaThresholdPercent = raw.AutoDisableAuthFileQuotaThresholdPercent
+	q.AntigravityCredits = raw.AntigravityCredits
+	q.ActiveQuotaRefresh = raw.ActiveQuotaRefresh
+	return nil
+}
+
+func (q *QuotaExceeded) UnmarshalJSON(data []byte) error {
+	type quotaExceededJSON struct {
+		SwitchProject                            *bool                    `json:"switch-project"`
+		SwitchPreviewModel                       *bool                    `json:"switch-preview-model"`
+		AutoDisableAuthFileOnLowQuota            *bool                    `json:"auto-disable-auth-file-on-low-quota"`
+		AutoDisableAuthFileOnLowQuotaCamel       *bool                    `json:"autoDisableAuthFileOnLowQuota"`
+		AutoDisableAuthFileOnZeroQuotaLegacy     *bool                    `json:"auto-disable-auth-file-on-zero-quota"`
+		AutoDisableAuthFileOnZeroQuotaCamel      *bool                    `json:"autoDisableAuthFileOnZeroQuota"`
+		AutoDisableAuthFileQuotaThresholdPercent int                      `json:"auto-disable-auth-file-quota-threshold-percent"`
+		AntigravityCredits                       bool                     `json:"antigravity-credits"`
+		ActiveQuotaRefresh                       ActiveQuotaRefreshConfig `json:"active-quota-refresh"`
+	}
+	var raw quotaExceededJSON
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	if raw.SwitchProject != nil {
+		q.SwitchProject = *raw.SwitchProject
+	}
+	if raw.SwitchPreviewModel != nil {
+		q.SwitchPreviewModel = *raw.SwitchPreviewModel
+	}
+	switch {
+	case raw.AutoDisableAuthFileOnLowQuota != nil:
+		q.AutoDisableAuthFileOnLowQuota = *raw.AutoDisableAuthFileOnLowQuota
+	case raw.AutoDisableAuthFileOnLowQuotaCamel != nil:
+		q.AutoDisableAuthFileOnLowQuota = *raw.AutoDisableAuthFileOnLowQuotaCamel
+	case raw.AutoDisableAuthFileOnZeroQuotaLegacy != nil:
+		q.AutoDisableAuthFileOnLowQuota = *raw.AutoDisableAuthFileOnZeroQuotaLegacy
+	case raw.AutoDisableAuthFileOnZeroQuotaCamel != nil:
+		q.AutoDisableAuthFileOnLowQuota = *raw.AutoDisableAuthFileOnZeroQuotaCamel
+	}
+	q.AutoDisableAuthFileQuotaThresholdPercent = raw.AutoDisableAuthFileQuotaThresholdPercent
+	q.AntigravityCredits = raw.AntigravityCredits
+	q.ActiveQuotaRefresh = raw.ActiveQuotaRefresh
+	return nil
 }
 
 // RoutingConfig configures how credentials are selected for requests.
@@ -511,6 +612,9 @@ type ClaudeKey struct {
 
 	// ExcludedModels lists model IDs that should be excluded for this provider.
 	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+
+	// RebuildMidSystemMessage moves Claude messages with role "system" into the top-level system field.
+	RebuildMidSystemMessage bool `yaml:"rebuild-mid-system-message,omitempty" json:"rebuild-mid-system-message,omitempty"`
 
 	// DisableCooling disables auth/model cooldown scheduling for this credential when true.
 	DisableCooling bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
@@ -758,10 +862,14 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.UsageStatisticsPersistIntervalSeconds = 30
 	cfg.RedisUsageQueueRetentionSeconds = 60
 	cfg.DisableCooling = false
+	cfg.SaveCooldownStatus = false
+	cfg.TransientErrorCooldownSeconds = 0
 	cfg.DisableImageGeneration = DisableImageGenerationOff
 	cfg.Pprof.Enable = false
 	cfg.Pprof.Addr = DefaultPprofAddr
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
+	cfg.QuotaExceeded.SwitchProject = true
+	cfg.QuotaExceeded.SwitchPreviewModel = true
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		if optional {
 			// In cloud deploy mode, if YAML parsing fails, return empty config instead of error.
@@ -889,6 +997,25 @@ func (cfg *Config) SanitizeQuotaExceeded() {
 	if cfg.QuotaExceeded.AutoDisableAuthFileQuotaThresholdPercent > MaxAutoDisableQuotaThresholdPercent {
 		cfg.QuotaExceeded.AutoDisableAuthFileQuotaThresholdPercent = MaxAutoDisableQuotaThresholdPercent
 	}
+	cfg.QuotaExceeded.ActiveQuotaRefresh = NormalizeActiveQuotaRefreshConfig(cfg.QuotaExceeded.ActiveQuotaRefresh)
+}
+
+// NormalizeActiveQuotaRefreshConfig normalizes background quota refresh settings.
+func NormalizeActiveQuotaRefreshConfig(cfg ActiveQuotaRefreshConfig) ActiveQuotaRefreshConfig {
+	if cfg.ScanIntervalSeconds <= 0 {
+		cfg.ScanIntervalSeconds = DefaultActiveQuotaRefreshScanSec
+	} else if cfg.ScanIntervalSeconds < MinActiveQuotaRefreshScanSec {
+		cfg.ScanIntervalSeconds = MinActiveQuotaRefreshScanSec
+	}
+	if cfg.ActiveTTLSeconds <= 0 {
+		cfg.ActiveTTLSeconds = DefaultActiveQuotaRefreshTTLSec
+	} else if cfg.ActiveTTLSeconds < MinActiveQuotaRefreshTTLSec {
+		cfg.ActiveTTLSeconds = MinActiveQuotaRefreshTTLSec
+	}
+	if cfg.Workers < 1 {
+		cfg.Workers = DefaultActiveQuotaRefreshWorkers
+	}
+	return cfg
 }
 
 // DefaultRoutingScopedPoolProviderConfig returns the normalized default values for scoped-pool entries.
@@ -1390,6 +1517,7 @@ func SaveConfigPreserveComments(configFile string, cfg *Config) error {
 	removeLegacyOpenAICompatAPIKeys(original.Content[0])
 	removeRemovedIntegrationKeys(original.Content[0])
 	removeLegacyGenerativeLanguageKeys(original.Content[0])
+	removeLegacyQuotaExceededKeys(original.Content[0])
 
 	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "oauth-excluded-models")
 	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "oauth-model-alias")
@@ -2178,4 +2306,19 @@ func removeLegacyAuthBlock(root *yaml.Node) {
 		return
 	}
 	removeMapKey(root, "auth")
+}
+
+func removeLegacyQuotaExceededKeys(root *yaml.Node) {
+	if root == nil || root.Kind != yaml.MappingNode {
+		return
+	}
+	idx := findMapKeyIndex(root, "quota-exceeded")
+	if idx < 0 || idx+1 >= len(root.Content) {
+		return
+	}
+	quotaExceeded := root.Content[idx+1]
+	if quotaExceeded == nil || quotaExceeded.Kind != yaml.MappingNode {
+		return
+	}
+	removeMapKey(quotaExceeded, "auto-disable-auth-file-on-zero-quota")
 }

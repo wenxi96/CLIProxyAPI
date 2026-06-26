@@ -11,6 +11,7 @@ import (
 	"time"
 
 	gin "github.com/gin-gonic/gin"
+	managementHandlers "github.com/router-for-me/CLIProxyAPI/v7/internal/api/handlers/management"
 	proxyconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
@@ -192,6 +193,30 @@ func TestManagementResponseExposesPluginSupportHeaderForCORS(t *testing.T) {
 	}
 }
 
+func TestOAuthCallbackRouteSkipsManagementKeyMiddleware(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+
+	server := newTestServer(t)
+	state := "server-plugin-oauth-state"
+	if errRegister := managementHandlers.RegisterPluginOAuthSession(state, "gemini-cli", nil); errRegister != nil {
+		t.Fatalf("register plugin oauth session: %v", errRegister)
+	}
+	defer managementHandlers.CompleteOAuthSession(state)
+
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/oauth-callback?state="+state+"&code=test-code", nil)
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+
+	callbackPath := filepath.Join(server.cfg.AuthDir, ".oauth-gemini-cli-"+state+".oauth")
+	if _, errRead := os.ReadFile(callbackPath); errRead != nil {
+		t.Fatalf("expected callback file to be written without management key: %v", errRead)
+	}
+}
+
 func TestNewServerWithPluginHostInjectsHandlerInterceptors(t *testing.T) {
 	host := pluginhost.New()
 	server := newTestServerWithOptions(t, WithPluginHost(host))
@@ -213,6 +238,55 @@ func TestNewServerWithoutPluginHostLeavesHandlerInterceptorsDisabled(t *testing.
 	}
 	if server.handlers.PluginHost != nil {
 		t.Fatalf("handler plugin host = %#v, want nil", server.handlers.PluginHost)
+	}
+}
+
+func TestManagementQuotaAutoDisableLegacyRouteCompatibility(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+
+	server := newTestServer(t)
+	if err := os.WriteFile(server.configFilePath, []byte("quota-exceeded:\n  auto-disable-auth-file-on-low-quota: false\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	doRequest := func(method, path, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer test-management-key")
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+		return rr
+	}
+
+	getRR := doRequest(http.MethodGet, "/v0/management/quota-exceeded/auto-disable-auth-file-on-zero-quota", "")
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("legacy GET status = %d, want %d body=%s", getRR.Code, http.StatusOK, getRR.Body.String())
+	}
+	var getPayload map[string]bool
+	if errUnmarshal := json.Unmarshal(getRR.Body.Bytes(), &getPayload); errUnmarshal != nil {
+		t.Fatalf("unmarshal legacy GET response: %v body=%s", errUnmarshal, getRR.Body.String())
+	}
+	if getPayload["auto-disable-auth-file-on-low-quota"] || getPayload["auto-disable-auth-file-on-zero-quota"] {
+		t.Fatalf("legacy GET payload = %#v, want both fields false", getPayload)
+	}
+
+	putRR := doRequest(http.MethodPut, "/v0/management/quota-exceeded/auto-disable-auth-file-on-zero-quota", `{"value":true}`)
+	if putRR.Code != http.StatusOK {
+		t.Fatalf("legacy PUT status = %d, want %d body=%s", putRR.Code, http.StatusOK, putRR.Body.String())
+	}
+	if !server.cfg.QuotaExceeded.AutoDisableAuthFileOnLowQuota {
+		t.Fatal("legacy PUT did not update low-quota auto-disable config")
+	}
+
+	patchRR := doRequest(http.MethodPatch, "/v0/management/quota-exceeded/auto-disable-auth-file-on-zero-quota", `{"value":false}`)
+	if patchRR.Code != http.StatusOK {
+		t.Fatalf("legacy PATCH status = %d, want %d body=%s", patchRR.Code, http.StatusOK, patchRR.Body.String())
+	}
+	if server.cfg.QuotaExceeded.AutoDisableAuthFileOnLowQuota {
+		t.Fatal("legacy PATCH did not update low-quota auto-disable config")
 	}
 }
 
@@ -411,6 +485,100 @@ func TestHomeEnabledHidesManagementEndpointsAndControlPanel(t *testing.T) {
 	})
 }
 
+func TestModelsDispatchByAnthropicVersionHeader(t *testing.T) {
+	modelRegistry := registry.GetGlobalRegistry()
+	clientID := "test-anthropic-version-dispatch"
+	modelRegistry.RegisterClient(clientID, "claude", []*registry.ModelInfo{
+		{
+			ID:                  "claude-sonnet-4-6",
+			Object:              "model",
+			OwnedBy:             "anthropic",
+			Type:                "claude",
+			DisplayName:         "Claude 4.6 Sonnet",
+			ContextLength:       200000,
+			MaxCompletionTokens: 64000,
+		},
+	})
+	t.Cleanup(func() {
+		modelRegistry.UnregisterClient(clientID)
+	})
+
+	server := newTestServer(t)
+
+	// Anthropic API request (Anthropic-Version header, non-claude-cli User-Agent) -> Claude format.
+	t.Run("anthropic version header routes to claude format", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		req.Header.Set("Authorization", "Bearer test-key")
+		req.Header.Set("User-Agent", "Zed/1.0")
+		req.Header.Set("Anthropic-Version", "2023-06-01")
+
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+		}
+
+		var resp struct {
+			Object  string           `json:"object"`
+			HasMore *bool            `json:"has_more"`
+			Data    []map[string]any `json:"data"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("failed to parse response JSON: %v; body=%s", err, rr.Body.String())
+		}
+		if resp.Object == "list" {
+			t.Fatalf("expected Claude format (no object=list), got OpenAI format: %s", rr.Body.String())
+		}
+		if resp.HasMore == nil {
+			t.Fatalf("expected Claude envelope with has_more, got %s", rr.Body.String())
+		}
+
+		var claudeModel map[string]any
+		for _, m := range resp.Data {
+			if id, _ := m["id"].(string); id == "claude-sonnet-4-6" {
+				claudeModel = m
+			}
+		}
+		if claudeModel == nil {
+			t.Fatalf("expected claude-sonnet-4-6 in response, got %s", rr.Body.String())
+		}
+		for _, field := range []string{"max_input_tokens", "max_tokens", "display_name"} {
+			if _, ok := claudeModel[field]; !ok {
+				t.Fatalf("expected Claude model to include %q, got %v", field, claudeModel)
+			}
+		}
+	})
+
+	// Plain request (no Anthropic-Version, non-claude-cli User-Agent) -> OpenAI format, unaffected.
+	t.Run("plain request stays on openai format", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		req.Header.Set("Authorization", "Bearer test-key")
+		req.Header.Set("User-Agent", "Mozilla/5.0")
+
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+		}
+
+		var resp struct {
+			Object string           `json:"object"`
+			Data   []map[string]any `json:"data"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("failed to parse response JSON: %v; body=%s", err, rr.Body.String())
+		}
+		if resp.Object != "list" {
+			t.Fatalf("expected OpenAI format (object=list), got %s", rr.Body.String())
+		}
+		for _, m := range resp.Data {
+			if _, ok := m["max_input_tokens"]; ok {
+				t.Fatalf("did not expect max_input_tokens in OpenAI format, got %v", m)
+			}
+		}
+	})
+}
+
 func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 	modelRegistry := registry.GetGlobalRegistry()
 	clientID := "test-client-version-catalog"
@@ -500,6 +668,9 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 	if got, _ := custom["display_name"].(string); got != "Custom Codex Model" {
 		t.Fatalf("custom display_name = %q, want Custom Codex Model", got)
 	}
+	if got := int(codexClientTestPriority(custom["priority"])); got != 129 {
+		t.Fatalf("custom priority = %v, want 129", custom["priority"])
+	}
 	if got, _ := custom["description"].(string); got != "Custom model from registry" {
 		t.Fatalf("custom description = %q, want Custom model from registry", got)
 	}
@@ -515,6 +686,10 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 	}
 	if got, _ := custom["prefer_websockets"].(bool); got {
 		t.Fatalf("custom prefer_websockets = %v, want false", custom["prefer_websockets"])
+	}
+	customServiceTiers, ok := custom["service_tiers"].([]any)
+	if !ok || len(customServiceTiers) != 0 {
+		t.Fatalf("expected custom model service_tiers = [], got %#v", custom["service_tiers"])
 	}
 	if _, ok := custom["apply_patch_tool_type"]; ok {
 		t.Fatal("expected custom model to omit apply_patch_tool_type")
@@ -547,6 +722,17 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 		if !found {
 			t.Fatalf("expected hidden model %s in codex catalog", slug)
 		}
+	}
+}
+
+func codexClientTestPriority(raw any) int {
+	switch value := raw.(type) {
+	case int:
+		return value
+	case float64:
+		return int(value)
+	default:
+		return -1
 	}
 }
 
@@ -667,6 +853,89 @@ func TestDefaultRequestLoggerFactory_UsesResolvedLogDirectory(t *testing.T) {
 		if strings.HasPrefix(entry.Name(), "error-") && strings.HasSuffix(entry.Name(), ".log") {
 			t.Fatalf("unexpected forced error log in config dir %s", configLogsDir)
 		}
+	}
+}
+
+func TestFormatHomeClaudeModelIncludesAnthropicSchemaFields(t *testing.T) {
+	withMetadata := formatHomeClaudeModel(homeModelEntry{
+		id:                  "claude-sonnet-4-6",
+		created:             1771372800,
+		ownedBy:             "anthropic",
+		displayName:         "Claude 4.6 Sonnet",
+		contextLength:       200000,
+		maxCompletionTokens: 64000,
+	})
+	if got := withMetadata["created_at"]; got != "2026-02-18T00:00:00Z" {
+		t.Fatalf("created_at = %v, want RFC3339 timestamp", got)
+	}
+	if got := withMetadata["type"]; got != "model" {
+		t.Fatalf("type = %v, want model", got)
+	}
+	if got := withMetadata["display_name"]; got != "Claude 4.6 Sonnet" {
+		t.Fatalf("display_name = %v, want Claude 4.6 Sonnet", got)
+	}
+	if got := withMetadata["max_input_tokens"]; got != 200000 {
+		t.Fatalf("max_input_tokens = %v, want 200000", got)
+	}
+	if got := withMetadata["max_tokens"]; got != 64000 {
+		t.Fatalf("max_tokens = %v, want 64000", got)
+	}
+
+	withDefaults := formatHomeClaudeModel(homeModelEntry{id: "claude-no-limits"})
+	if got := withDefaults["display_name"]; got != "claude-no-limits" {
+		t.Fatalf("display_name fallback = %v, want claude-no-limits", got)
+	}
+	if got := withDefaults["max_input_tokens"]; got != registry.DefaultClaudeMaxInputTokens {
+		t.Fatalf("max_input_tokens fallback = %v, want %d", got, registry.DefaultClaudeMaxInputTokens)
+	}
+	if got := withDefaults["max_tokens"]; got != registry.DefaultClaudeMaxOutputTokens {
+		t.Fatalf("max_tokens fallback = %v, want %d", got, registry.DefaultClaudeMaxOutputTokens)
+	}
+	if _, ok := withDefaults["created_at"]; ok {
+		t.Fatalf("created_at should be omitted when source created is missing, got %v", withDefaults)
+	}
+}
+
+func TestDecodeHomeModelsKeepsTokenMetadata(t *testing.T) {
+	entries, errDecode := decodeHomeModels([]byte(`{
+		"claude": [
+			{
+				"id": "claude-sonnet-4-6",
+				"created": 1771372800,
+				"owned_by": "anthropic",
+				"context_length": 200000,
+				"max_completion_tokens": 64000
+			}
+		],
+		"gemini": [
+			{
+				"name": "models/gemini-3-pro",
+				"inputTokenLimit": 1048576,
+				"outputTokenLimit": 65536
+			}
+		]
+	}`))
+	if errDecode != nil {
+		t.Fatalf("decodeHomeModels returned error: %v", errDecode)
+	}
+
+	byID := make(map[string]homeModelEntry, len(entries))
+	for _, entry := range entries {
+		byID[entry.id] = entry
+	}
+	claudeEntry, ok := byID["claude-sonnet-4-6"]
+	if !ok {
+		t.Fatalf("expected claude-sonnet-4-6 entry, got %v", byID)
+	}
+	if claudeEntry.contextLength != 200000 || claudeEntry.maxCompletionTokens != 64000 {
+		t.Fatalf("claude token metadata = %d/%d, want 200000/64000", claudeEntry.contextLength, claudeEntry.maxCompletionTokens)
+	}
+	geminiEntry, ok := byID["gemini-3-pro"]
+	if !ok {
+		t.Fatalf("expected gemini-3-pro entry, got %v", byID)
+	}
+	if geminiEntry.contextLength != 1048576 || geminiEntry.maxCompletionTokens != 65536 {
+		t.Fatalf("gemini token metadata = %d/%d, want 1048576/65536", geminiEntry.contextLength, geminiEntry.maxCompletionTokens)
 	}
 }
 

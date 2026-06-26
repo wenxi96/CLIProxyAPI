@@ -24,7 +24,7 @@
     - 新增 `autoDisabledQuotaThresholdStatusMessage`
   - `sdk/cliproxy/auth/quota_check_async.go`
     - 将 `result.Exhausted` 触发条件扩展为 `result.Exhausted || remainingPercent <= threshold`
-    - 保持配置开关 `auto-disable-auth-file-on-zero-quota` 作为总开关
+    - 将自动禁用总开关命名为 `auto-disable-auth-file-on-low-quota`，旧 `auto-disable-auth-file-on-zero-quota` 仅作为兼容输入和旧管理 API 路由保留
     - 明确状态消息：耗尽触发使用 `auto_disabled_quota_exhausted`，阈值触发使用 `auto_disabled_quota_threshold`
   - `sdk/cliproxy/auth/quota_check_async_test.go`
     - 增加阈值等于、低于、高于场景
@@ -40,12 +40,12 @@
     - 覆盖阈值读写与 clamp/保存行为
   - `internal/watcher/diff/config_diff.go`
     - 增加阈值配置变更摘要
-    - 补齐既有 `auto-disable-auth-file-on-zero-quota` 开关的变更摘要
+    - 补齐当前 `auto-disable-auth-file-on-low-quota` 开关的变更摘要
   - `internal/watcher/diff/config_diff_test.go`
     - 覆盖阈值 diff 输出
   - `internal/tui/config_tab.go`
     - 在配置页暴露阈值字段
-    - 同步补齐既有 `auto-disable-auth-file-on-zero-quota` 总开关入口
+    - 同步补齐当前 `auto-disable-auth-file-on-low-quota` 总开关入口
   - `.agents/README.md`
     - 登记当前新任务目录
 - Read:
@@ -128,7 +128,7 @@
 
 ## Acceptance Criteria
 
-- 未配置新阈值时，`auto-disable-auth-file-on-zero-quota: true` 仍只在明确零额度/耗尽时禁用。
+- 未配置新阈值时，`auto-disable-auth-file-on-low-quota: true` 仍只在明确零额度/耗尽时禁用；旧 `auto-disable-auth-file-on-zero-quota: true` 作为兼容输入读取为同一开关。
 - 设置阈值为 `10` 后，`RemainingPercent` 为 `10` 或更低会自动禁用。
 - `RemainingPercent` 为 `11` 不会自动禁用，除非 `Exhausted=true`。
 - `RemainingPercent=nil` 且非耗尽分类不会按阈值自动禁用。
@@ -140,4 +140,6 @@
 - scoped-pool 阈值仍只影响 round-robin scoped-pool 池内剔除，不持久禁用。
 - 同时命中 scoped-pool 阈值和自动禁用阈值时，最终状态为 `disabled`。
 - 管理 API 可读取和更新阈值。
+- 管理 API 新端点使用 `auto-disable-auth-file-on-low-quota`；旧 `auto-disable-auth-file-on-zero-quota` 端点继续兼容并委托到同一配置。
+- 配置保存会收敛为 `auto-disable-auth-file-on-low-quota`，并移除旧 `auto-disable-auth-file-on-zero-quota`。
 - 示例配置、TUI 配置项、配置 diff 与测试同步更新。

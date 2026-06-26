@@ -9,6 +9,37 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
+func TestConvertOpenAIResponsesRequestToClaude_SanitizesToolCallIDsForClaude(t *testing.T) {
+	inputJSON := `{
+		"model": "gpt-4.1",
+		"input": [
+			{
+				"type": "function_call",
+				"call_id": "call.with space:1",
+				"name": "Read",
+				"arguments": "{\"path\":\"README.md\"}"
+			},
+			{
+				"type": "function_call_output",
+				"call_id": "call.with space:1",
+				"output": "ok"
+			}
+		]
+	}`
+
+	result := ConvertOpenAIResponsesRequestToClaude("claude-sonnet-4-5", []byte(inputJSON), false)
+	resultJSON := gjson.ParseBytes(result)
+	toolUseID := resultJSON.Get("messages.0.content.0.id").String()
+	toolResultID := resultJSON.Get("messages.1.content.0.tool_use_id").String()
+
+	if toolUseID != "call_with_space_1" {
+		t.Fatalf("tool_use id = %q, want %q", toolUseID, "call_with_space_1")
+	}
+	if toolResultID != toolUseID {
+		t.Fatalf("tool_result tool_use_id = %q, want same sanitized id %q", toolResultID, toolUseID)
+	}
+}
+
 func TestConvertOpenAIResponsesRequestToClaude_ReasoningItemToThinkingBlock(t *testing.T) {
 	rawSignature, expectedSignature := testClaudeResponsesThinkingSignature(t)
 	raw := []byte(`{
@@ -168,6 +199,40 @@ func TestConvertOpenAIResponsesRequestToClaude_KeepsToolUseAdjacentToToolResult(
 	}
 	if got := root.Get("messages.2.content.0.tool_use_id").String(); got != "call_00_awGuheXs4aRbtedNK8LE3743" {
 		t.Fatalf("tool_result id = %q, want call_00_awGuheXs4aRbtedNK8LE3743. Output: %s", got, string(out))
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToClaude_DropsApplyPatchCustomTool(t *testing.T) {
+	raw := []byte(`{
+		"model":"claude-test",
+		"input":[{"role":"user","content":[{"type":"input_text","text":"hi"}]}],
+		"tools":[
+			{
+				"type":"custom",
+				"name":"apply_patch",
+				"description":"Use the apply_patch tool to edit files.",
+				"format":{"type":"grammar","syntax":"lark","definition":"start: patch"}
+			},
+			{
+				"type":"function",
+				"name":"exec_command",
+				"description":"Runs a command.",
+				"parameters":{"type":"object","properties":{"cmd":{"type":"string"}},"required":["cmd"]}
+			}
+		]
+	}`)
+
+	out := ConvertOpenAIResponsesRequestToClaude("claude-test", raw, false)
+	root := gjson.ParseBytes(out)
+
+	if got := root.Get("tools.#").Int(); got != 1 {
+		t.Fatalf("tools count = %d, want 1. Output: %s", got, string(out))
+	}
+	if got := root.Get("tools.0.name").String(); got != "exec_command" {
+		t.Fatalf("tools.0.name = %q, want exec_command. Output: %s", got, string(out))
+	}
+	if got := root.Get("tools.#(name==\"apply_patch\")").Raw; got != "" {
+		t.Fatalf("apply_patch custom tool should be dropped. Output: %s", string(out))
 	}
 }
 
