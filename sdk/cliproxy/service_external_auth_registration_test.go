@@ -59,3 +59,49 @@ func TestExternalAuthRegistrationTriggersModelRegistration(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+func TestConfigAPIKeyRegistrationSkipsLifecycleFeedback(t *testing.T) {
+	service := &Service{
+		cfg: &config.Config{
+			OpenAICompatibility: []config.OpenAICompatibility{
+				{
+					Name:    "startup-test",
+					BaseURL: "https://example.invalid/v1",
+					APIKeyEntries: []config.OpenAICompatibilityAPIKey{
+						{APIKey: "test-key"},
+					},
+					Models: []config.OpenAICompatibilityModel{
+						{Name: "upstream-model", Alias: "startup-test-model"},
+					},
+				},
+			},
+		},
+	}
+	service.coreManager = coreauth.NewManager(nil, &coreauth.RoundRobinSelector{}, authMaintenanceHook{
+		next:    coreauth.NoopHook{},
+		service: service,
+	})
+	service.coreManager.SetConfig(service.cfg)
+
+	done := make(chan struct{})
+	go func() {
+		service.registerConfigAPIKeyAuths(context.Background(), service.cfg)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("config API key registration did not return; possible lifecycle feedback loop")
+	}
+
+	auths := service.coreManager.List()
+	if len(auths) != 1 {
+		t.Fatalf("registered auth count = %d, want 1", len(auths))
+	}
+	if auths[0].Provider != "openai-compatible-startup-test" {
+		t.Fatalf("registered provider = %q, want openai-compatible-startup-test", auths[0].Provider)
+	}
+
+	GlobalModelRegistry().UnregisterClient(auths[0].ID)
+}

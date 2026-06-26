@@ -774,7 +774,7 @@ func (s *Service) handleAuthUpdates(ctx context.Context, updates []watcher.AuthU
 		return
 	}
 
-	registrationCtx := coreauth.WithDeferredAPIKeyModelAliasRebuild(ctx)
+	registrationCtx := withSkipAuthLifecycleSync(coreauth.WithDeferredAPIKeyModelAliasRebuild(ctx))
 	tasks := make([]modelRegistrationTask, 0, len(updates))
 	needsPluginSync := false
 	needsAliasRebuild := false
@@ -1665,7 +1665,7 @@ func (s *Service) registerConfigAPIKeyAuths(ctx context.Context, cfg *config.Con
 		return
 	}
 
-	registrationCtx := coreauth.WithDeferredAPIKeyModelAliasRebuild(ctx)
+	registrationCtx := withSkipAuthLifecycleSync(coreauth.WithDeferredAPIKeyModelAliasRebuild(ctx))
 	tasks := make([]modelRegistrationTask, 0, len(auths))
 	needsAliasRebuild := false
 	for _, auth := range auths {
