@@ -175,7 +175,7 @@ func filterAntigravityReasoningReplayItemsForRequest(payload []byte, items [][]b
 				continue
 			}
 		case "thought_signature":
-			if antigravityRequestHasThoughtSignatureAt(payload, itemResult) {
+			if antigravityRequestHasThoughtSignatureAtResolved(payload, itemResult) {
 				continue
 			}
 		default:
@@ -365,10 +365,20 @@ func insertAntigravityModelFunctionCallBeforeContent(payload []byte, beforeIndex
 	return updated, true
 }
 
+func antigravityRequestHasThoughtSignatureAtResolved(payload []byte, itemResult gjson.Result) bool {
+	ci := antigravityReasoningReplayResolveContentIndex(payload, int(itemResult.Get("contentIndex").Int()))
+	pi := int(itemResult.Get("partIndex").Int())
+	return antigravityRequestHasThoughtSignatureAtIndex(payload, ci, pi)
+}
+
 func antigravityRequestHasThoughtSignatureAt(payload []byte, itemResult gjson.Result) bool {
 	ci := int(itemResult.Get("contentIndex").Int())
 	pi := int(itemResult.Get("partIndex").Int())
-	partPath, ok := antigravityExistingReplayPartPath(payload, ci, pi)
+	return antigravityRequestHasThoughtSignatureAtIndex(payload, ci, pi)
+}
+
+func antigravityRequestHasThoughtSignatureAtIndex(payload []byte, contentIndex int, partIndex int) bool {
+	partPath, ok := antigravityExistingReplayPartPath(payload, contentIndex, partIndex)
 	if !ok {
 		return false
 	}
@@ -422,9 +432,16 @@ func insertAntigravityReasoningReplayItems(payload []byte, items [][]byte) ([]by
 				if strings.TrimSpace(gjson.GetBytes(out, path).String()) != "" {
 					continue
 				}
+				updated, err := sjson.SetBytes(out, path, sig)
+				if err != nil {
+					continue
+				}
+				out = updated
+				changed = true
+				continue
 			}
-			path := antigravityReplayPartWritePath(out, ci, pi) + ".thoughtSignature"
-			updated, err := sjson.SetBytes(out, path, sig)
+			path := antigravityReplayPartWritePath(out, ci, pi)
+			updated, err := sjson.SetBytes(out, path, map[string]any{"thoughtSignature": sig})
 			if err != nil {
 				continue
 			}
