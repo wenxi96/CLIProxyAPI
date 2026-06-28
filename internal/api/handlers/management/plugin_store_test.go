@@ -358,7 +358,7 @@ func TestInstallPluginFromStoreWritesFileAndEnablesConfig(t *testing.T) {
 	if body.RestartRequired {
 		t.Fatal("restart_required = true, want false")
 	}
-	targetPath := filepath.Join(pluginsDir, runtime.GOOS, runtime.GOARCH, "sample-provider"+managementPluginExtension(runtime.GOOS))
+	targetPath := managementInstalledPluginPath(pluginsDir, "0.1.0")
 	data, errRead := os.ReadFile(targetPath)
 	if errRead != nil {
 		t.Fatalf("ReadFile(%s) error = %v", targetPath, errRead)
@@ -444,7 +444,7 @@ func TestInstallPluginFromStoreUsesRequestedThirdPartySource(t *testing.T) {
 	if body.SourceID != communitySourceID || body.Version != "0.3.0" {
 		t.Fatalf("install response = %#v, want community source version 0.3.0", body)
 	}
-	targetPath := filepath.Join(pluginsDir, runtime.GOOS, runtime.GOARCH, "sample-provider"+managementPluginExtension(runtime.GOOS))
+	targetPath := managementInstalledPluginPath(pluginsDir, "0.3.0")
 	data, errRead := os.ReadFile(targetPath)
 	if errRead != nil {
 		t.Fatalf("ReadFile(%s) error = %v", targetPath, errRead)
@@ -495,7 +495,10 @@ func TestInstallPluginFromStoreOverwritesFilePreservesConfigAndReloads(t *testin
 	t.Parallel()
 
 	pluginsDir := t.TempDir()
-	existingPath := filepath.Join(pluginsDir, "sample-provider"+managementPluginExtension(runtime.GOOS))
+	existingPath := managementInstalledPluginPath(pluginsDir, "0.1.0")
+	if errMkdir := os.MkdirAll(filepath.Dir(existingPath), 0o755); errMkdir != nil {
+		t.Fatalf("MkdirAll() error = %v", errMkdir)
+	}
 	if errWrite := os.WriteFile(existingPath, []byte("old-library-data"), 0o644); errWrite != nil {
 		t.Fatalf("WriteFile(%s) error = %v", existingPath, errWrite)
 	}
@@ -711,4 +714,13 @@ func makeManagementPluginStoreZip(t *testing.T, name string, content string) []b
 		t.Fatalf("Close() error = %v", errClose)
 	}
 	return buffer.Bytes()
+}
+
+func managementInstalledPluginPath(root string, version string) string {
+	return filepath.Join(
+		root,
+		runtime.GOOS,
+		runtime.GOARCH,
+		"sample-provider-v"+version+managementPluginExtension(runtime.GOOS),
+	)
 }
