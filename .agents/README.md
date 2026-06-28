@@ -24,6 +24,7 @@ Persistence Mode: git-visible
 - `20260424-absorb-cliproxyapi2-fixes`：制定 CLIProxyAPI2 改动吸收计划并沉淀分批执行方案。
 - `20260424-evaluate-watcher-race-current-architecture`：评估当前 watcher 架构下是否存在与参考仓库同类竞态，并决定是否另起实施任务。
 - `20260612-sync-upstream-v7-fork-customizations`：规划前后端吸收最新上游版本，同时保留 fork 自定义功能。
+- `20260626-backend-upstream-v7-2-42`：后端独立吸收 `upstream/main@b05a27e4` / `v7.2.43`，已完成验证、`dev`/`master` 推送与 release tag `v7.2.43-wx-2.6`。
 
 ## 说明
 
