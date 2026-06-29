@@ -507,9 +507,7 @@ func TestActiveQuotaRefreshRemovesAuthAfterThresholdAutoDisable(t *testing.T) {
 	}
 
 	waitForDisabledAuth(t, mgr, auth.ID, autoDisabledQuotaThresholdStatusMessage)
-	if _, ok := pool.snapshot(auth.ID); ok {
-		t.Fatal("expected disabled auth to be removed from active quota refresh pool")
-	}
+	waitForActiveQuotaPoolRemoval(t, pool, auth.ID)
 	waitForStoreSave(t, store)
 }
 
@@ -591,6 +589,90 @@ func TestActiveQuotaRefreshUpdatesScopedPoolQuotaSnapshot(t *testing.T) {
 	}
 	if current.Disabled {
 		t.Fatal("auth should not be disabled when active refresh result is above auto-disable threshold")
+	}
+}
+
+func TestActiveQuotaRefreshWorkersLimitConcurrentChecksAcrossScans(t *testing.T) {
+	checker := &quotaCheckerStub{
+		started: make(chan struct{}, 3),
+		release: make(chan struct{}),
+		result: QuotaCheckResult{
+			Classification:   ClassificationOK,
+			RemainingPercent: intPtr(80),
+		},
+	}
+	mgr := NewManager(nil, nil, nil)
+	mgr.SetQuotaChecker(checker)
+	mgr.SetConfig(&internalconfig.Config{
+		QuotaExceeded: internalconfig.QuotaExceeded{
+			AutoDisableAuthFileOnLowQuota:            true,
+			AutoDisableAuthFileQuotaThresholdPercent: 40,
+			ActiveQuotaRefresh: internalconfig.ActiveQuotaRefreshConfig{
+				Enabled:             true,
+				ScanIntervalSeconds: 30,
+				ActiveTTLSeconds:    600,
+				Workers:             1,
+			},
+		},
+	})
+	defer mgr.StopAutoRefresh()
+
+	authIDs := []string{
+		"auth-active-quota-refresh-worker-1",
+		"auth-active-quota-refresh-worker-2",
+		"auth-active-quota-refresh-worker-3",
+	}
+	for _, authID := range authIDs {
+		auth := &Auth{
+			ID:       authID,
+			Provider: "codex",
+			Status:   StatusActive,
+			Metadata: map[string]any{
+				"chatgpt_account_id": "acct",
+				"access_token":       "token",
+			},
+		}
+		if _, err := mgr.Register(WithSkipPersist(context.Background()), auth); err != nil {
+			t.Fatalf("Register() error = %v", err)
+		}
+		mgr.MarkResult(context.Background(), Result{
+			AuthID:   auth.ID,
+			Provider: auth.Provider,
+			Model:    "gpt-5",
+			Success:  true,
+		})
+	}
+
+	mgr.activeQuotaMu.Lock()
+	pool := mgr.activeQuotaPool
+	mgr.activeQuotaMu.Unlock()
+	if pool == nil {
+		t.Fatal("expected active quota refresh pool")
+	}
+
+	mgr.scanActiveQuotaRefresh(context.Background(), pool, time.Now(), 1)
+	select {
+	case <-checker.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("active quota refresh did not start")
+	}
+	mgr.scanActiveQuotaRefresh(context.Background(), pool, time.Now().Add(time.Second), 1)
+	select {
+	case <-checker.started:
+		t.Fatal("second quota check started while the only worker was occupied")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if got := checker.callCount.Load(); got != 1 {
+		t.Fatalf("quota checks = %d, want 1 while the only worker is occupied", got)
+	}
+
+	close(checker.release)
+	waitForActiveQuotaPoolRunning(t, pool, 0)
+	mgr.scanActiveQuotaRefresh(context.Background(), pool, time.Now().Add(2*time.Second), 1)
+	select {
+	case <-checker.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("active quota refresh did not start after worker was released")
 	}
 }
 
@@ -1285,6 +1367,37 @@ func waitForDisabledAuth(t *testing.T, mgr *Manager, authID, wantStatusMessage s
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("auth was not auto disabled in time")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func waitForActiveQuotaPoolRemoval(t *testing.T, pool *activeQuotaRefreshPool, authID string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, ok := pool.snapshot(authID); !ok {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("expected auth to be removed from active quota refresh pool")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func waitForActiveQuotaPoolRunning(t *testing.T, pool *activeQuotaRefreshPool, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		pool.mu.Lock()
+		got := pool.running
+		pool.mu.Unlock()
+		if got == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("active quota refresh running = %d, want %d", got, want)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

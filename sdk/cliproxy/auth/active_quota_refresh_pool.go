@@ -14,6 +14,7 @@ const (
 type activeQuotaRefreshPool struct {
 	mu      sync.Mutex
 	ttl     time.Duration
+	running int
 	entries map[string]*activeQuotaRefreshEntry
 }
 
@@ -58,6 +59,10 @@ func (p *activeQuotaRefreshPool) remove(authID string) {
 		return
 	}
 	p.mu.Lock()
+	entry := p.entries[authID]
+	if entry != nil && entry.inFlight && p.running > 0 {
+		p.running--
+	}
 	delete(p.entries, authID)
 	p.mu.Unlock()
 }
@@ -69,9 +74,15 @@ func (p *activeQuotaRefreshPool) due(now time.Time, limit int) []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	if limit > 0 && p.running >= limit {
+		return nil
+	}
 	var due []string
 	for authID, entry := range p.entries {
 		if p.isExpiredLocked(entry, now) {
+			if entry.inFlight && p.running > 0 {
+				p.running--
+			}
 			delete(p.entries, authID)
 			continue
 		}
@@ -79,8 +90,12 @@ func (p *activeQuotaRefreshPool) due(now time.Time, limit int) []string {
 			continue
 		}
 		entry.inFlight = true
+		p.running++
 		due = append(due, authID)
 		if limit > 0 && len(due) >= limit {
+			break
+		}
+		if limit > 0 && p.running >= limit {
 			break
 		}
 	}
@@ -97,6 +112,9 @@ func (p *activeQuotaRefreshPool) markComplete(authID string, result QuotaCheckRe
 	entry := p.entries[authID]
 	if entry == nil {
 		return
+	}
+	if entry.inFlight && p.running > 0 {
+		p.running--
 	}
 	if result.Classification == ClassificationUnsupported || (result.RemainingPercent == nil && !result.Exhausted) {
 		delete(p.entries, authID)
