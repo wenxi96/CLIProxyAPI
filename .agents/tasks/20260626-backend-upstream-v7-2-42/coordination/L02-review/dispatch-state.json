@@ -1,0 +1,29 @@
+{
+  "loopId": "L02-review",
+  "dispatchStatus": "accepted",
+  "waitForHuman": false,
+  "updatedAt": "2026-06-26T17:58:00+08:00",
+  "packets": [
+    {
+      "packetId": "P01-backend-plan-review",
+      "workerId": "backend-plan-reviewer",
+      "status": "changes_requested",
+      "currentSubmissionPointer": "coordination/L02-review/workers/backend-plan-reviewer/submissions/P01-backend-plan-review/S01.md",
+      "submissionCount": 1
+    },
+    {
+      "packetId": "P02-backend-verification-review",
+      "workerId": "backend-verification-reviewer",
+      "status": "changes_requested",
+      "currentSubmissionPointer": "coordination/L02-review/workers/backend-verification-reviewer/submissions/P02-backend-verification-review/S01.md",
+      "submissionCount": 1
+    },
+    {
+      "packetId": "P03-backend-rereview",
+      "workerId": "backend-rereviewer",
+      "status": "ready_with_updates",
+      "currentSubmissionPointer": "coordination/L02-review/workers/backend-rereviewer/submissions/P03-backend-rereview/S01.md",
+      "submissionCount": 1
+    }
+  ]
+}
