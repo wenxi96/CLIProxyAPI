@@ -9,4 +9,3 @@
 - Progress Timeline: progress.md
 - Handoff: handoff.md
 - Evidence Directory: evidence/
-
