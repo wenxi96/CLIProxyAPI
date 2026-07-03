@@ -74,5 +74,5 @@
 
 ## 状态指针
 
-- 当前 active loop：L02
+- Loop 状态：以 `ulw-board.md` 为准。
 - 当前阶段：以 `ulw-board.md` 为准。

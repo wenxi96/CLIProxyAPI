@@ -15,7 +15,7 @@
   - 周期持久化关闭时，启动恢复与关闭保存仍保留
   - 关闭流程不能引入明显阻塞或 goroutine 泄漏
 - Detail Level: contract-first
-- Execution Route: direct-inline
+- Execution Route: direct_inline
 - Why This Route: 本轮写集集中、依赖顺序明确，且核心风险都在当前主线程已掌握的少量文件中，直接串行实现和验证最稳妥。
 - Escalation Trigger:
   - 如果 `Service` 生命周期接入需要同步重构 watcher 或 server 架构
@@ -97,7 +97,7 @@
   - 如果配置项需要同步暴露到管理配置编辑端点才能保持兼容，先停下确认是否纳入本轮
 
 ## Execution Handoff
-- Execution Route: direct-inline
+- Execution Route: direct_inline
 - Why This Route: 改动集中于单仓库少量文件，主线程已掌握参考实现与当前差异，不需要拆多 agent。
 - Escalate To:
   - `ulw-governed`：如果这一轮吸收被拆成多轮继续推进

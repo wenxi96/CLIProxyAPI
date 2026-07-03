@@ -15,7 +15,7 @@
   - 只有真实额度查询明确耗尽时才允许禁用
   - 自动禁用必须正确落盘，避免重启回弹
 - Detail Level: contract-first
-- Execution Route: direct-inline
+- Execution Route: direct_inline
 - Why This Route: 改动虽然跨配置、运行时和存储，但依赖链清晰且核心写面集中在后端少量文件中，由主线程串行推进更容易保持状态一致和测试顺序。
 - Escalation Trigger:
   - 如果共享额度查询服务抽取后需要大范围迁移管理接口依赖
@@ -136,7 +136,7 @@
   - 如果发现现有 `TokenStorage` 实现对 metadata 注入契约不一致，需要先统一接口边界再继续
 
 ## Execution Handoff
-- Execution Route: direct-inline
+- Execution Route: direct_inline
 - Why This Route: 任务虽然多步骤，但各任务之间强依赖明显，严格按“公共服务 -> 运行时 -> 配置 -> 持久化 -> 验证”推进最稳妥。
 - Escalate To:
   - `ulw-governed`：如果实现或验证需要拆成多轮提交

@@ -3,7 +3,7 @@
 ## Execution State
 
 - Plan Path: `.agents/tasks/20260612-sync-upstream-v7-fork-customizations/plans/2026-06-12-sync-upstream-v7-fork-customizations-implementation-plan.md`
-- Execution Route: ulw_governed
+- Execution Route: direct_inline
 - Current Task: 任务 11 已完成本地 `dev -> master` 合入与 master 后验证；本轮独立评审发现项已在后端本地 `dev` / `master` 收口，停在 push / release 授权门禁
 - Task Status: task_11_master_merged_review_fixes_applied_waiting_push_release_authorization
 - Last Verification: review_fix_workflow_yaml_parse_and_bash_syntax_passed

@@ -16,4 +16,12 @@
 - Files: `.agents/tasks/20260703-codex-batch-quota-display-parity/task.md`; `.agents/tasks/20260703-codex-batch-quota-display-parity/progress.md`; `.agents/tasks/20260703-codex-batch-quota-display-parity/handoff.md`; `.agents/tasks/20260703-codex-batch-quota-display-parity/closeout.md`
 - Verification: `git diff --check`; `git ls-files -u`; `rg -n "^(<<<<<<<|=======|>>>>>>>)" .`; `git status --short --branch`
 - Result: 最终检查通过；无 whitespace diff 问题、无未合并索引、无冲突标记；`standard-doc-audit` 为 clean。
-- Next: 无后端代码剩余项；等待用户决定是否提交。
+- Next: 后续已按用户授权完成提交、推送、合入 `master` 和发版，见下一条记录。
+
+### 2026-07-03 提交推送与发布后复核
+
+- Action: 按用户授权提交后端修复，推送 `dev`，合入并推送 `master`，随 `v7.2.49-wx-2.9` 完成发布。
+- Files: `.agents/tasks/20260703-codex-batch-quota-display-parity/task.md`; `.agents/tasks/20260703-codex-batch-quota-display-parity/progress.md`; `.agents/tasks/20260703-codex-batch-quota-display-parity/handoff.md`; `.agents/tasks/20260703-codex-batch-quota-display-parity/closeout.md`; `.agents/README.md`
+- Verification: `git branch --contains 61d34dfd --all`; `git ls-remote --heads origin dev master`; `git ls-remote --tags origin v7.2.49-wx-2.9`; GitHub Actions run API；Release 页面和 Linux amd64 资产 HTTP 检查；`docker manifest inspect ghcr.io/wenxi96/cli-proxy-api:7.2.49-wx-2.9`
+- Result: 修复提交已包含于本地/远端 `dev` 和 `master`；release workflow、docker workflow、资产与镜像检查通过。
+- Next: 无本任务剩余提交、推送或发版工作；真实 provider live API 验证仍为剩余风险。

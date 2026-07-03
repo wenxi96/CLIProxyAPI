@@ -18,7 +18,7 @@
   - `恢复已恢复` 阈值口径需对齐 `cliproxyapi-tool`，默认 `danger`
   - 保持中文文案、中文注释与中文提交信息约定
 - Detail Level: contract-first
-- Execution Route: direct-inline
+- Execution Route: direct_inline
 - Why This Route: 变更虽然同时涉及后端仓库和配套前端仓库，但边界清晰、依赖顺序明确，且当前主线程已掌握完整上下文；直接串行推进比重新拆多 agent 更稳妥。
 - Escalation Trigger:
   - 如果 `aggregate` 设计需要反向改动异步任务基础契约或存储模型
@@ -186,7 +186,7 @@
   - 如果现有批量删除或启停接口无法满足“只处理本次候选集”的要求，先停下确认是否要新增后端处置接口
 
 ## Execution Handoff
-- Execution Route: direct-inline
+- Execution Route: direct_inline
 - Why This Route: 当前实现链路具备明确顺序依赖，先收敛后端统计，再切前端消费与联调，比并发拆分更容易控制兼容性与验收口径。
 - Escalate To:
   - `ulw-governed`：如果实现跨多个会话继续推进，或需要引入显式阶段检查点
