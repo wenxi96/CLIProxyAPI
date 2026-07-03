@@ -38,7 +38,7 @@
 - 文件： `.agents/tasks/20260703-backend-upstream-v7-2-49-absorption/closeout.md`; `.agents/tasks/20260703-backend-upstream-v7-2-49-absorption/task.md`
 - 验证： `git status --short --branch`; `git diff --check`; `rg -n "^(<<<<<<<|=======|>>>>>>>)" .`
 - 结果： 后端候选仍在 `dev` 工作区，未提交；无冲突标记；空白检查通过。
-- 下一步： 等待用户授权是否提交。
+- 下一步： 后续已按用户授权完成提交、推送、合入 `master` 和发版，见后续记录。
 
 ### 2026-07-03 完成前复核
 
@@ -46,4 +46,12 @@
 - 文件： `.agents/tasks/20260703-backend-upstream-v7-2-49-absorption/evidence/20260703-backend-merge-verification.md`
 - 验证： `git rev-parse --short MERGE_HEAD`; `git rev-parse --short upstream/main`; `docker run --rm -v "$PWD":/workspace -w /workspace golang:1.26 go test -buildvcs=false ./...`; `docker run --rm -v "$PWD":/workspace -w /workspace golang:1.26 go build -buildvcs=false -o test-output ./cmd/server && rm test-output`; `git diff --check`; `git ls-files -u`; `rg -n "^(<<<<<<<|=======|>>>>>>>)" .`
 - 结果： `MERGE_HEAD` 与 `upstream/main` 均为 `f8334be8`；全量测试通过；构建通过；无未解决 merge 条目；无冲突标记；空白检查通过。
-- 下一步： 汇总前后端完成状态，等待用户明确授权是否提交、推送或发版。
+- 下一步： 后续已按用户授权完成提交、推送、合入 `master` 和发版，见后续记录。
+
+### 2026-07-03 提交推送与发布后复核
+
+- 动作： 按用户授权提交后端上游吸收候选，推送 `dev`，合入并推送 `master`，创建 release tag，并完成发布后只读复核。
+- 文件： `.agents/tasks/20260703-backend-upstream-v7-2-49-absorption/task.md`; `.agents/tasks/20260703-backend-upstream-v7-2-49-absorption/closeout.md`; `.agents/tasks/20260703-backend-upstream-v7-2-49-absorption/handoff.md`; `.agents/tasks/20260703-backend-upstream-v7-2-49-absorption/progress.md`; `.agents/README.md`
+- 验证： `git ls-remote --heads origin dev master`; `git ls-remote --tags origin v7.2.49-wx-2.9`; GitHub Actions run API；Release 页面和 Linux amd64 资产 HTTP 检查；`docker manifest inspect ghcr.io/wenxi96/cli-proxy-api:7.2.49-wx-2.9`; `docker manifest inspect ghcr.io/wenxi96/cli-proxy-api:latest`
+- 结果： `origin/dev@61d34dfd`、`origin/master@766ec81c`、`v7.2.49-wx-2.9` 均已就位；release 和 docker workflow 均为 `completed/success`；release 资产与 GHCR 镜像检查通过。
+- 下一步： 无本任务剩余提交、推送或发版工作；后续上游新提交另建吸收任务。

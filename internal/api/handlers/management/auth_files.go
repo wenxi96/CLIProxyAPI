@@ -32,6 +32,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/synthesizer"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
@@ -330,9 +331,13 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 	}
 	auths := h.authManager.List()
 	poolSnapshot := h.authManager.ScopedPoolSnapshot()
+	var authUsage map[string]usage.AuthUsageSnapshot
+	if h.usageStats != nil {
+		authUsage = h.usageStats.Snapshot().Auths
+	}
 	files := make([]gin.H, 0, len(auths))
 	for _, auth := range auths {
-		if entry := h.buildAuthFileEntry(auth, poolSnapshot.Auths[auth.ID]); entry != nil {
+		if entry := h.buildAuthFileEntry(auth, poolSnapshot.Auths[auth.ID], authUsage); entry != nil {
 			files = append(files, entry)
 		}
 	}
@@ -456,7 +461,7 @@ func (h *Handler) listAuthFilesFromDisk(c *gin.Context) {
 	c.JSON(200, gin.H{"files": files})
 }
 
-func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth, poolStatus coreauth.PoolAuthSnapshot) gin.H {
+func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth, poolStatus coreauth.PoolAuthSnapshot, authUsage map[string]usage.AuthUsageSnapshot) gin.H {
 	if auth == nil {
 		return nil
 	}
@@ -491,6 +496,9 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth, poolStatus coreauth.Po
 	entry["success"] = auth.Success
 	entry["failed"] = auth.Failed
 	entry["recent_requests"] = auth.RecentRequestsSnapshot(time.Now())
+	if usageSnapshot, ok := authUsage[auth.Index]; ok {
+		entry["usage"] = authFileUsageSummary(usageSnapshot)
+	}
 	if email := authEmail(auth); email != "" {
 		entry["email"] = email
 	}
@@ -601,6 +609,20 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth, poolStatus coreauth.Po
 		entry["websockets"] = websockets
 	}
 	return entry
+}
+
+func authFileUsageSummary(snapshot usage.AuthUsageSnapshot) gin.H {
+	result := gin.H{
+		"total_requests":     snapshot.TotalRequests,
+		"success_count":      snapshot.SuccessCount,
+		"failure_count":      snapshot.FailureCount,
+		"tokens":             snapshot.Tokens,
+		"estimated_cost_usd": snapshot.EstimatedCostUSD,
+	}
+	if snapshot.LastRequestAt != nil {
+		result["last_request_at"] = *snapshot.LastRequestAt
+	}
+	return result
 }
 
 func authWebsocketsValue(auth *coreauth.Auth) (bool, bool) {

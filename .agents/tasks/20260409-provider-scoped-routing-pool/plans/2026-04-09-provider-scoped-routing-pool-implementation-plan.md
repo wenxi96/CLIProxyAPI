@@ -18,7 +18,7 @@
   - 文件型 auth 与配置型 provider 凭证统一走 `coreauth.Auth`
   - 前端池状态展示必须基于后端运行时状态，而不是前端猜测
 - Detail Level: contract-first
-- Execution Route: multi-agent
+- Execution Route: direct_inline
 - Why This Route: 后端运行时与前端管理中心位于两个独立仓库，写面天然分离；先冻结后端契约与接口后，可将后端运行时实现与前端接入分阶段并行推进，最后由主线程统一完成集成验证。
 - Escalation Trigger:
   - 如果范围轮询层无法作为“可旁路的 provider-local 过滤层”接入，而必须深度改写默认 scheduler 语义
@@ -248,10 +248,10 @@
 
 ## Execution Handoff
 
-- Execution Route: multi-agent
+- Execution Route: direct_inline
 - Why This Route: 后端与前端仓库写面独立，且在 Task 3 之后接口契约基本冻结，适合拆成“后端运行时/接口”和“前端接入/展示”两条并行子流，最后由主线程统一完成 Task 6 验证。
 - Escalate To:
-  - `direct-inline`：如果后端契约在实现过程中持续漂移，不适合并行
+  - `multi_agent`：如果后续重新拆分为互不重叠写集，可另行建立 canonical carrier 后启用
   - `ulw-governed`：如果本轮拆成多次提交或跨多会话推进
 - Handoff Notes:
   - 严格先完成 Task 1-3，再允许前端并行推进

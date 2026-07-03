@@ -3,7 +3,7 @@
 ## Execution State
 
 - Plan Path: `.agents/tasks/20260331-auth-file-batch-check/plans/2026-03-31-auth-file-batch-check-implementation-plan.md`
-- Execution Route: direct-inline
+- Execution Route: direct_inline
 - Current Task: 异步批量检查与进度展示已完成实现与编译验证
 - Task Status: in_progress
 - Last Verification: completed

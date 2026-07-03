@@ -210,6 +210,56 @@ func TestRestoreRequestStatisticsDeduplicatesRepeatedLoads(t *testing.T) {
 	}
 }
 
+func TestMergeSnapshotRebuildsAuthsFromDetailsAndIgnoresImportedAuths(t *testing.T) {
+	stats := NewRequestStatistics()
+	timestamp := time.Date(2026, 7, 3, 10, 0, 0, 0, time.UTC)
+	snapshot := StatisticsSnapshot{
+		APIs: map[string]APISnapshot{
+			"POST /v1/chat/completions": {
+				Models: map[string]ModelSnapshot{
+					"gpt-5-mini": {
+						Details: []RequestDetail{{
+							Timestamp: timestamp,
+							Source:    "restore@example.com",
+							AuthIndex: "auth-from-detail",
+							Tokens: TokenStats{
+								InputTokens:  10,
+								OutputTokens: 20,
+							},
+						}},
+					},
+				},
+			},
+		},
+		Auths: map[string]AuthUsageSnapshot{
+			"derived-only": {
+				AuthIndex:     "derived-only",
+				TotalRequests: 99,
+				Tokens: TokenStats{
+					TotalTokens: 9999,
+				},
+			},
+		},
+	}
+
+	result := stats.MergeSnapshot(snapshot)
+	if result.Added != 1 || result.Skipped != 0 {
+		t.Fatalf("MergeSnapshot() = %+v, want added=1 skipped=0", result)
+	}
+
+	restored := stats.Snapshot()
+	if _, ok := restored.Auths["derived-only"]; ok {
+		t.Fatalf("imported derived auths should be ignored: %#v", restored.Auths)
+	}
+	authSnapshot, ok := restored.Auths["auth-from-detail"]
+	if !ok {
+		t.Fatalf("auth aggregation was not rebuilt from details: %#v", restored.Auths)
+	}
+	if authSnapshot.TotalRequests != 1 || authSnapshot.Tokens.TotalTokens != 30 {
+		t.Fatalf("auth aggregation = %+v, want total_requests=1 total_tokens=30", authSnapshot)
+	}
+}
+
 func TestRestoreRequestStatisticsFallsBackToLegacyJSONFile(t *testing.T) {
 	stats := NewRequestStatistics()
 	recordUsageForPersistenceTest(stats, coreusage.Record{

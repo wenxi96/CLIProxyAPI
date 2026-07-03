@@ -47,6 +47,13 @@ Bugfix Status
 | `internal/api/handlers/management/auth_files_batch_check_test.go` | test | 增加 batch-check handler 月度 primary 回归用例 | 覆盖 HTTP 响应契约 | 验证前端入口数据 |
 | `.agents/tasks/20260703-codex-batch-quota-display-parity/*` | docs | 中文记录任务、根因、验证和收口 | 满足治理记录要求 | 保留决策证据 |
 
+## 提交与发布
+
+- 修复提交：`dev@61d34dfd`
+- 发布合并：`master@766ec81c`
+- Release tag：`v7.2.49-wx-2.9`
+- 发布后复核：远端 `dev` / `master`、release tag、GitHub release workflow、docker-image workflow、release 资产与 GHCR 镜像均已检查通过。
+
 ## 验证
 
 | 检查项 | 命令或步骤 | 最新结果 | 证据 | 范围 |

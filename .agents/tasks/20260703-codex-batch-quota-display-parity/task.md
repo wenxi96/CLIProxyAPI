@@ -17,7 +17,7 @@ Status: complete
 
 - 不改 provider API 调用地址和认证头。
 - 不改批量检查选择、并发、汇总、aggregate 逻辑。
-- 不提交、不推送、不发版。
+- 修复实现阶段不自行提交、推送或发版；后续已按用户授权完成提交、推送、合入 `master` 和发版。
 
 ## 验收
 
@@ -25,3 +25,4 @@ Status: complete
 - secondary 仅有时长、无展示数值时，不再额外形成空周额度行。
 - Codex reset credits、订阅到期、plan 等既有 details 字段不回退。
 - 聚焦后端测试与 server 编译通过。
+- 修复提交已进入 `dev@61d34dfd` 与 `master@766ec81c`，并随 `v7.2.49-wx-2.9` 发布。

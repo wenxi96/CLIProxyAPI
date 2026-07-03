@@ -3,10 +3,10 @@
 ## Execution State
 
 - Plan Path: `.agents/tasks/20260409-provider-scoped-routing-pool/plans/2026-04-09-provider-scoped-routing-pool-implementation-plan.md`
-- Execution Route: direct-inline
+- Execution Route: direct_inline
 - Current Task: Task 6 - 完成跨栈回归验证与手工验收
 - Task Status: completed
-- Last Verification: passed_with_manual_ui_evidence
+- Last Verification: pass
 - Current Stop Condition: none
 - Next Step: 等待用户决定是否进入代码审查、提交或继续后续需求
 - Updated At: 2026-04-10 00:37 HKT

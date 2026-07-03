@@ -8,7 +8,7 @@
 - 非目标: 不自动提交、推送、触发 release、部署或修改全局配置；不回退当前后端 `.gitignore` 改动；不改变 `main/master/dev` 分支职责；AMP/Ampcode 已由用户确认跟随上游移除，不另行保留兼容。
 - 约束: `main` 只同步上游；`dev` 先吸收并验证；`master` 仅接收稳定结果；发现未确认冲突需暂停；前端发布产物必须更新到 fork release；不写入凭证或私密配置。
 - 细化层级: contract-first
-- 执行路由: ulw_governed
+- 执行路由: direct_inline
 - 为什么使用该路由: 该任务跨两个仓库、多个分支、多个发布链路，包含高冲突文件、跨 minor 破坏性变更和需要分阶段 checkpoint 的验证门禁，适合按 ULW loop 分段推进并保留恢复点。
 - 升级触发条件: 单个 loop 内若出现可隔离的前后端并行实现包，可在该 loop 内启用 multi_agent；若出现未确认冲突、发布凭证需求、测试需要外部账号或需推送 / release，必须停止并请求用户确认。
 
@@ -363,7 +363,7 @@
 
 ## 执行交接
 
-- 执行路由: ulw_governed
+- 执行路由: direct_inline
 - 为什么使用该路由: 前后端同步跨仓库、跨分支、跨发布链路，并且需要在每个 checkpoint 后保留可恢复状态；单轮 direct inline 容易丢失冲突决策和验证证据。
 - 升级到: 在单个 ULW loop 内，如果后端任务 4-6 与前端任务 7-9 可以隔离写入，可启用 `multi_agent`；涉及 release、push、真实账号验证时不得自动升级，必须先获得用户授权。
 - 交接说明:

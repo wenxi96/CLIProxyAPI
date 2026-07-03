@@ -5,7 +5,7 @@
 - Requirements Source: user-approved design in current task
 - Canonical Spec Path: `.agents/tasks/20260527-auth-quota-threshold-auto-disable/specs/2026-05-27-auth-quota-threshold-auto-disable-design.md`
 - Scope Boundary: 稳定。本轮只增加全局阈值配置、管理接口、运行时判断、文档示例与测试；不实现 provider 级阈值，不实现主动定时扫描，不改变 scoped-pool 阈值语义。
-- Execution Route: direct-inline
+- Execution Route: direct_inline
 - Why This Route: 变更沿用已有 quota check 和自动禁用链路，写面集中在配置、管理 API、`auth.Manager` 与测试，串行推进可控。
 
 ## File Structure

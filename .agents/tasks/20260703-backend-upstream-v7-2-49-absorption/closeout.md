@@ -2,14 +2,14 @@
 
 ## 当前状态
 
-后端合并吸收任务已完成到“已合并候选、已验证、已自评审、未提交”状态。
+后端合并吸收任务已完成到“已提交、已推送、已合入 master、已发版并完成发布后复核”状态。
 
 - 当前分支：`dev`
 - 吸收目标：`upstream/main@f8334be8` / `v7.2.49`
-- 当前方式：`git merge --no-commit --no-ff upstream/main`
-- 提交状态：未提交
-- 推送状态：未推送
-- 发版状态：未发版
+- 吸收提交：`dev@7cd99f73`
+- 发布合并：`master@766ec81c`
+- 推送状态：`origin/dev@61d34dfd`；`origin/master@766ec81c`
+- 发版状态：`v7.2.49-wx-2.9`
 
 ## 已完成范围
 
@@ -38,7 +38,7 @@
 
 ## 验证
 
-已执行并通过：
+合并候选阶段已执行并通过：
 
 ```bash
 docker run --rm -v "$PWD":/workspace -w /workspace golang:1.26 go test -buildvcs=false ./sdk/cliproxy/auth ./sdk/api/handlers/openai ./internal/runtime/executor ./internal/registry
@@ -59,6 +59,15 @@ rg -n "^(<<<<<<<|=======|>>>>>>>)" .
 
 补充说明：当前环境没有本机 `go` 命令，因此按仓库既有方式使用 Docker `golang:1.26` 验证。
 
+发布后已复核：
+
+- `git ls-remote --heads origin dev master`：远端 `dev` / `master` 指向预期提交。
+- `git ls-remote --tags origin v7.2.49-wx-2.9`：tag 指向 `master@766ec81c`。
+- GitHub release workflow：`completed/success`。
+- GitHub docker-image workflow：`completed/success`。
+- Release 页面与 Linux amd64 资产返回 HTTP 200。
+- GHCR 镜像 `ghcr.io/wenxi96/cli-proxy-api:7.2.49-wx-2.9` 与 `latest` manifest 可读取。
+
 ## 评审结果
 
 已完成主线程自评审，未发现需要修复的实质问题。
@@ -71,13 +80,9 @@ rg -n "^(<<<<<<<|=======|>>>>>>>)" .
 
 ## 剩余工作
 
-需要用户后续明确授权后才能执行：
-
-- 提交当前后端合并候选。
-- 推送 `dev` / 合入 `master`。
-- 创建或推送 release tag。
+无本任务剩余提交、推送或发版工作。
 
 ## 剩余风险
 
 - 未执行真实 provider 在线流式请求验证。
-- 当前合并候选仍处于工作区，尚未形成 Git commit。
+- 任务完成后上游 `main` 已继续前进；后续上游增量应另建吸收任务处理。

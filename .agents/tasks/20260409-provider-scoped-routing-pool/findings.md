@@ -20,3 +20,9 @@
 - 范围轮询必须是“按供应商类别独立建池”，不能是全局单池。
 - 范围轮询必须显式开启才生效，未开启时不能影响现有逻辑。
 - 推荐做成 `round-robin` 之上的附加池过滤层，而不是直接重写默认 selector 语义。
+
+## Verification Evidence
+
+- 后端验证记录见 `progress.md`：Docker Go 1.26-alpine 下通过 `go test ./internal/config ./internal/api/handlers/management ./sdk/cliproxy/auth -count=1` 与 `go build -buildvcs=false -o /tmp/cli-proxy-api-test ./cmd/server`。
+- 前端验证记录见 `progress.md`：`npm run type-check` 与 `npm run build` 通过，`npm run lint` 仅保留既有非本轮范围警告。
+- 手工/页面证据见 `evidence/auth-files-page.png`、`evidence/ai-providers-page.png`、`evidence/config-scoped-pool-page.png`。

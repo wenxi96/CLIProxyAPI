@@ -8,7 +8,7 @@
 - Non-Goals: 不重写整套安装器为另一种架构；不在本次任务内实现完整 docs site；不自动创建或修改外部 Docker Hub 仓库与凭证；不改变当前前端 `management.html` 发布模式。
 - Constraints: 安装脚本必须可独立于 `cliproxyapi-tool` 运行；配置保护与升级行为必须可解释且可验证；代码注释保持英文；文档正文使用中文；仓库默认行为必须优先指向 fork 资源，不能静默回退官方源。
 - Detail Level: contract-first
-- Execution Route: direct-inline
+- Execution Route: direct_inline
 - Why This Route: 本任务涉及脚本、工作流、文档与默认值联动，文件边界清晰但强耦合，适合由单一主写者一次性收口，避免多 agent 并发导致分发入口和文档描述不一致。
 - Escalation Trigger: 若实现过程中发现 Docker 镜像仓库命名、发布权限、Tag 策略或安装脚本服务模型需要变更当前 `master/tag` 发布规范，或需要新增外部 secrets / registry 资源，则暂停实现并先与用户确认。
 
@@ -172,7 +172,7 @@
   - 若需真实推送镜像验证但缺少凭证，停止在“可提交待外部验证”状态，不宣称发布链路已完全可用
 
 ## Execution Handoff
-- Execution Route: direct-inline
+- Execution Route: direct_inline
 - Why This Route: 该任务本质是“分发入口统一化”，关键风险来自默认值和文档漂移，而不是大规模代码复杂度。由单一执行者顺序完成，能更稳定地保持脚本、workflow、README 和部署文档的口径一致。
 - Escalate To:
   - 用户：当需要确认最终 Docker Hub 仓库名、镜像标签策略、是否保留 user-level systemd 兼容行为时

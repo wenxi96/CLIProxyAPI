@@ -2,7 +2,7 @@
 
 ## Current State
 
-后端代码修复已落地并通过聚焦验证，任务状态为 complete。最终是否提交、推送或发版仍需用户授权。
+后端代码修复已落地并通过聚焦验证，任务状态为 complete。修复已提交到 `dev@61d34dfd`，合入 `master@766ec81c`，并随 `v7.2.49-wx-2.9` 发布。
 
 ## Completed Scope
 
@@ -18,4 +18,4 @@
 ## Remaining Work
 
 - 未执行真实 Codex provider live API 验证；当前覆盖基于 mocked provider responses。
-- 等待用户决定是否提交本次后端改动。
+- 无本任务剩余提交、推送或发版工作。
