@@ -357,6 +357,98 @@ func TestBatchCheckAuthFiles_CodexDetailsIncludeQuotaParityFields(t *testing.T) 
 	}
 }
 
+func TestBatchCheckAuthFiles_CodexMonthlyPrimaryWindowMatchesSingleRefresh(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	gin.SetMode(gin.TestMode)
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	auth := &coreauth.Auth{
+		ID:       "codex-1",
+		Provider: "codex",
+		FileName: "codex-monthly.json",
+		Status:   coreauth.StatusActive,
+		Metadata: map[string]any{
+			"chatgpt_account_id": "acct-1",
+			"access_token":       "token-1",
+		},
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register codex auth: %v", err)
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{}, manager)
+	h.apiCallExecutor = func(_ context.Context, _ *coreauth.Auth, req apiCallRequest) (apiCallResponse, error) {
+		switch req.URL {
+		case testCodexUsageURL:
+			return apiCallResponse{
+				StatusCode: http.StatusOK,
+				Body: `{
+					"plan_type":"team",
+					"rate_limit":{
+						"primary_window":{"used_percent":25,"limit_window_seconds":2592000,"reset_after_seconds":86400},
+						"secondary_window":{"limit_window_seconds":604800}
+					}
+				}`,
+			}, nil
+		case testCodexRateLimitResetCreditsURL:
+			return apiCallResponse{
+				StatusCode: http.StatusOK,
+				Body:       `{"available_count":0,"credits":[]}`,
+			}, nil
+		default:
+			t.Fatalf("unexpected codex request url %q", req.URL)
+			return apiCallResponse{}, nil
+		}
+	}
+
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v0/management/auth-files/batch-check", bytes.NewReader([]byte(`{}`)))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	h.BatchCheckAuthFiles(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		Results []struct {
+			RemainingPercent *int            `json:"remaining_percent"`
+			Details          json.RawMessage `json:"details"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(payload.Results) != 1 {
+		t.Fatalf("expected one result, got %d", len(payload.Results))
+	}
+	if payload.Results[0].RemainingPercent == nil || *payload.Results[0].RemainingPercent != 75 {
+		t.Fatalf("expected remaining_percent=75, got %#v", payload.Results[0].RemainingPercent)
+	}
+
+	var details struct {
+		Windows []map[string]any `json:"windows"`
+	}
+	if err := json.Unmarshal(payload.Results[0].Details, &details); err != nil {
+		t.Fatalf("decode details: %v", err)
+	}
+	if len(details.Windows) != 1 {
+		t.Fatalf("expected only monthly window, got %#v", details.Windows)
+	}
+	window := details.Windows[0]
+	if window["id"] != "monthly" || window["label"] != "monthly" {
+		t.Fatalf("expected monthly window, got %#v", window)
+	}
+	if window["used_percent"] != float64(25) || window["remaining_percent"] != float64(75) {
+		t.Fatalf("expected monthly percent data, got %#v", window)
+	}
+	if window["limit_window_seconds"] != float64(2592000) {
+		t.Fatalf("expected monthly limit window seconds, got %#v", window)
+	}
+}
+
 func TestBatchCheckAuthFiles_UsesRequestedConcurrency(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
 	gin.SetMode(gin.TestMode)

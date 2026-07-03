@@ -49,6 +49,13 @@ const (
 )
 
 const (
+	codexFiveHourWindowSeconds = 18_000
+	codexWeekWindowSeconds     = 604_800
+	codexMinMonthWindowSeconds = 28 * 24 * 60 * 60
+	codexMaxMonthWindowSeconds = 31 * 24 * 60 * 60
+)
+
+const (
 	geminiOAuthClientID     = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"
 	geminiOAuthClientSecret = "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"
 
@@ -1006,39 +1013,116 @@ func resolveClaudePlanType(payload gjson.Result) string {
 }
 
 func extractCodexWindows(payload gjson.Result) []coreauth.QuotaWindow {
-	definitions := []struct {
-		ID    string
-		Label string
-		Path  string
-	}{
-		{ID: "five-hour", Label: "five_hour", Path: "rate_limit.primary_window"},
-		{ID: "weekly", Label: "weekly", Path: "rate_limit.secondary_window"},
-		{ID: "code-review-five-hour", Label: "code_review_five_hour", Path: "code_review_rate_limit.primary_window"},
-		{ID: "code-review-weekly", Label: "code_review_weekly", Path: "code_review_rate_limit.secondary_window"},
-	}
+	windows := make([]coreauth.QuotaWindow, 0, 4)
+	windows = appendCodexWindowPair(
+		windows,
+		payload.Get("rate_limit.primary_window"),
+		payload.Get("rate_limit.secondary_window"),
+		codexWindowMeta{ID: "five-hour", Label: "five_hour"},
+		codexWindowMeta{ID: "weekly", Label: "weekly"},
+		codexWindowMeta{ID: "monthly", Label: "monthly"},
+	)
+	windows = appendCodexWindowPair(
+		windows,
+		payload.Get("code_review_rate_limit.primary_window"),
+		payload.Get("code_review_rate_limit.secondary_window"),
+		codexWindowMeta{ID: "code-review-five-hour", Label: "code_review_five_hour"},
+		codexWindowMeta{ID: "code-review-weekly", Label: "code_review_weekly"},
+		codexWindowMeta{ID: "code-review-monthly", Label: "code_review_monthly"},
+	)
+	return windows
+}
 
-	windows := make([]coreauth.QuotaWindow, 0, len(definitions))
-	for _, def := range definitions {
-		item := payload.Get(def.Path)
+type codexWindowMeta struct {
+	ID    string
+	Label string
+}
+
+func appendCodexWindowPair(windows []coreauth.QuotaWindow, primary, secondary gjson.Result, fiveHour, weekly, monthly codexWindowMeta) []coreauth.QuotaWindow {
+	var fiveHourWindow *gjson.Result
+	var secondaryWindow *gjson.Result
+	secondaryMeta := weekly
+
+	for _, item := range []gjson.Result{primary, secondary} {
 		if !item.Exists() {
 			continue
 		}
-		usedPercent := intPtrFromGJSON(item, "used_percent", "usedPercent")
-		remainingPercent := intPtrFromGJSON(item, "remaining_percent", "remainingPercent")
-		if remainingPercent == nil {
-			remainingPercent = remainingPercentFromUsedPercent(usedPercent)
+		switch codexWindowKind(item) {
+		case "five-hour":
+			if fiveHourWindow == nil {
+				value := item
+				fiveHourWindow = &value
+			}
+		case "weekly":
+			if secondaryWindow == nil {
+				value := item
+				secondaryWindow = &value
+				secondaryMeta = weekly
+			}
+		case "monthly":
+			if secondaryWindow == nil {
+				value := item
+				secondaryWindow = &value
+				secondaryMeta = monthly
+			}
 		}
-		windows = append(windows, coreauth.QuotaWindow{
-			ID:               def.ID,
-			Label:            def.Label,
-			UsedPercent:      usedPercent,
-			RemainingPercent: remainingPercent,
-			ResetAfter:       intPtrFromGJSON(item, "reset_after_seconds", "resetAfterSeconds"),
-			ResetAt:          int64PtrFromGJSON(item, "reset_at", "resetAt"),
-			LimitWindow:      intPtrFromGJSON(item, "limit_window_seconds", "limitWindowSeconds"),
-		})
+	}
+
+	if fiveHourWindow == nil && primary.Exists() && !sameGJSONResult(primary, secondaryWindow) {
+		value := primary
+		fiveHourWindow = &value
+	}
+	if secondaryWindow == nil && secondary.Exists() && !sameGJSONResult(secondary, fiveHourWindow) {
+		value := secondary
+		secondaryWindow = &value
+		secondaryMeta = weekly
+	}
+
+	if fiveHourWindow != nil {
+		windows = append(windows, codexQuotaWindowFromResult(fiveHour.ID, fiveHour.Label, *fiveHourWindow))
+	}
+	if secondaryWindow != nil {
+		windows = append(windows, codexQuotaWindowFromResult(secondaryMeta.ID, secondaryMeta.Label, *secondaryWindow))
 	}
 	return windows
+}
+
+func codexWindowKind(item gjson.Result) string {
+	seconds := intPtrFromGJSON(item, "limit_window_seconds", "limitWindowSeconds")
+	if seconds == nil {
+		return ""
+	}
+	switch {
+	case *seconds == codexFiveHourWindowSeconds:
+		return "five-hour"
+	case *seconds == codexWeekWindowSeconds:
+		return "weekly"
+	case *seconds >= codexMinMonthWindowSeconds && *seconds <= codexMaxMonthWindowSeconds:
+		return "monthly"
+	default:
+		return ""
+	}
+}
+
+func sameGJSONResult(item gjson.Result, other *gjson.Result) bool {
+	return other != nil && item.Exists() && other.Exists() && item.Raw == other.Raw
+}
+
+func codexQuotaWindowFromResult(id, label string, item gjson.Result) coreauth.QuotaWindow {
+	usedPercent := intPtrFromGJSON(item, "used_percent", "usedPercent")
+	remainingPercent := intPtrFromGJSON(item, "remaining_percent", "remainingPercent")
+	if remainingPercent == nil {
+		remainingPercent = remainingPercentFromUsedPercent(usedPercent)
+	}
+	return coreauth.QuotaWindow{
+		ID:               id,
+		Label:            label,
+		UsedPercent:      usedPercent,
+		RemainingPercent: remainingPercent,
+		ResetAfter:       intPtrFromGJSON(item, "reset_after_seconds", "resetAfterSeconds"),
+		ResetAt:          int64PtrFromGJSON(item, "reset_at", "resetAt"),
+		LimitWindow:      intPtrFromGJSON(item, "limit_window_seconds", "limitWindowSeconds"),
+	}
 }
 
 func extractCodexResetCredits(payload gjson.Result) ([]coreauth.CodexRateLimitResetCredit, *int, bool) {

@@ -121,6 +121,71 @@ func TestServiceCheckCodexReturnsExhaustedWhenRemainingIsZero(t *testing.T) {
 	}
 }
 
+func TestServiceCheckCodexClassifiesMonthlyPrimaryWindow(t *testing.T) {
+	svc := NewService(Options{
+		APICallExecutor: func(_ context.Context, _ *coreauth.Auth, req APICallRequest) (APICallResponse, error) {
+			switch req.URL {
+			case codexUsageURL:
+				return APICallResponse{
+					StatusCode: http.StatusOK,
+					Body: `{
+						"plan_type":"team",
+						"rate_limit":{
+							"primary_window":{"used_percent":25,"limit_window_seconds":2592000,"reset_after_seconds":86400},
+							"secondary_window":{"limit_window_seconds":604800}
+						}
+					}`,
+				}, nil
+			case codexRateLimitResetCreditsURL:
+				return APICallResponse{
+					StatusCode: http.StatusOK,
+					Body:       `{"available_count":0,"credits":[]}`,
+				}, nil
+			default:
+				t.Fatalf("unexpected url %q", req.URL)
+				return APICallResponse{}, nil
+			}
+		},
+	})
+
+	result, err := svc.Check(context.Background(), &coreauth.Auth{
+		Provider: "codex",
+		Metadata: map[string]any{
+			"account_id":   "acct-1",
+			"access_token": "token-1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+	rawDetails, err := json.Marshal(result.Details)
+	if err != nil {
+		t.Fatalf("marshal details: %v", err)
+	}
+	var details struct {
+		Windows []coreauth.QuotaWindow `json:"windows"`
+	}
+	if err := json.Unmarshal(rawDetails, &details); err != nil {
+		t.Fatalf("decode details: %v", err)
+	}
+	if len(details.Windows) != 1 {
+		t.Fatalf("expected only monthly codex window, got %#v", details.Windows)
+	}
+	window := details.Windows[0]
+	if window.ID != "monthly" || window.Label != "monthly" {
+		t.Fatalf("expected monthly window id/label, got %#v", window)
+	}
+	if window.UsedPercent == nil || *window.UsedPercent != 25 {
+		t.Fatalf("expected monthly used_percent=25, got %#v", window.UsedPercent)
+	}
+	if window.RemainingPercent == nil || *window.RemainingPercent != 75 {
+		t.Fatalf("expected monthly remaining_percent=75, got %#v", window.RemainingPercent)
+	}
+	if window.LimitWindow == nil || *window.LimitWindow != 2592000 {
+		t.Fatalf("expected monthly limit window, got %#v", window.LimitWindow)
+	}
+}
+
 func TestClassifyAPIResponse_DoesNotTreatGeneric429AsNoQuota(t *testing.T) {
 	classification, message, statusCode := classifyAPIResponse(APICallResponse{
 		StatusCode: http.StatusTooManyRequests,

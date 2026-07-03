@@ -20,12 +20,14 @@ Persistence Mode: git-visible
 - `20260527-auth-quota-threshold-auto-disable`：在零额度自动禁用基础上新增全局额度阈值禁用。
 - `20260624-active-quota-refresh-pool`：为低额度自动禁用新增后端活跃额度刷新池设计与实施计划。
 - `20260702-batch-quota-query-parity`：将批量检查正式额度查询调整为复用 canonical quota query service，并对齐单文件刷新展示字段。
+- `20260703-codex-batch-quota-display-parity`：修复 Codex 批量检查把月度窗口误展示为 5 小时、并出现空周额度的问题。
 - `20260409-fork-install-docker-self-hosting`：补齐 fork 自有 Docker 发布链路与仓库内 Linux 安装更新脚本。
 - `20260409-provider-scoped-routing-pool`：按供应商类别独立启用的范围轮询设计与后续实现。
 - `20260424-absorb-cliproxyapi2-fixes`：制定 CLIProxyAPI2 改动吸收计划并沉淀分批执行方案。
 - `20260424-evaluate-watcher-race-current-architecture`：评估当前 watcher 架构下是否存在与参考仓库同类竞态，并决定是否另起实施任务。
 - `20260612-sync-upstream-v7-fork-customizations`：规划前后端吸收最新上游版本，同时保留 fork 自定义功能。
 - `20260626-backend-upstream-v7-2-42`：后端独立吸收 `upstream/main@b05a27e4` / `v7.2.43`，已完成验证、`dev`/`master` 推送与 release tag `v7.2.43-wx-2.6`。
+- `20260703-backend-upstream-v7-2-49-absorption`：后端独立吸收 `upstream/main@f8334be8` / `v7.2.49`，当前已形成未提交合并候选并完成验证、自评审，等待用户确认是否提交。
 
 ## 说明
 
