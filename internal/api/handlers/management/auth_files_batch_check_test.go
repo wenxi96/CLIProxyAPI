@@ -15,6 +15,12 @@ import (
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
 
+const (
+	testClaudeProfileURL              = "https://api.anthropic.com/api/oauth/profile"
+	testCodexUsageURL                 = "https://chatgpt.com/backend-api/wham/usage"
+	testCodexRateLimitResetCreditsURL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
+)
+
 func TestBatchCheckAuthFiles_SummarizesResults(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
 	gin.SetMode(gin.TestMode)
@@ -62,7 +68,7 @@ func TestBatchCheckAuthFiles_SummarizesResults(t *testing.T) {
 				}`,
 			}, nil
 		case "claude-beta.json":
-			if req.URL == claudeProfileURL {
+			if req.URL == testClaudeProfileURL {
 				return apiCallResponse{
 					StatusCode: http.StatusOK,
 					Body:       `{"account":{"has_claude_pro":true}}`,
@@ -219,6 +225,135 @@ func TestBatchCheckAuthFiles_SummarizesResults(t *testing.T) {
 	}
 	if payload.Results[1].ErrorMessage != "" {
 		t.Fatalf("expected empty codex error_message on success, got %q", payload.Results[1].ErrorMessage)
+	}
+}
+
+func TestBatchCheckAuthFiles_CodexDetailsIncludeQuotaParityFields(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	gin.SetMode(gin.TestMode)
+
+	manager := coreauth.NewManager(nil, nil, nil)
+	auth := &coreauth.Auth{
+		ID:       "codex-1",
+		Provider: "codex",
+		FileName: "codex-alpha.json",
+		Status:   coreauth.StatusActive,
+		Metadata: map[string]any{
+			"chatgpt_account_id":                "acct-1",
+			"access_token":                      "token-1",
+			"chatgpt_subscription_active_until": "2026-12-01T00:00:00Z",
+		},
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register codex auth: %v", err)
+	}
+
+	var requestedURLs []string
+	h := NewHandlerWithoutConfigFilePath(&config.Config{}, manager)
+	h.apiCallExecutor = func(_ context.Context, _ *coreauth.Auth, req apiCallRequest) (apiCallResponse, error) {
+		requestedURLs = append(requestedURLs, req.URL)
+		switch req.URL {
+		case testCodexUsageURL:
+			return apiCallResponse{
+				StatusCode: http.StatusOK,
+				Body: `{
+					"plan_type":"free",
+					"subscription_active_until":"2026-11-30T00:00:00Z",
+					"rate_limit":{
+						"primary_window":{"used_percent":5,"limit_window_seconds":18000,"reset_after_seconds":1200},
+						"secondary_window":{"limit_window_seconds":604800}
+					}
+				}`,
+			}, nil
+		case testCodexRateLimitResetCreditsURL:
+			return apiCallResponse{
+				StatusCode: http.StatusOK,
+				Body: `{
+					"available_count":1,
+					"credits":[
+						{"id":"credit-1","reset_type":"codex_rate_limits","status":"available","granted_at":"2026-07-01T00:00:00Z","expires_at":"2026-08-01T00:00:00Z"},
+						{"id":"credit-2","reset_type":"codex_rate_limits","status":"used","granted_at":"2026-07-01T00:00:00Z","expires_at":"2026-08-01T00:00:00Z"}
+					]
+				}`,
+			}, nil
+		default:
+			t.Fatalf("unexpected codex request url %q", req.URL)
+			return apiCallResponse{}, nil
+		}
+	}
+
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v0/management/auth-files/batch-check", bytes.NewReader([]byte(`{}`)))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	h.BatchCheckAuthFiles(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	if len(requestedURLs) != 2 || requestedURLs[0] != testCodexUsageURL || requestedURLs[1] != testCodexRateLimitResetCreditsURL {
+		t.Fatalf("unexpected codex request sequence: %#v", requestedURLs)
+	}
+
+	var payload struct {
+		Results []struct {
+			Name    string          `json:"name"`
+			Details json.RawMessage `json:"details"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(payload.Results) != 1 {
+		t.Fatalf("expected one result, got %d", len(payload.Results))
+	}
+
+	var details struct {
+		PlanType     string           `json:"plan_type"`
+		Subscription string           `json:"subscription_active_until"`
+		Windows      []map[string]any `json:"windows"`
+		ResetCredits []struct {
+			ID        string `json:"id"`
+			Status    string `json:"status"`
+			GrantedAt string `json:"grantedAt"`
+			ExpiresAt string `json:"expiresAt"`
+		} `json:"rate_limit_reset_credits"`
+		ResetCreditCount any    `json:"rate_limit_reset_credits_available_count"`
+		ResetCreditError string `json:"rate_limit_reset_credits_error"`
+	}
+	if err := json.Unmarshal(payload.Results[0].Details, &details); err != nil {
+		t.Fatalf("decode codex details: %v", err)
+	}
+	if details.PlanType != "free" {
+		t.Fatalf("expected plan_type free, got %q", details.PlanType)
+	}
+	if details.Subscription != "2026-11-30T00:00:00Z" {
+		t.Fatalf("expected usage subscription_active_until, got %q", details.Subscription)
+	}
+	if len(details.Windows) != 2 {
+		t.Fatalf("expected two codex windows, got %#v", details.Windows)
+	}
+	weekly := details.Windows[1]
+	for _, key := range []string{"used_percent", "remaining_percent", "reset_at", "reset_after_seconds"} {
+		if _, ok := weekly[key]; !ok {
+			t.Fatalf("expected weekly window to include %q as null, got %#v", key, weekly)
+		}
+		if weekly[key] != nil {
+			t.Fatalf("expected weekly %s to be null, got %#v", key, weekly[key])
+		}
+	}
+	if weekly["limit_window_seconds"] != float64(604800) {
+		t.Fatalf("expected weekly limit_window_seconds=604800, got %#v", weekly["limit_window_seconds"])
+	}
+	if len(details.ResetCredits) != 1 || details.ResetCredits[0].ID != "credit-1" || details.ResetCredits[0].ExpiresAt != "2026-08-01T00:00:00Z" {
+		t.Fatalf("unexpected reset credits: %#v", details.ResetCredits)
+	}
+	if details.ResetCreditCount != float64(1) {
+		t.Fatalf("expected reset credit available count 1, got %#v", details.ResetCreditCount)
+	}
+	if details.ResetCreditError != "" {
+		t.Fatalf("expected empty reset credit error, got %q", details.ResetCreditError)
 	}
 }
 

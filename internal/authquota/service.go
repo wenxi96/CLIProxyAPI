@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/proxyutil"
@@ -33,15 +35,17 @@ const (
 )
 
 const (
-	antigravityDefaultProjectID = "bamboo-precept-lgxtn"
-	antigravityQuotaURLPrimary  = "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels"
-	antigravityQuotaURLSandbox  = "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:fetchAvailableModels"
-	antigravityQuotaURLDefault  = "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels"
-	geminiCLIQuotaURL           = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota"
-	geminiCLICodeAssistURL      = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
-	claudeUsageURL              = "https://api.anthropic.com/api/oauth/usage"
-	codexUsageURL               = "https://chatgpt.com/backend-api/wham/usage"
-	kimiUsageURL                = "https://api.kimi.com/coding/v1/usages"
+	antigravityDefaultProjectID   = "bamboo-precept-lgxtn"
+	antigravityQuotaURLPrimary    = "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels"
+	antigravityQuotaURLSandbox    = "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:fetchAvailableModels"
+	antigravityQuotaURLDefault    = "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels"
+	geminiCLIQuotaURL             = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota"
+	geminiCLICodeAssistURL        = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
+	claudeProfileURL              = "https://api.anthropic.com/api/oauth/profile"
+	claudeUsageURL                = "https://api.anthropic.com/api/oauth/usage"
+	codexUsageURL                 = "https://chatgpt.com/backend-api/wham/usage"
+	codexRateLimitResetCreditsURL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
+	kimiUsageURL                  = "https://api.kimi.com/coding/v1/usages"
 )
 
 const (
@@ -98,39 +102,26 @@ var antigravityGroups = []struct {
 type Options struct {
 	ConfigProvider    func() *config.Config
 	TransportProvider func(auth *coreauth.Auth, cfg *config.Config) http.RoundTripper
+	APICallExecutor   func(context.Context, *coreauth.Auth, APICallRequest) (APICallResponse, error)
 }
 
 type Service struct {
 	configProvider    func() *config.Config
 	transportProvider func(auth *coreauth.Auth, cfg *config.Config) http.RoundTripper
+	apiCallExecutor   func(context.Context, *coreauth.Auth, APICallRequest) (APICallResponse, error)
 }
 
-type apiCallRequest struct {
+type APICallRequest struct {
 	Method string
 	URL    string
 	Header map[string]string
 	Data   string
 }
 
-type apiCallResponse struct {
+type APICallResponse struct {
 	StatusCode int
 	Header     map[string][]string
 	Body       string
-}
-
-type window struct {
-	ID               string
-	Label            string
-	UsedPercent      *int
-	RemainingPercent *int
-	RemainingAmount  *int
-	ResetAt          *int64
-	ResetAfter       *int
-	ResetTime        string
-	Limit            *int
-	Used             *int
-	ResetHint        string
-	ModelIDs         []string
 }
 
 type sharedOAuthMetadata interface {
@@ -147,6 +138,7 @@ func NewService(opts Options) *Service {
 	return &Service{
 		configProvider:    configProvider,
 		transportProvider: opts.TransportProvider,
+		apiCallExecutor:   opts.APICallExecutor,
 	}
 }
 
@@ -193,7 +185,7 @@ func (s *Service) checkCodex(ctx context.Context, auth *coreauth.Auth) (coreauth
 		return finalizeResult(ClassificationRequestFailed, nil, "missing chatgpt account id", 0), nil
 	}
 
-	resp, err := s.executeAPICall(ctx, auth, apiCallRequest{
+	resp, err := s.executeAPICall(ctx, auth, APICallRequest{
 		Method: "GET",
 		URL:    codexUsageURL,
 		Header: map[string]string{
@@ -210,18 +202,75 @@ func (s *Service) checkCodex(ctx context.Context, auth *coreauth.Auth) (coreauth
 	payload := gjson.Parse(resp.Body)
 	windows := extractCodexWindows(payload)
 	remaining := minRemaining(windows)
+	details := map[string]any{"windows": windows}
+	if planType := strings.TrimSpace(payload.Get("plan_type").String()); planType != "" {
+		details["plan_type"] = planType
+	}
+	if subscriptionActiveUntil := codexSubscriptionActiveUntil(payload, auth); subscriptionActiveUntil != nil {
+		details["subscription_active_until"] = subscriptionActiveUntil
+	}
 	if classification == "" && len(windows) == 0 {
 		classification = ClassificationAPIError
 		message = "empty codex quota payload"
 	}
 	if classification == "" {
+		s.addCodexResetCredits(ctx, auth, accountID, details)
 		classification = classificationFromRemainingPercent(remaining)
 	}
-	return finalizeResult(classification, remaining, message, statusCode), nil
+	result := finalizeResult(classification, remaining, message, statusCode)
+	result.Details = details
+	return result, nil
+}
+
+func (s *Service) addCodexResetCredits(ctx context.Context, auth *coreauth.Auth, accountID string, details map[string]any) {
+	if details == nil {
+		return
+	}
+	details["rate_limit_reset_credits"] = []coreauth.CodexRateLimitResetCredit{}
+	details["rate_limit_reset_credits_available_count"] = nil
+	details["rate_limit_reset_credits_error"] = ""
+
+	resp, err := s.executeAPICall(ctx, auth, APICallRequest{
+		Method: "GET",
+		URL:    codexRateLimitResetCreditsURL,
+		Header: map[string]string{
+			"Authorization":      "Bearer $TOKEN$",
+			"Content-Type":       "application/json",
+			"Accept":             "application/json",
+			"OpenAI-Beta":        "codex-1",
+			"Originator":         "Codex Desktop",
+			"User-Agent":         "codex_cli_rs/0.76.0 (Debian 13.0.0; x86_64) WindowsTerminal",
+			"Chatgpt-Account-Id": accountID,
+		},
+	})
+	if err != nil {
+		details["rate_limit_reset_credits_error"] = strings.TrimSpace(err.Error())
+		return
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		details["rate_limit_reset_credits_error"] = extractAPIErrorMessage(gjson.Parse(resp.Body), resp.Body)
+		return
+	}
+
+	credits, availableCount, invalid := extractCodexResetCredits(gjson.Parse(resp.Body))
+	if invalid {
+		details["rate_limit_reset_credits_error"] = "invalid rate limit reset credits payload"
+		return
+	}
+	details["rate_limit_reset_credits"] = credits
+	if availableCount == nil && len(credits) > 0 {
+		count := len(credits)
+		availableCount = &count
+	}
+	if availableCount == nil {
+		count := 0
+		availableCount = &count
+	}
+	details["rate_limit_reset_credits_available_count"] = *availableCount
 }
 
 func (s *Service) checkClaude(ctx context.Context, auth *coreauth.Auth) (coreauth.QuotaCheckResult, error) {
-	resp, err := s.executeAPICall(ctx, auth, apiCallRequest{
+	resp, err := s.executeAPICall(ctx, auth, APICallRequest{
 		Method: "GET",
 		URL:    claudeUsageURL,
 		Header: map[string]string{
@@ -237,14 +286,31 @@ func (s *Service) checkClaude(ctx context.Context, auth *coreauth.Auth) (coreaut
 	payload := gjson.Parse(resp.Body)
 	windows := extractClaudeWindows(payload)
 	remaining := minRemaining(windows)
+	details := map[string]any{"windows": windows}
 	if classification == "" && len(windows) == 0 {
 		classification = ClassificationAPIError
 		message = "empty claude quota payload"
 	}
 	if classification == "" {
+		profileResp, profileErr := s.executeAPICall(ctx, auth, APICallRequest{
+			Method: "GET",
+			URL:    claudeProfileURL,
+			Header: map[string]string{
+				"Authorization":  "Bearer $TOKEN$",
+				"Content-Type":   "application/json",
+				"anthropic-beta": "oauth-2025-04-20",
+			},
+		})
+		if profileErr == nil && profileResp.StatusCode >= http.StatusOK && profileResp.StatusCode < http.StatusMultipleChoices {
+			if planType := resolveClaudePlanType(gjson.Parse(profileResp.Body)); planType != "" {
+				details["plan_type"] = planType
+			}
+		}
 		classification = classificationFromRemainingPercent(remaining)
 	}
-	return finalizeResult(classification, remaining, message, statusCode), nil
+	result := finalizeResult(classification, remaining, message, statusCode)
+	result.Details = details
+	return result, nil
 }
 
 func (s *Service) checkGeminiCLI(ctx context.Context, auth *coreauth.Auth) (coreauth.QuotaCheckResult, error) {
@@ -253,7 +319,7 @@ func (s *Service) checkGeminiCLI(ctx context.Context, auth *coreauth.Auth) (core
 		return finalizeResult(ClassificationRequestFailed, nil, "missing project id", 0), nil
 	}
 
-	resp, err := s.executeAPICall(ctx, auth, apiCallRequest{
+	resp, err := s.executeAPICall(ctx, auth, APICallRequest{
 		Method: "POST",
 		URL:    geminiCLIQuotaURL,
 		Header: map[string]string{
@@ -269,18 +335,42 @@ func (s *Service) checkGeminiCLI(ctx context.Context, auth *coreauth.Auth) (core
 	payload := gjson.Parse(resp.Body)
 	buckets := extractGeminiBuckets(payload)
 	remaining := minRemaining(buckets)
+	details := map[string]any{
+		"project_id": projectID,
+		"buckets":    buckets,
+	}
 	if classification == "" && len(buckets) == 0 {
 		classification = ClassificationAPIError
 		message = "empty gemini cli quota payload"
 	}
 	if classification == "" {
+		suppResp, suppErr := s.executeAPICall(ctx, auth, APICallRequest{
+			Method: "POST",
+			URL:    geminiCLICodeAssistURL,
+			Header: map[string]string{
+				"Authorization": "Bearer $TOKEN$",
+				"Content-Type":  "application/json",
+			},
+			Data: fmt.Sprintf(`{"cloudaicompanionProject":%q,"metadata":{"ideType":"IDE_UNSPECIFIED","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI","duetProject":%q}}`, projectID, projectID),
+		})
+		if suppErr == nil && suppResp.StatusCode >= http.StatusOK && suppResp.StatusCode < http.StatusMultipleChoices {
+			supplementary := gjson.Parse(suppResp.Body)
+			if tierID := strings.TrimSpace(firstNonEmptyGJSON(supplementary, "paidTier.id", "paid_tier.id", "currentTier.id", "current_tier.id")); tierID != "" {
+				details["tier_id"] = strings.ToLower(tierID)
+			}
+			if creditBalance := extractGeminiCreditBalance(supplementary); creditBalance != nil {
+				details["credit_balance"] = *creditBalance
+			}
+		}
 		classification = classificationFromRemainingPercent(remaining)
 	}
-	return finalizeResult(classification, remaining, message, statusCode), nil
+	result := finalizeResult(classification, remaining, message, statusCode)
+	result.Details = details
+	return result, nil
 }
 
 func (s *Service) checkKimi(ctx context.Context, auth *coreauth.Auth) (coreauth.QuotaCheckResult, error) {
-	resp, err := s.executeAPICall(ctx, auth, apiCallRequest{
+	resp, err := s.executeAPICall(ctx, auth, APICallRequest{
 		Method: "GET",
 		URL:    kimiUsageURL,
 		Header: map[string]string{
@@ -295,6 +385,7 @@ func (s *Service) checkKimi(ctx context.Context, auth *coreauth.Auth) (coreauth.
 	payload := gjson.Parse(resp.Body)
 	rows := extractKimiRows(payload)
 	remaining := minRemaining(rows)
+	details := map[string]any{"rows": rows}
 	if classification == "" && len(rows) == 0 {
 		classification = ClassificationAPIError
 		message = "empty kimi quota payload"
@@ -302,19 +393,22 @@ func (s *Service) checkKimi(ctx context.Context, auth *coreauth.Auth) (coreauth.
 	if classification == "" {
 		classification = classificationFromRemainingPercent(remaining)
 	}
-	return finalizeResult(classification, remaining, message, statusCode), nil
+	result := finalizeResult(classification, remaining, message, statusCode)
+	result.Details = details
+	return result, nil
 }
 
 func (s *Service) checkAntigravity(ctx context.Context, auth *coreauth.Auth) (coreauth.QuotaCheckResult, error) {
 	projectID := resolveAntigravityProjectID(auth)
-	var lastResp apiCallResponse
+	var lastResp APICallResponse
 	for _, urlStr := range antigravityQuotaURLs {
-		resp, err := s.executeAPICall(ctx, auth, apiCallRequest{
+		resp, err := s.executeAPICall(ctx, auth, APICallRequest{
 			Method: "POST",
 			URL:    urlStr,
 			Header: map[string]string{
 				"Authorization": "Bearer $TOKEN$",
 				"Content-Type":  "application/json",
+				"User-Agent":    "antigravity/1.11.5 windows/amd64",
 			},
 			Data: fmt.Sprintf(`{"project":%q}`, projectID),
 		})
@@ -330,7 +424,12 @@ func (s *Service) checkAntigravity(ctx context.Context, auth *coreauth.Auth) (co
 		groups := extractAntigravityGroups(payload)
 		remaining := minRemaining(groups)
 		if len(groups) > 0 {
-			return finalizeResult(classificationFromRemainingPercent(remaining), remaining, "", resp.StatusCode), nil
+			result := finalizeResult(classificationFromRemainingPercent(remaining), remaining, "", resp.StatusCode)
+			result.Details = map[string]any{
+				"project_id": projectID,
+				"groups":     groups,
+			}
+			return result, nil
 		}
 	}
 	classification, message, statusCode := classifyAPIResponse(lastResp)
@@ -341,22 +440,25 @@ func (s *Service) checkAntigravity(ctx context.Context, auth *coreauth.Auth) (co
 	return finalizeResult(classification, nil, message, statusCode), nil
 }
 
-func (s *Service) executeAPICall(ctx context.Context, auth *coreauth.Auth, body apiCallRequest) (apiCallResponse, error) {
+func (s *Service) executeAPICall(ctx context.Context, auth *coreauth.Auth, body APICallRequest) (APICallResponse, error) {
+	if s != nil && s.apiCallExecutor != nil {
+		return s.apiCallExecutor(ctx, auth, body)
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
 	method := strings.ToUpper(strings.TrimSpace(body.Method))
 	if method == "" {
-		return apiCallResponse{}, fmt.Errorf("missing method")
+		return APICallResponse{}, fmt.Errorf("missing method")
 	}
 	urlStr := strings.TrimSpace(body.URL)
 	if urlStr == "" {
-		return apiCallResponse{}, fmt.Errorf("missing url")
+		return APICallResponse{}, fmt.Errorf("missing url")
 	}
 	parsedURL, err := url.Parse(urlStr)
 	if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" {
-		return apiCallResponse{}, fmt.Errorf("invalid url")
+		return APICallResponse{}, fmt.Errorf("invalid url")
 	}
 
 	headers := make(map[string]string, len(body.Header))
@@ -373,12 +475,12 @@ func (s *Service) executeAPICall(ctx context.Context, auth *coreauth.Auth, body 
 		if !tokenResolved {
 			token, err = s.resolveTokenForAuth(ctx, auth)
 			if err != nil {
-				return apiCallResponse{}, fmt.Errorf("auth token refresh failed: %w", err)
+				return APICallResponse{}, fmt.Errorf("auth token refresh failed: %w", err)
 			}
 			tokenResolved = true
 		}
 		if token == "" {
-			return apiCallResponse{}, fmt.Errorf("auth token not found")
+			return APICallResponse{}, fmt.Errorf("auth token not found")
 		}
 		headers[key] = strings.ReplaceAll(value, "$TOKEN$", token)
 	}
@@ -389,7 +491,7 @@ func (s *Service) executeAPICall(ctx context.Context, auth *coreauth.Auth, body 
 	}
 	req, err := http.NewRequestWithContext(ctx, method, urlStr, requestBody)
 	if err != nil {
-		return apiCallResponse{}, fmt.Errorf("failed to build request: %w", err)
+		return APICallResponse{}, fmt.Errorf("failed to build request: %w", err)
 	}
 	for key, value := range headers {
 		if strings.EqualFold(key, "host") {
@@ -405,7 +507,7 @@ func (s *Service) executeAPICall(ctx context.Context, auth *coreauth.Auth, body 
 	}
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return apiCallResponse{}, fmt.Errorf("request failed: %w", err)
+		return APICallResponse{}, fmt.Errorf("request failed: %w", err)
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
@@ -415,9 +517,9 @@ func (s *Service) executeAPICall(ctx context.Context, auth *coreauth.Auth, body 
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return apiCallResponse{}, fmt.Errorf("failed to read response: %w", err)
+		return APICallResponse{}, fmt.Errorf("failed to read response: %w", err)
 	}
-	return apiCallResponse{
+	return APICallResponse{
 		StatusCode: resp.StatusCode,
 		Header:     resp.Header,
 		Body:       string(bodyBytes),
@@ -613,7 +715,7 @@ func finalizeResult(classification string, remaining *int, message string, statu
 	}
 }
 
-func classifyAPIResponse(resp apiCallResponse) (string, string, int) {
+func classifyAPIResponse(resp APICallResponse) (string, string, int) {
 	body := gjson.Parse(resp.Body)
 	statusCode := resp.StatusCode
 	if statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices {
@@ -710,7 +812,153 @@ func resolveCodexAccountID(auth *coreauth.Auth) string {
 			}
 		}
 	}
+	if claims := extractCodexIDTokenClaims(auth); claims != nil {
+		if value := strings.TrimSpace(claims.CodexAuthInfo.ChatgptAccountID); value != "" {
+			return value
+		}
+	}
 	return ""
+}
+
+func extractCodexIDTokenClaims(auth *coreauth.Auth) *codex.JWTClaims {
+	if auth == nil {
+		return nil
+	}
+	idToken := ""
+	if auth.Metadata != nil {
+		idToken = strings.TrimSpace(stringValueAny(auth.Metadata["id_token"]))
+	}
+	if idToken == "" && auth.Attributes != nil {
+		idToken = strings.TrimSpace(auth.Attributes["id_token"])
+	}
+	if idToken == "" {
+		return nil
+	}
+	claims, err := codex.ParseJWTToken(idToken)
+	if err != nil {
+		return nil
+	}
+	return claims
+}
+
+func codexSubscriptionActiveUntil(payload gjson.Result, auth *coreauth.Auth) any {
+	for _, key := range []string{
+		"subscription_active_until",
+		"subscriptionActiveUntil",
+		"chatgpt_subscription_active_until",
+		"chatgptSubscriptionActiveUntil",
+		"subscription.active_until",
+		"subscription.activeUntil",
+	} {
+		if value, ok := normalizedDateLikeGJSON(payload.Get(key)); ok {
+			return value
+		}
+	}
+	if auth == nil {
+		return nil
+	}
+	if value := codexSubscriptionActiveUntilFromMap(auth.Metadata); value != nil {
+		return value
+	}
+	if value := codexSubscriptionActiveUntilFromStringMap(auth.Attributes); value != nil {
+		return value
+	}
+	if claims := extractCodexIDTokenClaims(auth); claims != nil {
+		return normalizedDateLikeAny(claims.CodexAuthInfo.ChatgptSubscriptionActiveUntil)
+	}
+	return nil
+}
+
+func codexSubscriptionActiveUntilFromMap(values map[string]any) any {
+	if len(values) == 0 {
+		return nil
+	}
+	for _, key := range []string{
+		"chatgpt_subscription_active_until",
+		"chatgptSubscriptionActiveUntil",
+		"subscription_active_until",
+		"subscriptionActiveUntil",
+	} {
+		if value := normalizedDateLikeAny(values[key]); value != nil {
+			return value
+		}
+	}
+	if subscription, ok := values["subscription"].(map[string]any); ok {
+		for _, key := range []string{"active_until", "activeUntil"} {
+			if value := normalizedDateLikeAny(subscription[key]); value != nil {
+				return value
+			}
+		}
+	}
+	return nil
+}
+
+func codexSubscriptionActiveUntilFromStringMap(values map[string]string) any {
+	if len(values) == 0 {
+		return nil
+	}
+	for _, key := range []string{
+		"chatgpt_subscription_active_until",
+		"chatgptSubscriptionActiveUntil",
+		"subscription_active_until",
+		"subscriptionActiveUntil",
+	} {
+		if value := normalizedDateLikeAny(values[key]); value != nil {
+			return value
+		}
+	}
+	return nil
+}
+
+func normalizedDateLikeGJSON(value gjson.Result) (any, bool) {
+	if !value.Exists() {
+		return nil, false
+	}
+	if value.Type == gjson.Number {
+		numberValue := value.Int()
+		if numberValue == 0 {
+			return nil, false
+		}
+		return numberValue, true
+	}
+	stringValue := strings.TrimSpace(value.String())
+	if stringValue == "" || stringValue == "0" {
+		return nil, false
+	}
+	return stringValue, true
+}
+
+func normalizedDateLikeAny(value any) any {
+	switch typed := value.(type) {
+	case nil:
+		return nil
+	case string:
+		trimmed := strings.TrimSpace(typed)
+		if trimmed == "" || trimmed == "0" {
+			return nil
+		}
+		return trimmed
+	case int:
+		if typed == 0 {
+			return nil
+		}
+		return typed
+	case int64:
+		if typed == 0 {
+			return nil
+		}
+		return typed
+	case float64:
+		if typed == 0 {
+			return nil
+		}
+		if math.Trunc(typed) == typed {
+			return int64(typed)
+		}
+		return typed
+	default:
+		return nil
+	}
 }
 
 func resolveGeminiCLIProjectID(auth *coreauth.Auth) string {
@@ -744,7 +992,20 @@ func resolveAntigravityProjectID(auth *coreauth.Auth) string {
 	return antigravityDefaultProjectID
 }
 
-func extractCodexWindows(payload gjson.Result) []window {
+func resolveClaudePlanType(payload gjson.Result) string {
+	switch {
+	case payload.Get("account.has_claude_max").Bool():
+		return "plan_max"
+	case payload.Get("account.has_claude_pro").Bool():
+		return "plan_pro"
+	case payload.Get("account.has_claude_max").Exists() || payload.Get("account.has_claude_pro").Exists():
+		return "plan_free"
+	default:
+		return ""
+	}
+}
+
+func extractCodexWindows(payload gjson.Result) []coreauth.QuotaWindow {
 	definitions := []struct {
 		ID    string
 		Label string
@@ -756,34 +1017,68 @@ func extractCodexWindows(payload gjson.Result) []window {
 		{ID: "code-review-weekly", Label: "code_review_weekly", Path: "code_review_rate_limit.secondary_window"},
 	}
 
-	windows := make([]window, 0, len(definitions))
+	windows := make([]coreauth.QuotaWindow, 0, len(definitions))
 	for _, def := range definitions {
 		item := payload.Get(def.Path)
 		if !item.Exists() {
 			continue
 		}
 		usedPercent := intPtrFromGJSON(item, "used_percent", "usedPercent")
-		windows = append(windows, window{
+		remainingPercent := intPtrFromGJSON(item, "remaining_percent", "remainingPercent")
+		if remainingPercent == nil {
+			remainingPercent = remainingPercentFromUsedPercent(usedPercent)
+		}
+		windows = append(windows, coreauth.QuotaWindow{
 			ID:               def.ID,
 			Label:            def.Label,
 			UsedPercent:      usedPercent,
-			RemainingPercent: remainingPercentFromUsedPercent(usedPercent),
+			RemainingPercent: remainingPercent,
 			ResetAfter:       intPtrFromGJSON(item, "reset_after_seconds", "resetAfterSeconds"),
 			ResetAt:          int64PtrFromGJSON(item, "reset_at", "resetAt"),
+			LimitWindow:      intPtrFromGJSON(item, "limit_window_seconds", "limitWindowSeconds"),
 		})
 	}
 	return windows
 }
 
-func extractClaudeWindows(payload gjson.Result) []window {
-	windows := make([]window, 0, len(claudeWindows))
+func extractCodexResetCredits(payload gjson.Result) ([]coreauth.CodexRateLimitResetCredit, *int, bool) {
+	hasExpectedShape := payload.Get("credits").Exists() || payload.Get("available_count").Exists() || payload.Get("availableCount").Exists()
+	if !hasExpectedShape {
+		return []coreauth.CodexRateLimitResetCredit{}, nil, true
+	}
+	credits := make([]coreauth.CodexRateLimitResetCredit, 0)
+	for _, item := range payload.Get("credits").Array() {
+		resetType := strings.TrimSpace(firstNonEmptyGJSON(item, "reset_type", "resetType"))
+		if resetType != "codex_rate_limits" {
+			continue
+		}
+		status := strings.TrimSpace(item.Get("status").String())
+		if status != "available" {
+			continue
+		}
+		expiresAt := strings.TrimSpace(firstNonEmptyGJSON(item, "expires_at", "expiresAt"))
+		if expiresAt == "" {
+			continue
+		}
+		credits = append(credits, coreauth.CodexRateLimitResetCredit{
+			ID:        strings.TrimSpace(item.Get("id").String()),
+			Status:    status,
+			GrantedAt: strings.TrimSpace(firstNonEmptyGJSON(item, "granted_at", "grantedAt")),
+			ExpiresAt: expiresAt,
+		})
+	}
+	return credits, intPtrFromGJSON(payload, "available_count", "availableCount"), false
+}
+
+func extractClaudeWindows(payload gjson.Result) []coreauth.QuotaWindow {
+	windows := make([]coreauth.QuotaWindow, 0, len(claudeWindows))
 	for _, def := range claudeWindows {
 		item := payload.Get(def.Key)
 		if !item.Exists() {
 			continue
 		}
 		usedPercent := intPtrFromGJSON(item, "utilization")
-		windows = append(windows, window{
+		windows = append(windows, coreauth.QuotaWindow{
 			ID:               def.ID,
 			Label:            def.Label,
 			UsedPercent:      usedPercent,
@@ -794,8 +1089,8 @@ func extractClaudeWindows(payload gjson.Result) []window {
 	return windows
 }
 
-func extractGeminiBuckets(payload gjson.Result) []window {
-	buckets := make([]window, 0)
+func extractGeminiBuckets(payload gjson.Result) []coreauth.QuotaWindow {
+	buckets := make([]coreauth.QuotaWindow, 0)
 	for _, bucket := range payload.Get("buckets").Array() {
 		modelID := strings.TrimSpace(firstNonEmptyGJSON(bucket, "modelId", "model_id"))
 		if modelID == "" {
@@ -807,20 +1102,43 @@ func extractGeminiBuckets(payload gjson.Result) []window {
 			zero := 0
 			remainingPercent = &zero
 		}
-		buckets = append(buckets, window{
+		buckets = append(buckets, coreauth.QuotaWindow{
 			ID:               modelID,
 			Label:            modelID,
 			RemainingPercent: remainingPercent,
 			RemainingAmount:  remainingAmount,
 			ResetTime:        strings.TrimSpace(firstNonEmptyGJSON(bucket, "resetTime", "reset_time")),
+			TokenType:        strings.TrimSpace(firstNonEmptyGJSON(bucket, "tokenType", "token_type")),
 			ModelIDs:         []string{modelID},
 		})
 	}
 	return buckets
 }
 
-func extractKimiRows(payload gjson.Result) []window {
-	rows := make([]window, 0)
+func extractGeminiCreditBalance(payload gjson.Result) *int {
+	total := 0
+	found := false
+	for _, path := range []string{"paidTier.availableCredits", "paid_tier.available_credits", "currentTier.availableCredits", "current_tier.available_credits"} {
+		for _, credit := range payload.Get(path).Array() {
+			if strings.TrimSpace(firstNonEmptyGJSON(credit, "creditType", "credit_type")) != "GOOGLE_ONE_AI" {
+				continue
+			}
+			amount := intPtrFromGJSON(credit, "creditAmount", "credit_amount")
+			if amount == nil {
+				continue
+			}
+			total += *amount
+			found = true
+		}
+	}
+	if !found {
+		return nil
+	}
+	return &total
+}
+
+func extractKimiRows(payload gjson.Result) []coreauth.QuotaWindow {
+	rows := make([]coreauth.QuotaWindow, 0)
 	if usage := payload.Get("usage"); usage.Exists() {
 		if row := buildKimiRow("summary", "weekly_limit", usage); row != nil {
 			rows = append(rows, *row)
@@ -847,7 +1165,7 @@ func extractKimiRows(payload gjson.Result) []window {
 	return rows
 }
 
-func buildKimiRow(id, label string, payload gjson.Result) *window {
+func buildKimiRow(id, label string, payload gjson.Result) *coreauth.QuotaWindow {
 	limit := intPtrFromGJSON(payload, "limit")
 	used := intPtrFromGJSON(payload, "used")
 	if used == nil {
@@ -874,7 +1192,7 @@ func buildKimiRow(id, label string, payload gjson.Result) *window {
 		remainingPercent = &zero
 	}
 
-	return &window{
+	return &coreauth.QuotaWindow{
 		ID:               id,
 		Label:            label,
 		Limit:            limit,
@@ -909,17 +1227,17 @@ func kimiResetHint(payload gjson.Result) string {
 	return ""
 }
 
-func extractAntigravityGroups(payload gjson.Result) []window {
+func extractAntigravityGroups(payload gjson.Result) []coreauth.QuotaWindow {
 	models := payload.Get("models")
 	if !models.Exists() {
 		return nil
 	}
-	findModel := func(identifier string) *window {
+	findModel := func(identifier string) *coreauth.QuotaWindow {
 		direct := models.Get(identifier)
 		if direct.Exists() {
 			return antigravityWindowFromResult(identifier, direct)
 		}
-		var found *window
+		var found *coreauth.QuotaWindow
 		models.ForEach(func(key, value gjson.Result) bool {
 			displayName := strings.TrimSpace(firstNonEmptyGJSON(value, "displayName", "display_name"))
 			if strings.EqualFold(displayName, identifier) {
@@ -931,9 +1249,9 @@ func extractAntigravityGroups(payload gjson.Result) []window {
 		return found
 	}
 
-	groups := make([]window, 0, len(antigravityGroups))
+	groups := make([]coreauth.QuotaWindow, 0, len(antigravityGroups))
 	for _, group := range antigravityGroups {
-		matches := make([]window, 0, len(group.Identifiers))
+		matches := make([]coreauth.QuotaWindow, 0, len(group.Identifiers))
 		for _, identifier := range group.Identifiers {
 			if match := findModel(identifier); match != nil {
 				matches = append(matches, *match)
@@ -959,7 +1277,7 @@ func extractAntigravityGroups(payload gjson.Result) []window {
 			}
 		}
 
-		groups = append(groups, window{
+		groups = append(groups, coreauth.QuotaWindow{
 			ID:               group.ID,
 			Label:            group.Label,
 			RemainingPercent: remaining,
@@ -970,7 +1288,7 @@ func extractAntigravityGroups(payload gjson.Result) []window {
 	return groups
 }
 
-func antigravityWindowFromResult(modelID string, payload gjson.Result) *window {
+func antigravityWindowFromResult(modelID string, payload gjson.Result) *coreauth.QuotaWindow {
 	quotaInfo := payload.Get("quotaInfo")
 	if !quotaInfo.Exists() {
 		quotaInfo = payload.Get("quota_info")
@@ -984,7 +1302,7 @@ func antigravityWindowFromResult(modelID string, payload gjson.Result) *window {
 	if remainingPercent == nil {
 		return nil
 	}
-	return &window{
+	return &coreauth.QuotaWindow{
 		ID:               modelID,
 		Label:            modelID,
 		RemainingPercent: remainingPercent,
@@ -992,7 +1310,7 @@ func antigravityWindowFromResult(modelID string, payload gjson.Result) *window {
 	}
 }
 
-func minRemaining(items []window) *int {
+func minRemaining(items []coreauth.QuotaWindow) *int {
 	var remaining *int
 	for _, item := range items {
 		if item.RemainingPercent == nil {

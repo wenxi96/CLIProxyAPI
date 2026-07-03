@@ -3,33 +3,17 @@ package management
 import (
 	"context"
 	"fmt"
-	"io"
 	"math"
 	"net/http"
-	"net/url"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/authquota"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/gjson"
-)
-
-const (
-	antigravityDefaultProjectID = "bamboo-precept-lgxtn"
-	antigravityQuotaURLPrimary  = "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels"
-	antigravityQuotaURLSandbox  = "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:fetchAvailableModels"
-	antigravityQuotaURLDefault  = "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels"
-	geminiCLIQuotaURL           = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota"
-	geminiCLICodeAssistURL      = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
-	claudeProfileURL            = "https://api.anthropic.com/api/oauth/profile"
-	claudeUsageURL              = "https://api.anthropic.com/api/oauth/usage"
-	codexUsageURL               = "https://chatgpt.com/backend-api/wham/usage"
-	kimiUsageURL                = "https://api.kimi.com/coding/v1/usages"
 )
 
 const (
@@ -45,41 +29,6 @@ const (
 	authFileBatchCheckClassificationUnknown         = "unknown"
 	authFileBatchCheckReenableThresholdBucket       = "alert"
 )
-
-var antigravityQuotaURLs = []string{
-	antigravityQuotaURLPrimary,
-	antigravityQuotaURLSandbox,
-	antigravityQuotaURLDefault,
-}
-
-var claudeBatchCheckWindows = []struct {
-	Key   string
-	ID    string
-	Label string
-}{
-	{Key: "five_hour", ID: "five-hour", Label: "five_hour"},
-	{Key: "seven_day", ID: "seven-day", Label: "seven_day"},
-	{Key: "seven_day_oauth_apps", ID: "seven-day-oauth-apps", Label: "seven_day_oauth_apps"},
-	{Key: "seven_day_opus", ID: "seven-day-opus", Label: "seven_day_opus"},
-	{Key: "seven_day_sonnet", ID: "seven-day-sonnet", Label: "seven_day_sonnet"},
-	{Key: "seven_day_cowork", ID: "seven-day-cowork", Label: "seven_day_cowork"},
-	{Key: "iguana_necktie", ID: "iguana-necktie", Label: "iguana_necktie"},
-}
-
-var antigravityBatchCheckGroups = []struct {
-	ID          string
-	Label       string
-	Identifiers []string
-}{
-	{ID: "claude-gpt", Label: "Claude/GPT", Identifiers: []string{"claude-sonnet-4-6", "claude-opus-4-6-thinking", "gpt-oss-120b-medium"}},
-	{ID: "gemini-3-pro", Label: "Gemini 3 Pro", Identifiers: []string{"gemini-3-pro-high", "gemini-3-pro-low"}},
-	{ID: "gemini-3-1-pro-series", Label: "Gemini 3.1 Pro Series", Identifiers: []string{"gemini-3.1-pro-high", "gemini-3.1-pro-low"}},
-	{ID: "gemini-2-5-flash", Label: "Gemini 2.5 Flash", Identifiers: []string{"gemini-2.5-flash", "gemini-2.5-flash-thinking"}},
-	{ID: "gemini-2-5-flash-lite", Label: "Gemini 2.5 Flash Lite", Identifiers: []string{"gemini-2.5-flash-lite"}},
-	{ID: "gemini-2-5-cu", Label: "Gemini 2.5 CU", Identifiers: []string{"rev19-uic3-1p"}},
-	{ID: "gemini-3-flash", Label: "Gemini 3 Flash", Identifiers: []string{"gemini-3-flash"}},
-	{ID: "gemini-image", Label: "gemini-3.1-flash-image", Identifiers: []string{"gemini-3.1-flash-image"}},
-}
 
 type authFileBatchCheckRequest struct {
 	Names           []string `json:"names"`
@@ -210,21 +159,7 @@ type authFileBatchCheckSkipped struct {
 	Reason   string `json:"reason"`
 }
 
-type authFileBatchCheckWindow struct {
-	ID               string   `json:"id"`
-	Label            string   `json:"label,omitempty"`
-	UsedPercent      *int     `json:"used_percent,omitempty"`
-	RemainingPercent *int     `json:"remaining_percent,omitempty"`
-	ResetAt          *int64   `json:"reset_at,omitempty"`
-	ResetAfter       *int     `json:"reset_after_seconds,omitempty"`
-	ResetTime        string   `json:"reset_time,omitempty"`
-	RemainingAmount  *int     `json:"remaining_amount,omitempty"`
-	Limit            *int     `json:"limit,omitempty"`
-	Used             *int     `json:"used,omitempty"`
-	ResetHint        string   `json:"reset_hint,omitempty"`
-	TokenType        string   `json:"token_type,omitempty"`
-	ModelIDs         []string `json:"model_ids,omitempty"`
-}
+type authFileBatchCheckWindow = coreauth.QuotaWindow
 
 type authFileBatchCheckResult struct {
 	Name             string         `json:"name"`
@@ -805,222 +740,57 @@ func (h *Handler) checkSingleAuthFile(ctx context.Context, auth *coreauth.Auth) 
 		CheckedAt:      time.Now().UTC(),
 	}
 
-	switch result.Provider {
-	case "codex":
-		return h.checkCodexAuthFile(ctx, auth, result)
-	case "claude":
-		return h.checkClaudeAuthFile(ctx, auth, result)
-	case "gemini-cli":
-		return h.checkGeminiCLIAuthFile(ctx, auth, result)
-	case "kimi":
-		return h.checkKimiAuthFile(ctx, auth, result)
-	case "antigravity":
-		return h.checkAntigravityAuthFile(ctx, auth, result)
-	default:
+	service := h.newBatchCheckQuotaService()
+	if service == nil || !service.Supports(auth) {
 		result.Classification = authFileBatchCheckClassificationUnsupported
 		return result
 	}
+	quotaResult, err := service.Check(ctx, auth)
+	if err != nil {
+		return finalizeBatchCheckResult(result, authFileBatchCheckClassificationRequestFailed, nil, err.Error(), 0, nil)
+	}
+	return finalizeBatchCheckResult(
+		result,
+		quotaResult.Classification,
+		quotaResult.RemainingPercent,
+		quotaResult.ErrorMessage,
+		quotaResult.StatusCode,
+		quotaResult.Details,
+	)
 }
 
-func (h *Handler) checkCodexAuthFile(ctx context.Context, auth *coreauth.Auth, result authFileBatchCheckResult) authFileBatchCheckResult {
-	accountID := resolveCodexBatchCheckAccountID(auth)
-	if accountID == "" {
-		return finalizeBatchCheckResult(result, authFileBatchCheckClassificationRequestFailed, nil, "missing chatgpt account id", 0, nil)
+func (h *Handler) newBatchCheckQuotaService() *authquota.Service {
+	if h == nil {
+		return nil
 	}
-
-	resp, err := h.executeBatchCheckAPICall(ctx, auth, apiCallRequest{
-		Method: "GET",
-		URL:    codexUsageURL,
-		Header: map[string]string{
-			"Authorization":      "Bearer $TOKEN$",
-			"Content-Type":       "application/json",
-			"User-Agent":         "codex_cli_rs/0.76.0 (Debian 13.0.0; x86_64) WindowsTerminal",
-			"Chatgpt-Account-Id": accountID,
+	return authquota.NewService(authquota.Options{
+		ConfigProvider: func() *config.Config {
+			return h.cfg
 		},
-	})
-
-	classification, errorMessage, statusCode := classifyBatchCheckAPIResponse(resp, err)
-	payload := gjson.Parse(resp.Body)
-	windows := extractCodexBatchCheckWindows(payload)
-	remaining := minRemainingFromWindows(windows)
-	details := map[string]any{"windows": windows}
-	if planType := strings.TrimSpace(payload.Get("plan_type").String()); planType != "" {
-		details["plan_type"] = planType
-	}
-	if classification == "" && len(windows) == 0 {
-		classification = authFileBatchCheckClassificationAPIError
-		errorMessage = "empty codex quota payload"
-	}
-	if classification == "" {
-		classification = classificationFromRemainingPercent(remaining)
-	}
-	return finalizeBatchCheckResult(result, classification, remaining, errorMessage, statusCode, details)
-}
-
-func (h *Handler) checkClaudeAuthFile(ctx context.Context, auth *coreauth.Auth, result authFileBatchCheckResult) authFileBatchCheckResult {
-	resp, err := h.executeBatchCheckAPICall(ctx, auth, apiCallRequest{
-		Method: "GET",
-		URL:    claudeUsageURL,
-		Header: map[string]string{
-			"Authorization":  "Bearer $TOKEN$",
-			"Content-Type":   "application/json",
-			"anthropic-beta": "oauth-2025-04-20",
+		TransportProvider: func(auth *coreauth.Auth, _ *config.Config) http.RoundTripper {
+			return h.apiCallTransport(auth)
 		},
+		APICallExecutor: h.batchCheckQuotaAPICallExecutor(),
 	})
-
-	classification, errorMessage, statusCode := classifyBatchCheckAPIResponse(resp, err)
-	payload := gjson.Parse(resp.Body)
-	windows := extractClaudeBatchCheckWindows(payload)
-	remaining := minRemainingFromWindows(windows)
-	details := map[string]any{"windows": windows}
-	if classification == "" && len(windows) == 0 {
-		classification = authFileBatchCheckClassificationAPIError
-		errorMessage = "empty claude quota payload"
-	}
-	if classification == "" {
-		profileResp, profileErr := h.executeBatchCheckAPICall(ctx, auth, apiCallRequest{
-			Method: "GET",
-			URL:    claudeProfileURL,
-			Header: map[string]string{
-				"Authorization":  "Bearer $TOKEN$",
-				"Content-Type":   "application/json",
-				"anthropic-beta": "oauth-2025-04-20",
-			},
-		})
-		if profileErr == nil && profileResp.StatusCode >= http.StatusOK && profileResp.StatusCode < http.StatusMultipleChoices {
-			if planType := resolveClaudeBatchCheckPlanType(gjson.Parse(profileResp.Body)); planType != "" {
-				details["plan_type"] = planType
-			}
-		}
-		classification = classificationFromRemainingPercent(remaining)
-	}
-	return finalizeBatchCheckResult(result, classification, remaining, errorMessage, statusCode, details)
 }
 
-func (h *Handler) checkGeminiCLIAuthFile(ctx context.Context, auth *coreauth.Auth, result authFileBatchCheckResult) authFileBatchCheckResult {
-	projectID := resolveGeminiCLIBatchCheckProjectID(auth)
-	if projectID == "" {
-		return finalizeBatchCheckResult(result, authFileBatchCheckClassificationRequestFailed, nil, "missing project id", 0, nil)
+func (h *Handler) batchCheckQuotaAPICallExecutor() func(context.Context, *coreauth.Auth, authquota.APICallRequest) (authquota.APICallResponse, error) {
+	if h == nil || h.apiCallExecutor == nil {
+		return nil
 	}
-
-	resp, err := h.executeBatchCheckAPICall(ctx, auth, apiCallRequest{
-		Method: "POST",
-		URL:    geminiCLIQuotaURL,
-		Header: map[string]string{
-			"Authorization": "Bearer $TOKEN$",
-			"Content-Type":  "application/json",
-		},
-		Data: fmt.Sprintf(`{"project":%q}`, projectID),
-	})
-
-	classification, errorMessage, statusCode := classifyBatchCheckAPIResponse(resp, err)
-	payload := gjson.Parse(resp.Body)
-	buckets := extractGeminiCLIBatchCheckBuckets(payload)
-	remaining := minRemainingFromWindows(buckets)
-	details := map[string]any{
-		"project_id": projectID,
-		"buckets":    buckets,
-	}
-	if classification == "" && len(buckets) == 0 {
-		classification = authFileBatchCheckClassificationAPIError
-		errorMessage = "empty gemini cli quota payload"
-	}
-	if classification == "" {
-		suppResp, suppErr := h.executeBatchCheckAPICall(ctx, auth, apiCallRequest{
-			Method: "POST",
-			URL:    geminiCLICodeAssistURL,
-			Header: map[string]string{
-				"Authorization": "Bearer $TOKEN$",
-				"Content-Type":  "application/json",
-			},
-			Data: fmt.Sprintf(`{"cloudaicompanionProject":%q,"metadata":{"ideType":"IDE_UNSPECIFIED","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI","duetProject":%q}}`, projectID, projectID),
+	return func(ctx context.Context, auth *coreauth.Auth, req authquota.APICallRequest) (authquota.APICallResponse, error) {
+		resp, err := h.apiCallExecutor(ctx, auth, apiCallRequest{
+			Method: req.Method,
+			URL:    req.URL,
+			Header: req.Header,
+			Data:   req.Data,
 		})
-		if suppErr == nil && suppResp.StatusCode >= http.StatusOK && suppResp.StatusCode < http.StatusMultipleChoices {
-			supplementary := gjson.Parse(suppResp.Body)
-			if tierID := strings.TrimSpace(firstNonEmptyGJSON(supplementary, "paidTier.id", "paid_tier.id", "currentTier.id", "current_tier.id")); tierID != "" {
-				details["tier_id"] = strings.ToLower(tierID)
-			}
-			if creditBalance := extractGeminiCLICreditBalance(supplementary); creditBalance != nil {
-				details["credit_balance"] = *creditBalance
-			}
-		}
-		classification = classificationFromRemainingPercent(remaining)
+		return authquota.APICallResponse{
+			StatusCode: resp.StatusCode,
+			Header:     resp.Header,
+			Body:       resp.Body,
+		}, err
 	}
-	return finalizeBatchCheckResult(result, classification, remaining, errorMessage, statusCode, details)
-}
-
-func (h *Handler) checkKimiAuthFile(ctx context.Context, auth *coreauth.Auth, result authFileBatchCheckResult) authFileBatchCheckResult {
-	resp, err := h.executeBatchCheckAPICall(ctx, auth, apiCallRequest{
-		Method: "GET",
-		URL:    kimiUsageURL,
-		Header: map[string]string{
-			"Authorization": "Bearer $TOKEN$",
-		},
-	})
-
-	classification, errorMessage, statusCode := classifyBatchCheckAPIResponse(resp, err)
-	payload := gjson.Parse(resp.Body)
-	rows := extractKimiBatchCheckRows(payload)
-	remaining := minRemainingFromWindows(rows)
-	details := map[string]any{"rows": rows}
-	if classification == "" && len(rows) == 0 {
-		classification = authFileBatchCheckClassificationAPIError
-		errorMessage = "empty kimi quota payload"
-	}
-	if classification == "" {
-		classification = classificationFromRemainingPercent(remaining)
-	}
-	return finalizeBatchCheckResult(result, classification, remaining, errorMessage, statusCode, details)
-}
-
-func (h *Handler) checkAntigravityAuthFile(ctx context.Context, auth *coreauth.Auth, result authFileBatchCheckResult) authFileBatchCheckResult {
-	projectID := resolveAntigravityBatchCheckProjectID(auth)
-	requestBody := fmt.Sprintf(`{"project":%q}`, projectID)
-
-	var lastResp apiCallResponse
-	var lastErr error
-	for _, quotaURL := range antigravityQuotaURLs {
-		resp, err := h.executeBatchCheckAPICall(ctx, auth, apiCallRequest{
-			Method: "POST",
-			URL:    quotaURL,
-			Header: map[string]string{
-				"Authorization": "Bearer $TOKEN$",
-				"Content-Type":  "application/json",
-				"User-Agent":    "antigravity/1.11.5 windows/amd64",
-			},
-			Data: requestBody,
-		})
-		lastResp = resp
-		lastErr = err
-
-		classification, errorMessage, statusCode := classifyBatchCheckAPIResponse(resp, err)
-		if classification == authFileBatchCheckClassificationInvalidated401 || classification == authFileBatchCheckClassificationRequestFailed {
-			return finalizeBatchCheckResult(result, classification, nil, errorMessage, statusCode, nil)
-		}
-		if err != nil || resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-			continue
-		}
-
-		payload := gjson.Parse(resp.Body)
-		groups := extractAntigravityBatchCheckGroups(payload)
-		if len(groups) == 0 {
-			continue
-		}
-		remaining := minRemainingFromWindows(groups)
-		return finalizeBatchCheckResult(result, classificationFromRemainingPercent(remaining), remaining, "", resp.StatusCode, map[string]any{
-			"project_id": projectID,
-			"groups":     groups,
-		})
-	}
-
-	classification, errorMessage, statusCode := classifyBatchCheckAPIResponse(lastResp, lastErr)
-	if classification == "" {
-		classification = authFileBatchCheckClassificationAPIError
-		if errorMessage == "" {
-			errorMessage = "failed to fetch antigravity quota"
-		}
-	}
-	return finalizeBatchCheckResult(result, classification, nil, errorMessage, statusCode, nil)
 }
 
 func finalizeBatchCheckResult(result authFileBatchCheckResult, classification string, remaining *int, errorMessage string, statusCode int, details map[string]any) authFileBatchCheckResult {
@@ -1037,13 +807,6 @@ func finalizeBatchCheckResult(result authFileBatchCheckResult, classification st
 		result.Details = details
 	}
 	return result
-}
-
-func classificationFromRemainingPercent(remaining *int) string {
-	if remaining != nil && *remaining <= 0 {
-		return authFileBatchCheckClassificationNoQuota
-	}
-	return authFileBatchCheckClassificationOK
 }
 
 func quotaBucketFromRemainingPercent(remaining *int) string {
@@ -1094,600 +857,6 @@ func authFileBatchCheckName(auth *coreauth.Auth) string {
 	return strings.TrimSpace(auth.ID)
 }
 
-func classifyBatchCheckAPIResponse(resp apiCallResponse, err error) (string, string, int) {
-	if err != nil {
-		return authFileBatchCheckClassificationRequestFailed, strings.TrimSpace(err.Error()), 0
-	}
-
-	body := gjson.Parse(resp.Body)
-	statusCode := resp.StatusCode
-	if statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices {
-		return "", "", statusCode
-	}
-	errorMessage := extractBatchCheckAPIErrorMessage(body, resp.Body)
-	switch {
-	case statusCode == http.StatusUnauthorized:
-		return authFileBatchCheckClassificationInvalidated401, errorMessage, statusCode
-	case looksLikeNoQuotaError(body, errorMessage, statusCode):
-		return authFileBatchCheckClassificationNoQuota, errorMessage, statusCode
-	case statusCode >= http.StatusBadRequest:
-		return authFileBatchCheckClassificationAPIError, errorMessage, statusCode
-	default:
-		return "", errorMessage, statusCode
-	}
-}
-
-func extractBatchCheckAPIErrorMessage(body gjson.Result, raw string) string {
-	for _, candidate := range []string{
-		body.Get("error.message").String(),
-		body.Get("message").String(),
-		body.Get("error").String(),
-		raw,
-	} {
-		if trimmed := strings.TrimSpace(candidate); trimmed != "" {
-			return trimmed
-		}
-	}
-	return ""
-}
-
-func looksLikeNoQuotaError(body gjson.Result, errorMessage string, statusCode int) bool {
-	if statusCode == http.StatusTooManyRequests {
-		return true
-	}
-	joined := strings.ToLower(strings.Join([]string{
-		body.Get("error.code").String(),
-		body.Get("error.type").String(),
-		errorMessage,
-	}, " "))
-	return strings.Contains(joined, "usage_limit_reached") ||
-		strings.Contains(joined, "usage limit has been reached") ||
-		(statusCode >= http.StatusBadRequest && strings.Contains(joined, "quota"))
-}
-
-func resolveCodexBatchCheckAccountID(auth *coreauth.Auth) string {
-	if auth == nil {
-		return ""
-	}
-	if auth.Metadata != nil {
-		for _, key := range []string{"chatgpt_account_id", "chatgptAccountId"} {
-			if value := strings.TrimSpace(stringValueAny(auth.Metadata[key])); value != "" {
-				return value
-			}
-		}
-	}
-	if auth.Attributes != nil {
-		for _, key := range []string{"chatgpt_account_id", "chatgptAccountId"} {
-			if value := strings.TrimSpace(auth.Attributes[key]); value != "" {
-				return value
-			}
-		}
-	}
-	if claims := extractCodexIDTokenClaims(auth); claims != nil {
-		if value := strings.TrimSpace(stringValueAny(claims["chatgpt_account_id"])); value != "" {
-			return value
-		}
-	}
-	return ""
-}
-
-func resolveGeminiCLIBatchCheckProjectID(auth *coreauth.Auth) string {
-	if auth == nil {
-		return ""
-	}
-	if auth.Metadata != nil {
-		for _, key := range []string{"project_id", "projectId"} {
-			if value := strings.TrimSpace(stringValueAny(auth.Metadata[key])); value != "" {
-				return value
-			}
-		}
-	}
-	_, account := auth.AccountInfo()
-	if account == "" {
-		return ""
-	}
-	start := strings.LastIndex(account, "(")
-	end := strings.LastIndex(account, ")")
-	if start >= 0 && end > start {
-		return strings.TrimSpace(account[start+1 : end])
-	}
-	return ""
-}
-
-func resolveAntigravityBatchCheckProjectID(auth *coreauth.Auth) string {
-	if auth == nil {
-		return antigravityDefaultProjectID
-	}
-	if auth.Metadata != nil {
-		for _, key := range []string{"project_id", "projectId"} {
-			if value := strings.TrimSpace(stringValueAny(auth.Metadata[key])); value != "" {
-				return value
-			}
-		}
-	}
-	path := strings.TrimSpace(authAttribute(auth, "path"))
-	if path != "" {
-		if content, err := os.ReadFile(path); err == nil {
-			raw := gjson.ParseBytes(content)
-			for _, key := range []string{"project_id", "projectId", "installed.project_id", "installed.projectId", "web.project_id", "web.projectId"} {
-				if value := strings.TrimSpace(raw.Get(key).String()); value != "" {
-					return value
-				}
-			}
-		}
-	}
-	return antigravityDefaultProjectID
-}
-
-func resolveClaudeBatchCheckPlanType(payload gjson.Result) string {
-	switch {
-	case payload.Get("account.has_claude_max").Bool():
-		return "plan_max"
-	case payload.Get("account.has_claude_pro").Bool():
-		return "plan_pro"
-	case payload.Get("account.has_claude_max").Exists() || payload.Get("account.has_claude_pro").Exists():
-		return "plan_free"
-	default:
-		return ""
-	}
-}
-
-func extractCodexBatchCheckWindows(payload gjson.Result) []authFileBatchCheckWindow {
-	definitions := []struct {
-		ID    string
-		Label string
-		Path  string
-	}{
-		{ID: "five-hour", Label: "five_hour", Path: "rate_limit.primary_window"},
-		{ID: "weekly", Label: "weekly", Path: "rate_limit.secondary_window"},
-		{ID: "code-review-five-hour", Label: "code_review_five_hour", Path: "code_review_rate_limit.primary_window"},
-		{ID: "code-review-weekly", Label: "code_review_weekly", Path: "code_review_rate_limit.secondary_window"},
-	}
-
-	windows := make([]authFileBatchCheckWindow, 0, len(definitions))
-	for _, def := range definitions {
-		window := payload.Get(def.Path)
-		if !window.Exists() {
-			continue
-		}
-		usedPercent := intPtrFromGJSON(window, "used_percent", "usedPercent")
-		remainingPercent := remainingPercentFromUsedPercent(usedPercent)
-		windows = append(windows, authFileBatchCheckWindow{
-			ID:               def.ID,
-			Label:            def.Label,
-			UsedPercent:      usedPercent,
-			RemainingPercent: remainingPercent,
-			ResetAfter:       intPtrFromGJSON(window, "reset_after_seconds", "resetAfterSeconds"),
-			ResetAt:          int64PtrFromGJSON(window, "reset_at", "resetAt"),
-		})
-	}
-	return windows
-}
-
-func extractClaudeBatchCheckWindows(payload gjson.Result) []authFileBatchCheckWindow {
-	windows := make([]authFileBatchCheckWindow, 0, len(claudeBatchCheckWindows))
-	for _, def := range claudeBatchCheckWindows {
-		window := payload.Get(def.Key)
-		if !window.Exists() {
-			continue
-		}
-		usedPercent := intPtrFromGJSON(window, "utilization")
-		windows = append(windows, authFileBatchCheckWindow{
-			ID:               def.ID,
-			Label:            def.Label,
-			UsedPercent:      usedPercent,
-			RemainingPercent: remainingPercentFromUsedPercent(usedPercent),
-			ResetTime:        strings.TrimSpace(window.Get("resets_at").String()),
-		})
-	}
-	return windows
-}
-
-func extractGeminiCLIBatchCheckBuckets(payload gjson.Result) []authFileBatchCheckWindow {
-	buckets := make([]authFileBatchCheckWindow, 0)
-	for _, bucket := range payload.Get("buckets").Array() {
-		modelID := strings.TrimSpace(firstNonEmptyGJSON(bucket, "modelId", "model_id"))
-		if modelID == "" {
-			continue
-		}
-		remainingPercent := percentageFromFraction(float64PtrFromGJSON(bucket, "remainingFraction", "remaining_fraction"))
-		remainingAmount := intPtrFromGJSON(bucket, "remainingAmount", "remaining_amount")
-		if remainingPercent == nil && remainingAmount != nil && *remainingAmount <= 0 {
-			zero := 0
-			remainingPercent = &zero
-		}
-		buckets = append(buckets, authFileBatchCheckWindow{
-			ID:               modelID,
-			Label:            modelID,
-			RemainingPercent: remainingPercent,
-			RemainingAmount:  remainingAmount,
-			ResetTime:        strings.TrimSpace(firstNonEmptyGJSON(bucket, "resetTime", "reset_time")),
-			TokenType:        strings.TrimSpace(firstNonEmptyGJSON(bucket, "tokenType", "token_type")),
-			ModelIDs:         []string{modelID},
-		})
-	}
-	return buckets
-}
-
-func extractGeminiCLICreditBalance(payload gjson.Result) *int {
-	total := 0
-	found := false
-	for _, path := range []string{"paidTier.availableCredits", "paid_tier.available_credits", "currentTier.availableCredits", "current_tier.available_credits"} {
-		for _, credit := range payload.Get(path).Array() {
-			if strings.TrimSpace(firstNonEmptyGJSON(credit, "creditType", "credit_type")) != "GOOGLE_ONE_AI" {
-				continue
-			}
-			amount := intPtrFromGJSON(credit, "creditAmount", "credit_amount")
-			if amount == nil {
-				continue
-			}
-			total += *amount
-			found = true
-		}
-	}
-	if !found {
-		return nil
-	}
-	return &total
-}
-
-func extractKimiBatchCheckRows(payload gjson.Result) []authFileBatchCheckWindow {
-	rows := make([]authFileBatchCheckWindow, 0)
-	if usage := payload.Get("usage"); usage.Exists() {
-		if row := buildKimiBatchCheckRow("summary", "weekly_limit", usage); row != nil {
-			rows = append(rows, *row)
-		}
-	}
-	for index, item := range payload.Get("limits").Array() {
-		detail := item.Get("detail")
-		if !detail.Exists() {
-			detail = item
-		}
-		label := strings.TrimSpace(firstNonEmptyGJSON(detail, "name", "title"))
-		if label == "" {
-			label = fmt.Sprintf("limit_%d", index+1)
-		}
-		row := buildKimiBatchCheckRow(fmt.Sprintf("limit-%d", index), label, detail)
-		if row == nil {
-			continue
-		}
-		if row.ResetHint == "" {
-			row.ResetHint = kimiBatchCheckResetHint(item.Get("window"))
-		}
-		rows = append(rows, *row)
-	}
-	return rows
-}
-
-func buildKimiBatchCheckRow(id, label string, payload gjson.Result) *authFileBatchCheckWindow {
-	limit := intPtrFromGJSON(payload, "limit")
-	used := intPtrFromGJSON(payload, "used")
-	if used == nil {
-		remaining := intPtrFromGJSON(payload, "remaining")
-		if limit != nil && remaining != nil {
-			value := *limit - *remaining
-			used = &value
-		}
-	}
-	if limit == nil && used == nil {
-		return nil
-	}
-
-	var remainingPercent *int
-	if limit != nil && *limit > 0 {
-		usedValue := 0
-		if used != nil {
-			usedValue = *used
-		}
-		value := maxInt(0, minInt(100, int(float64((*limit-usedValue)*100)/float64(*limit)+0.5)))
-		remainingPercent = &value
-	} else if used != nil && *used > 0 {
-		zero := 0
-		remainingPercent = &zero
-	}
-
-	return &authFileBatchCheckWindow{
-		ID:               id,
-		Label:            label,
-		Limit:            limit,
-		Used:             used,
-		RemainingPercent: remainingPercent,
-		ResetHint:        kimiBatchCheckResetHint(payload),
-	}
-}
-
-func kimiBatchCheckResetHint(payload gjson.Result) string {
-	if !payload.Exists() {
-		return ""
-	}
-	for _, key := range []string{"reset_at", "resetAt", "reset_time", "resetTime"} {
-		value := strings.TrimSpace(payload.Get(key).String())
-		if value == "" {
-			continue
-		}
-		if ts, err := time.Parse(time.RFC3339Nano, value); err == nil {
-			return durationHint(time.Until(ts))
-		}
-		if ts, err := time.Parse(time.RFC3339, value); err == nil {
-			return durationHint(time.Until(ts))
-		}
-	}
-	for _, key := range []string{"reset_in", "resetIn", "ttl"} {
-		value := payload.Get(key).Int()
-		if value > 0 {
-			return durationHint(time.Duration(value) * time.Second)
-		}
-	}
-	return ""
-}
-
-func extractAntigravityBatchCheckGroups(payload gjson.Result) []authFileBatchCheckWindow {
-	models := payload.Get("models")
-	if !models.Exists() {
-		return nil
-	}
-
-	findModel := func(identifier string) *authFileBatchCheckWindow {
-		direct := models.Get(identifier)
-		if direct.Exists() {
-			return antigravityWindowFromResult(identifier, direct)
-		}
-		var found *authFileBatchCheckWindow
-		models.ForEach(func(key, value gjson.Result) bool {
-			displayName := strings.TrimSpace(firstNonEmptyGJSON(value, "displayName", "display_name"))
-			if strings.EqualFold(displayName, identifier) {
-				found = antigravityWindowFromResult(key.String(), value)
-				return false
-			}
-			return true
-		})
-		return found
-	}
-
-	groups := make([]authFileBatchCheckWindow, 0, len(antigravityBatchCheckGroups))
-	for _, group := range antigravityBatchCheckGroups {
-		matches := make([]authFileBatchCheckWindow, 0, len(group.Identifiers))
-		for _, identifier := range group.Identifiers {
-			if match := findModel(identifier); match != nil {
-				matches = append(matches, *match)
-			}
-		}
-		if len(matches) == 0 {
-			continue
-		}
-
-		modelIDs := make([]string, 0, len(matches))
-		var remaining *int
-		resetTime := ""
-		for _, match := range matches {
-			modelIDs = append(modelIDs, match.ID)
-			if match.RemainingPercent != nil {
-				if remaining == nil || *match.RemainingPercent < *remaining {
-					value := *match.RemainingPercent
-					remaining = &value
-				}
-			}
-			if resetTime == "" && match.ResetTime != "" {
-				resetTime = match.ResetTime
-			}
-		}
-
-		groups = append(groups, authFileBatchCheckWindow{
-			ID:               group.ID,
-			Label:            group.Label,
-			RemainingPercent: remaining,
-			ResetTime:        resetTime,
-			ModelIDs:         modelIDs,
-		})
-	}
-	return groups
-}
-
-func antigravityWindowFromResult(modelID string, payload gjson.Result) *authFileBatchCheckWindow {
-	quotaInfo := payload.Get("quotaInfo")
-	if !quotaInfo.Exists() {
-		quotaInfo = payload.Get("quota_info")
-	}
-	remainingPercent := percentageFromFraction(float64PtrFromGJSON(quotaInfo, "remainingFraction", "remaining_fraction", "remaining"))
-	resetTime := strings.TrimSpace(firstNonEmptyGJSON(quotaInfo, "resetTime", "reset_time"))
-	if remainingPercent == nil && resetTime != "" {
-		zero := 0
-		remainingPercent = &zero
-	}
-	if remainingPercent == nil {
-		return nil
-	}
-	return &authFileBatchCheckWindow{
-		ID:               modelID,
-		Label:            modelID,
-		RemainingPercent: remainingPercent,
-		ResetTime:        resetTime,
-	}
-}
-
-func (h *Handler) executeBatchCheckAPICall(ctx context.Context, auth *coreauth.Auth, body apiCallRequest) (apiCallResponse, error) {
-	if h != nil && h.apiCallExecutor != nil {
-		return h.apiCallExecutor(ctx, auth, body)
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	method := strings.ToUpper(strings.TrimSpace(body.Method))
-	if method == "" {
-		return apiCallResponse{}, fmt.Errorf("missing method")
-	}
-	urlStr := strings.TrimSpace(body.URL)
-	if urlStr == "" {
-		return apiCallResponse{}, fmt.Errorf("missing url")
-	}
-	parsedURL, err := url.Parse(urlStr)
-	if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" {
-		return apiCallResponse{}, fmt.Errorf("invalid url")
-	}
-
-	headers := make(map[string]string, len(body.Header))
-	for key, value := range body.Header {
-		headers[key] = value
-	}
-	var token string
-	var tokenResolved bool
-	for key, value := range headers {
-		if !strings.Contains(value, "$TOKEN$") {
-			continue
-		}
-		if !tokenResolved {
-			token, err = h.resolveTokenForAuth(ctx, auth)
-			if err != nil {
-				return apiCallResponse{}, fmt.Errorf("auth token refresh failed: %w", err)
-			}
-			tokenResolved = true
-		}
-		if token == "" {
-			return apiCallResponse{}, fmt.Errorf("auth token not found")
-		}
-		headers[key] = strings.ReplaceAll(value, "$TOKEN$", token)
-	}
-
-	var requestBody io.Reader
-	if body.Data != "" {
-		requestBody = strings.NewReader(body.Data)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, urlStr, requestBody)
-	if err != nil {
-		return apiCallResponse{}, fmt.Errorf("failed to build request: %w", err)
-	}
-	for key, value := range headers {
-		if strings.EqualFold(key, "host") {
-			req.Host = strings.TrimSpace(value)
-			continue
-		}
-		req.Header.Set(key, value)
-	}
-
-	httpClient := &http.Client{
-		Timeout:   defaultAPICallTimeout,
-		Transport: h.apiCallTransport(auth),
-	}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return apiCallResponse{}, fmt.Errorf("request failed: %w", err)
-	}
-	defer func() {
-		if closeErr := resp.Body.Close(); closeErr != nil {
-			log.WithError(closeErr).Warn("failed to close batch check response body")
-		}
-	}()
-
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return apiCallResponse{}, fmt.Errorf("failed to read response: %w", err)
-	}
-	return apiCallResponse{
-		StatusCode: resp.StatusCode,
-		Header:     resp.Header,
-		Body:       string(bodyBytes),
-	}, nil
-}
-
-func minRemainingFromWindows(windows []authFileBatchCheckWindow) *int {
-	var remaining *int
-	for _, window := range windows {
-		if window.RemainingPercent == nil {
-			continue
-		}
-		if remaining == nil || *window.RemainingPercent < *remaining {
-			value := *window.RemainingPercent
-			remaining = &value
-		}
-	}
-	return remaining
-}
-
-func remainingPercentFromUsedPercent(usedPercent *int) *int {
-	if usedPercent == nil {
-		return nil
-	}
-	value := maxInt(0, minInt(100, 100-*usedPercent))
-	return &value
-}
-
-func percentageFromFraction(value *float64) *int {
-	if value == nil {
-		return nil
-	}
-	normalized := *value
-	if normalized < 0 {
-		normalized = 0
-	}
-	if normalized > 1 {
-		normalized = 1
-	}
-	percentage := int(normalized*100 + 0.5)
-	return &percentage
-}
-
-func durationHint(duration time.Duration) string {
-	if duration <= 0 {
-		return ""
-	}
-	totalMinutes := int(duration / time.Minute)
-	hours := totalMinutes / 60
-	minutes := totalMinutes % 60
-	switch {
-	case hours > 0 && minutes > 0:
-		return fmt.Sprintf("%dh %dm", hours, minutes)
-	case hours > 0:
-		return fmt.Sprintf("%dh", hours)
-	case minutes > 0:
-		return fmt.Sprintf("%dm", minutes)
-	default:
-		return "<1m"
-	}
-}
-
-func firstNonEmptyGJSON(result gjson.Result, keys ...string) string {
-	for _, key := range keys {
-		if value := strings.TrimSpace(result.Get(key).String()); value != "" {
-			return value
-		}
-	}
-	return ""
-}
-
-func intPtrFromGJSON(result gjson.Result, keys ...string) *int {
-	for _, key := range keys {
-		value := result.Get(key)
-		if value.Exists() {
-			converted := int(value.Int())
-			return &converted
-		}
-	}
-	return nil
-}
-
-func int64PtrFromGJSON(result gjson.Result, keys ...string) *int64 {
-	for _, key := range keys {
-		value := result.Get(key)
-		if value.Exists() {
-			converted := value.Int()
-			return &converted
-		}
-	}
-	return nil
-}
-
-func float64PtrFromGJSON(result gjson.Result, keys ...string) *float64 {
-	for _, key := range keys {
-		value := result.Get(key)
-		if value.Exists() {
-			converted := value.Float()
-			return &converted
-		}
-	}
-	return nil
-}
-
 func stringValueAny(value any) string {
 	switch typed := value.(type) {
 	case string:
@@ -1707,13 +876,6 @@ func stringValueAny(value any) string {
 
 func maxInt(left, right int) int {
 	if left > right {
-		return left
-	}
-	return right
-}
-
-func minInt(left, right int) int {
-	if left < right {
 		return left
 	}
 	return right

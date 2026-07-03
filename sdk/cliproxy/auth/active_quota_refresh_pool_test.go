@@ -69,6 +69,37 @@ func TestActiveQuotaRefreshPoolDueMarksInFlightAndDeduplicates(t *testing.T) {
 	}
 }
 
+func TestActiveQuotaRefreshPoolDueRespectsGlobalRunningLimit(t *testing.T) {
+	pool := newActiveQuotaRefreshPool(10 * time.Minute)
+	start := time.Unix(100, 0)
+	pool.touch("auth-1", start)
+	pool.touch("auth-2", start)
+
+	first := pool.due(start, 1)
+	if len(first) != 1 {
+		t.Fatalf("first due = %v, want one auth", first)
+	}
+	if pool.running != 1 {
+		t.Fatalf("running = %d, want 1", pool.running)
+	}
+	second := pool.due(start.Add(time.Second), 1)
+	if len(second) != 0 {
+		t.Fatalf("second due = %v, want empty while worker is occupied", second)
+	}
+
+	pool.markComplete(first[0], QuotaCheckResult{RemainingPercent: intPtr(80)}, 40, start.Add(2*time.Second))
+	if pool.running != 0 {
+		t.Fatalf("running = %d, want 0 after completion", pool.running)
+	}
+	third := pool.due(start.Add(3*time.Second), 1)
+	if len(third) != 1 {
+		t.Fatalf("third due = %v, want one auth after worker is released", third)
+	}
+	if third[0] == first[0] {
+		t.Fatalf("third due = %v, want a different auth because the first was rescheduled", third)
+	}
+}
+
 func TestActiveQuotaRefreshPoolCompleteSchedulesNextCheckByDelta(t *testing.T) {
 	tests := []struct {
 		name      string

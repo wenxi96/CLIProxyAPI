@@ -20,13 +20,40 @@ const (
 	autoDisabledQuotaThresholdStatusMessage = "auto_disabled_quota_threshold"
 )
 
-// QuotaCheckResult captures the minimal outcome needed by runtime auto-disable logic.
+// QuotaWindow captures provider quota window details used by management views.
+type QuotaWindow struct {
+	ID               string   `json:"id"`
+	Label            string   `json:"label,omitempty"`
+	UsedPercent      *int     `json:"used_percent"`
+	RemainingPercent *int     `json:"remaining_percent"`
+	ResetAt          *int64   `json:"reset_at"`
+	ResetAfter       *int     `json:"reset_after_seconds"`
+	LimitWindow      *int     `json:"limit_window_seconds"`
+	ResetTime        string   `json:"reset_time,omitempty"`
+	RemainingAmount  *int     `json:"remaining_amount,omitempty"`
+	Limit            *int     `json:"limit,omitempty"`
+	Used             *int     `json:"used,omitempty"`
+	ResetHint        string   `json:"reset_hint,omitempty"`
+	TokenType        string   `json:"token_type,omitempty"`
+	ModelIDs         []string `json:"model_ids,omitempty"`
+}
+
+// CodexRateLimitResetCredit captures one available Codex manual reset credit.
+type CodexRateLimitResetCredit struct {
+	ID        string `json:"id"`
+	Status    string `json:"status"`
+	GrantedAt string `json:"grantedAt"`
+	ExpiresAt string `json:"expiresAt"`
+}
+
+// QuotaCheckResult captures the quota outcome plus optional provider details.
 type QuotaCheckResult struct {
 	Classification   string
 	RemainingPercent *int
 	ErrorMessage     string
 	StatusCode       int
 	Exhausted        bool
+	Details          map[string]any
 }
 
 // QuotaChecker confirms whether a credential with real quota inspection support is exhausted.

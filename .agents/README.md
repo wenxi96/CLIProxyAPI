@@ -19,6 +19,7 @@ Persistence Mode: git-visible
 - `20260408-auth-zero-quota-auto-disable`：额度查询型认证文件在额度真实耗尽后自动禁用。
 - `20260527-auth-quota-threshold-auto-disable`：在零额度自动禁用基础上新增全局额度阈值禁用。
 - `20260624-active-quota-refresh-pool`：为低额度自动禁用新增后端活跃额度刷新池设计与实施计划。
+- `20260702-batch-quota-query-parity`：将批量检查正式额度查询调整为复用 canonical quota query service，并对齐单文件刷新展示字段。
 - `20260409-fork-install-docker-self-hosting`：补齐 fork 自有 Docker 发布链路与仓库内 Linux 安装更新脚本。
 - `20260409-provider-scoped-routing-pool`：按供应商类别独立启用的范围轮询设计与后续实现。
 - `20260424-absorb-cliproxyapi2-fixes`：制定 CLIProxyAPI2 改动吸收计划并沉淀分批执行方案。
