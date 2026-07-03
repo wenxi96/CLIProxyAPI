@@ -6,6 +6,7 @@ package usage
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -117,12 +118,35 @@ type StatisticsSnapshot struct {
 	FailureCount  int64 `json:"failure_count"`
 	TotalTokens   int64 `json:"total_tokens"`
 
-	APIs map[string]APISnapshot `json:"apis"`
+	APIs  map[string]APISnapshot       `json:"apis"`
+	Auths map[string]AuthUsageSnapshot `json:"auths,omitempty"`
 
 	RequestsByDay  map[string]int64 `json:"requests_by_day"`
 	RequestsByHour map[string]int64 `json:"requests_by_hour"`
 	TokensByDay    map[string]int64 `json:"tokens_by_day"`
 	TokensByHour   map[string]int64 `json:"tokens_by_hour"`
+}
+
+// AuthUsageSnapshot summarises usage for a single credential auth_index.
+type AuthUsageSnapshot struct {
+	AuthIndex        string                       `json:"auth_index"`
+	TotalRequests    int64                        `json:"total_requests"`
+	SuccessCount     int64                        `json:"success_count"`
+	FailureCount     int64                        `json:"failure_count"`
+	Tokens           TokenStats                   `json:"tokens"`
+	EstimatedCostUSD *float64                     `json:"estimated_cost_usd"`
+	FirstRequestAt   *time.Time                   `json:"first_request_at,omitempty"`
+	LastRequestAt    *time.Time                   `json:"last_request_at,omitempty"`
+	Models           map[string]AuthModelSnapshot `json:"models,omitempty"`
+}
+
+// AuthModelSnapshot summarises usage for a model under a single auth_index.
+type AuthModelSnapshot struct {
+	TotalRequests    int64      `json:"total_requests"`
+	SuccessCount     int64      `json:"success_count"`
+	FailureCount     int64      `json:"failure_count"`
+	Tokens           TokenStats `json:"tokens"`
+	EstimatedCostUSD *float64   `json:"estimated_cost_usd"`
 }
 
 // APISnapshot summarises metrics for a single API key.
@@ -137,6 +161,38 @@ type ModelSnapshot struct {
 	TotalRequests int64           `json:"total_requests"`
 	TotalTokens   int64           `json:"total_tokens"`
 	Details       []RequestDetail `json:"details"`
+}
+
+// AuthRequestFilter constrains auth_index detail lookups.
+type AuthRequestFilter struct {
+	Limit  int
+	Offset int
+	Model  string
+	Failed *bool
+	From   *time.Time
+	To     *time.Time
+}
+
+// AuthRequestPage contains a page of request details for one auth_index.
+type AuthRequestPage struct {
+	AuthIndex string              `json:"auth_index"`
+	Total     int                 `json:"total"`
+	Limit     int                 `json:"limit"`
+	Offset    int                 `json:"offset"`
+	Items     []AuthRequestDetail `json:"items"`
+}
+
+// AuthRequestDetail stores one request detail enriched with endpoint and model.
+type AuthRequestDetail struct {
+	Timestamp        time.Time  `json:"timestamp"`
+	Endpoint         string     `json:"endpoint"`
+	Model            string     `json:"model"`
+	Source           string     `json:"source"`
+	AuthIndex        string     `json:"auth_index"`
+	Failed           bool       `json:"failed"`
+	LatencyMs        int64      `json:"latency_ms"`
+	Tokens           TokenStats `json:"tokens"`
+	EstimatedCostUSD *float64   `json:"estimated_cost_usd"`
 }
 
 var defaultRequestStatistics = NewRequestStatistics()
@@ -271,6 +327,7 @@ func (s *RequestStatistics) SnapshotWithState() (StatisticsSnapshot, uint64, uin
 		}
 		result.APIs[apiName] = apiSnapshot
 	}
+	result.Auths = buildAuthUsageSnapshots(result.APIs)
 
 	result.RequestsByDay = make(map[string]int64, len(s.requestsByDay))
 	for k, v := range s.requestsByDay {
@@ -295,6 +352,172 @@ func (s *RequestStatistics) SnapshotWithState() (StatisticsSnapshot, uint64, uin
 	}
 
 	return result, s.changeCount, s.persistedCount
+}
+
+// ListAuthRequests returns a filtered, timestamp-descending page of request
+// details for one auth_index.
+func (s *RequestStatistics) ListAuthRequests(authIndex string, filter AuthRequestFilter) AuthRequestPage {
+	authIndex = strings.TrimSpace(authIndex)
+	if filter.Limit <= 0 {
+		filter.Limit = 50
+	}
+	if filter.Limit > 500 {
+		filter.Limit = 500
+	}
+	if filter.Offset < 0 {
+		filter.Offset = 0
+	}
+
+	page := AuthRequestPage{
+		AuthIndex: authIndex,
+		Limit:     filter.Limit,
+		Offset:    filter.Offset,
+		Items:     []AuthRequestDetail{},
+	}
+	if s == nil || authIndex == "" {
+		return page
+	}
+
+	s.mu.RLock()
+	items := s.collectAuthRequestDetailsLocked(authIndex, filter)
+	s.mu.RUnlock()
+
+	sort.SliceStable(items, func(i, j int) bool {
+		return items[i].Timestamp.After(items[j].Timestamp)
+	})
+
+	page.Total = len(items)
+	if filter.Offset >= len(items) {
+		return page
+	}
+	end := filter.Offset + filter.Limit
+	if end > len(items) {
+		end = len(items)
+	}
+	page.Items = items[filter.Offset:end]
+	return page
+}
+
+func (s *RequestStatistics) collectAuthRequestDetailsLocked(authIndex string, filter AuthRequestFilter) []AuthRequestDetail {
+	items := make([]AuthRequestDetail, 0)
+	modelFilter := strings.TrimSpace(filter.Model)
+	for endpoint, stats := range s.apis {
+		if stats == nil {
+			continue
+		}
+		for modelName, modelStatsValue := range stats.Models {
+			if modelStatsValue == nil {
+				continue
+			}
+			if modelFilter != "" && modelName != modelFilter {
+				continue
+			}
+			for _, detail := range modelStatsValue.Details {
+				if strings.TrimSpace(detail.AuthIndex) != authIndex {
+					continue
+				}
+				if filter.Failed != nil && detail.Failed != *filter.Failed {
+					continue
+				}
+				if filter.From != nil && detail.Timestamp.Before(*filter.From) {
+					continue
+				}
+				if filter.To != nil && detail.Timestamp.After(*filter.To) {
+					continue
+				}
+				items = append(items, AuthRequestDetail{
+					Timestamp: detail.Timestamp,
+					Endpoint:  endpoint,
+					Model:     modelName,
+					Source:    detail.Source,
+					AuthIndex: detail.AuthIndex,
+					Failed:    detail.Failed,
+					LatencyMs: detail.LatencyMs,
+					Tokens:    normaliseTokenStats(detail.Tokens),
+				})
+			}
+		}
+	}
+	return items
+}
+
+func buildAuthUsageSnapshots(apis map[string]APISnapshot) map[string]AuthUsageSnapshot {
+	auths := make(map[string]AuthUsageSnapshot)
+	for _, apiSnapshot := range apis {
+		for modelName, modelSnapshot := range apiSnapshot.Models {
+			modelName = strings.TrimSpace(modelName)
+			if modelName == "" {
+				modelName = "unknown"
+			}
+			for _, detail := range modelSnapshot.Details {
+				authIndex := strings.TrimSpace(detail.AuthIndex)
+				if authIndex == "" {
+					continue
+				}
+				authSnapshot := auths[authIndex]
+				if authSnapshot.AuthIndex == "" {
+					authSnapshot.AuthIndex = authIndex
+					authSnapshot.Models = make(map[string]AuthModelSnapshot)
+				}
+				addDetailToAuthUsage(&authSnapshot, modelName, detail)
+				auths[authIndex] = authSnapshot
+			}
+		}
+	}
+	if len(auths) == 0 {
+		return nil
+	}
+	return auths
+}
+
+func addDetailToAuthUsage(authSnapshot *AuthUsageSnapshot, modelName string, detail RequestDetail) {
+	if authSnapshot == nil {
+		return
+	}
+	tokens := normaliseTokenStats(detail.Tokens)
+	authSnapshot.TotalRequests++
+	if detail.Failed {
+		authSnapshot.FailureCount++
+	} else {
+		authSnapshot.SuccessCount++
+	}
+	authSnapshot.Tokens = addTokenStats(authSnapshot.Tokens, tokens)
+	updateAuthTimeRange(authSnapshot, detail.Timestamp)
+
+	modelSnapshot := authSnapshot.Models[modelName]
+	modelSnapshot.TotalRequests++
+	if detail.Failed {
+		modelSnapshot.FailureCount++
+	} else {
+		modelSnapshot.SuccessCount++
+	}
+	modelSnapshot.Tokens = addTokenStats(modelSnapshot.Tokens, tokens)
+	authSnapshot.Models[modelName] = modelSnapshot
+}
+
+func updateAuthTimeRange(authSnapshot *AuthUsageSnapshot, timestamp time.Time) {
+	if timestamp.IsZero() {
+		return
+	}
+	ts := timestamp
+	if authSnapshot.FirstRequestAt == nil || ts.Before(*authSnapshot.FirstRequestAt) {
+		first := ts
+		authSnapshot.FirstRequestAt = &first
+	}
+	if authSnapshot.LastRequestAt == nil || ts.After(*authSnapshot.LastRequestAt) {
+		last := ts
+		authSnapshot.LastRequestAt = &last
+	}
+}
+
+func addTokenStats(left, right TokenStats) TokenStats {
+	return TokenStats{
+		InputTokens:     left.InputTokens + right.InputTokens,
+		OutputTokens:    left.OutputTokens + right.OutputTokens,
+		ReasoningTokens: left.ReasoningTokens + right.ReasoningTokens,
+		CachedTokens:    left.CachedTokens + right.CachedTokens,
+		TotalTokens:     left.TotalTokens + right.TotalTokens,
+	}
 }
 
 type MergeResult struct {
