@@ -1,0 +1,6 @@
+interface:
+  display_name: "Upstream Absorption"
+  short_description: "CLIProxyAPI 项目级上游合并吸收、冲突处理、验证与发版流程卡"
+  default_prompt: "Use $upstream-absorption to absorb upstream updates for this project."
+policy:
+  allow_implicit_invocation: true

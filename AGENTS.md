@@ -5,6 +5,12 @@ Go 1.26+ proxy server providing OpenAI/Gemini/Claude/Codex compatible APIs with 
 ## Repository
 - GitHub: https://github.com/router-for-me/CLIProxyAPI
 
+## Project Skills
+- Project-level skills live under `.agents/skills/<skill-name>/SKILL.md`.
+- When the user explicitly asks to use a project-level skill, read that file before acting.
+- Claude Code compatibility wrappers may exist under `.claude/skills/<skill-name>/SKILL.md`; those wrappers should point back to the canonical `.agents/skills/` file.
+- For upstream absorption, use `.agents/skills/upstream-absorption/SKILL.md`.
+
 ## Commands
 ```bash
 gofmt -w . # Format (required after Go changes)

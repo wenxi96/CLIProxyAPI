@@ -45,6 +45,11 @@ GEMINI.md
 .codex/*
 .claude/*
 .claude
+!.claude/
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/upstream-absorption/
+!.claude/skills/upstream-absorption/SKILL.md
 .gemini/*
 .serena/*
 .agent/*
