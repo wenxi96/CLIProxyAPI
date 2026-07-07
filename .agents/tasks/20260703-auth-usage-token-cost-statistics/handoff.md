@@ -2,7 +2,7 @@
 
 ## Current State
 
-本任务处于 implemented 状态，后端业务代码已由 Codex 子代理实现并由主线程复核验证；改动尚未提交。当前权威实现以 `auth_index` 为认证文件关联键，从 usage details 派生认证文件维度聚合，并提供单认证文件请求明细接口。
+本任务处于 released 状态，后端业务代码已提交到 `dev@28f89a88`、合入 `master@07be8ef6`，并随 release tag `v7.2.49-wx-2.10` 发布。当前权威实现以 `auth_index` 为认证文件关联键，从 usage details 派生认证文件维度聚合，并提供单认证文件请求明细接口。
 
 ## Completed Scope
 
@@ -15,6 +15,7 @@
 - Codex 聚焦复审返回 `verdict: ready`，未发现新增 finding。
 - 实现 `internal/usage` 认证文件维度聚合、`/v0/management/usage/auths/:auth_index/requests` 分页明细 API、`/v0/management/auth-files` 的 `usage` 摘要合并。
 - 补充后端聚合、token total 口径、snapshot import、auth-files 合并和明细分页筛选测试。
+- 完成 `dev`/`master` 推送、release tag `v7.2.49-wx-2.10` 发布和 GitHub release / GHCR 核验。
 
 ## Verification
 
@@ -28,9 +29,13 @@
 - `python3 /home/cheng/.agent-workstation/bootstrap/bootstrap.py standard-doc-audit --task /home/cheng/git-project/CLIProxyAPI/.agents/tasks/20260703-auth-usage-token-cost-statistics --json`: clean。
 - `python3 /home/cheng/.agent-workstation/bootstrap/bootstrap.py edit-batch-review-audit --report /home/cheng/git-project/CLIProxyAPI/.agents/tasks/20260703-auth-usage-token-cost-statistics/reviews/2026-07-03-implementation-edit-batch-review.md --json`: clean。
 - `python3 /home/cheng/.agent-workstation/bootstrap/bootstrap.py project-agents-audit --repo /home/cheng/git-project/CLIProxyAPI --json`: clean。
+- `git ls-remote --tags origin v7.2.49-wx-2.10`: tag points to `07be8ef6fde08e27eacd069801dee4689efbcdc9`.
+- GitHub Actions `release` run `28651471567`: completed/success。
+- GitHub Actions `docker-image` run `28651471614`: completed/success。
+- GitHub Release `v7.2.49-wx-2.10`: 11 assets uploaded, including `checksums.txt` and platform archives。
+- `docker manifest inspect ghcr.io/wenxi96/cli-proxy-api:7.2.49-wx-2.10`: OCI multi-arch manifest available for linux/amd64 and linux/arm64。
 
 ## Remaining Work
 
-- 与前端真实联调新明细接口和使用统计页展示。
-- 提交前再次确认工作区只包含本任务应提交文件；本轮已完成目标包测试、server 构建和全量 `go test ./...`。
+- None for backend release closeout.
 - 后端第一阶段仍不负责真实账单金额，`estimated_cost_usd` 保持可空估算字段。

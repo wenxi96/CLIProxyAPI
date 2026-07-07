@@ -63,3 +63,27 @@
 - Verification: `docker run --rm -v /home/cheng/git-project/CLIProxyAPI:/workspace -w /workspace golang:1.26 gofmt -w internal/usage/logger_plugin.go internal/usage/logger_plugin_test.go internal/usage/persistence_test.go internal/api/handlers/management/usage.go internal/api/handlers/management/usage_auth_requests_test.go internal/api/handlers/management/auth_files.go internal/api/handlers/management/auth_files_recent_requests_test.go internal/api/server.go`; `docker run --rm -v /home/cheng/git-project/CLIProxyAPI:/workspace -v /home/cheng/.cache/cliproxyapi-go-build:/root/.cache/go-build -v /home/cheng/.cache/cliproxyapi-go-mod:/go/pkg/mod -w /workspace golang:1.26 go test ./internal/usage ./internal/api/handlers/management`; `docker run --rm -v /home/cheng/git-project/CLIProxyAPI:/workspace -v /home/cheng/.cache/cliproxyapi-go-build:/root/.cache/go-build -v /home/cheng/.cache/cliproxyapi-go-mod:/go/pkg/mod -w /workspace golang:1.26 sh -c 'go build -buildvcs=false -o test-output ./cmd/server && rm test-output'`; `docker run --rm -v /home/cheng/git-project/CLIProxyAPI:/workspace -v /home/cheng/.cache/cliproxyapi-go-build:/root/.cache/go-build -v /home/cheng/.cache/cliproxyapi-go-mod:/go/pkg/mod -w /workspace golang:1.26 go test ./...`; `git diff --check`; `git status --short --branch`; `git status --short -- test-output`
 - Result: 后端实现已落地。`usage.StatisticsSnapshot` 新增 details-derived `auths` 聚合；新增 `GET /v0/management/usage/auths/:auth_index/requests` 分页明细接口；`/v0/management/auth-files` 对匹配 `auth_index` 的认证文件返回 `usage` 摘要；导入快照时不信任外部 `auths`，仍从 details 重建。主机没有原生 `go/gofmt`，已通过 Docker Go 1.26 完成目标包测试、server 构建和全量 `go test ./...`；`test-output` 未留下工作区变更。
 - Next: 由前端联调新接口；提交前按仓库要求做最终状态检查和必要的全量验证判断。
+
+### 2026-07-03 17:51 HKT 发布与核验收口
+
+- Action: 将后端 `master@07be8ef6` 打 release tag `v7.2.49-wx-2.10` 并推送，等待 GitHub Actions 完成后核验 release 资产和 GHCR 镜像。
+- Files: `.agents/tasks/20260703-auth-usage-token-cost-statistics/task.md`; `.agents/tasks/20260703-auth-usage-token-cost-statistics/progress.md`; `.agents/tasks/20260703-auth-usage-token-cost-statistics/handoff.md`; `.agents/tasks/20260703-auth-usage-token-cost-statistics/closeout.md`
+- Verification: `bash scripts/version.sh auto-release` in detached `master` worktree; `git tag v7.2.49-wx-2.10 master`; `git push origin v7.2.49-wx-2.10`; `git ls-remote --tags origin v7.2.49-wx-2.10`; GitHub Actions API run `28651471567` completed/success; GitHub Actions API run `28651471614` completed/success; GitHub Release API for `v7.2.49-wx-2.10` lists 11 uploaded assets; direct download checks for Linux/Windows/checksums assets returned HTTP 200; `docker manifest inspect ghcr.io/wenxi96/cli-proxy-api:7.2.49-wx-2.10` returned an OCI multi-arch manifest.
+- Result: 后端发布完成并通过核验；release 资产和 Docker 版本镜像均可用。
+- Next: 本任务后端发布已收口，无后端 release 后续动作。
+
+### 2026-07-07 10:58 HKT 暂存发布收口记录恢复
+
+- Action: 从 stash `wip release closeout docs 20260703-auth-usage-token-cost-statistics before skill cleanup` 恢复发布收口治理记录；未使用 `stash pop`，stash 仍保留作为临时备份。恢复后将新 release closeout edit-batch review 中的本机绝对路径改为仓库相对路径或占位路径。
+- Files: `.agents/tasks/20260703-auth-usage-token-cost-statistics/task.md`; `.agents/tasks/20260703-auth-usage-token-cost-statistics/progress.md`; `.agents/tasks/20260703-auth-usage-token-cost-statistics/handoff.md`; `.agents/tasks/20260703-auth-usage-token-cost-statistics/closeout.md`; `.agents/tasks/20260703-auth-usage-token-cost-statistics/reviews/2026-07-03-release-closeout-edit-batch-review.md`
+- Verification: `git stash show --stat stash@{0}`; `git diff stash@{0}^1 stash@{0} -- .agents/tasks/20260703-auth-usage-token-cost-statistics`; `python3 ~/.agent-workstation/bootstrap/bootstrap.py standard-doc-audit --task .agents/tasks/20260703-auth-usage-token-cost-statistics --json`; `python3 ~/.agent-workstation/bootstrap/bootstrap.py edit-batch-review-audit --report .agents/tasks/20260703-auth-usage-token-cost-statistics/reviews/2026-07-03-release-closeout-edit-batch-review.md --json`; `git diff --check -- .agents/tasks/20260703-auth-usage-token-cost-statistics`; conflict marker scan under task dir; added-line fixed machine path scan.
+- Result: stash 内容已恢复为当前工作区改动；任务文档审计 clean；release closeout edit-batch review 审计 clean；空白检查通过；冲突标记扫描无匹配；新增行未引入本机绝对路径。
+- Next: 本条记录作为 stash 恢复过程证据；后续提交、推送或清理 stash 以 Git 历史和后续 progress 条目为准。
+
+### 2026-07-07 11:16 HKT 发布收口治理记录评审修复
+
+- Action: 按本地 pre-landing review 修复两项文档问题：移除 `closeout.md` 中提交后会过期的“治理记录未提交入库”口径，并扩展 release closeout edit-batch review 对 2026-07-07 stash 恢复、路径清理和复验动作的覆盖。
+- Files: `.agents/tasks/20260703-auth-usage-token-cost-statistics/closeout.md`; `.agents/tasks/20260703-auth-usage-token-cost-statistics/progress.md`; `.agents/tasks/20260703-auth-usage-token-cost-statistics/reviews/2026-07-03-release-closeout-edit-batch-review.md`
+- Verification: `python3 ~/.agent-workstation/bootstrap/bootstrap.py standard-doc-audit --task .agents/tasks/20260703-auth-usage-token-cost-statistics --json`; `python3 ~/.agent-workstation/bootstrap/bootstrap.py edit-batch-review-audit --report .agents/tasks/20260703-auth-usage-token-cost-statistics/reviews/2026-07-03-release-closeout-edit-batch-review.md --json`; `git diff --check -- .agents/tasks/20260703-auth-usage-token-cost-statistics`; conflict marker scan under task dir; added-line fixed machine path scan.
+- Result: 文档口径已调整；任务文档审计 clean；release closeout edit-batch review 审计 clean；空白检查通过；冲突标记扫描无匹配；新增行未引入本机绝对路径。
+- Next: 当前发布收口治理记录可作为独立提交候选；提交、推送或清理 stash 前仍需按仓库授权边界执行。
