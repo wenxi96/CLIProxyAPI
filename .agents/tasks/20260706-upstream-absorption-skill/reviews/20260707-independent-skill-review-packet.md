@@ -8,7 +8,7 @@ Reviewer Capability Probe: 已探测到 `multi_agent_v1.spawn_agent` / `wait_age
 
 Reviewer Model Policy: 默认继承主会话模型。
 
-Dispatch Receipt: pending
+Dispatch Receipt: completed；结果见 `reviews/20260707-independent-skill-review.md`，处置见 `reviews/20260707-independent-skill-review-disposition.md`。
 
 Review Objective: 对项目级 `upstream-absorption` skill 的整体设计和细节做独立评审，判断是否满足完整上游吸收治理流程，以及是否仍存在阻断性缺口。
 

@@ -2,7 +2,7 @@
 
 ## Current State
 
-已完成上游吸收流程 skill 的本地调研、治理任务初始化、项目级 skill 文件创建和子代理独立评审修复。当前未修改全局/共享 skill 目录，项目级 skill 待用户授权后提交。
+已完成上游吸收流程 skill 的本地调研、治理任务初始化、项目级 skill 文件创建、子代理独立评审修复和本轮验证复核。原始项目级 skill 已提交入库；本轮验证发现并修复两处操作性表述中的 `master` 硬编码，当前未修改全局/共享 skill 目录，本轮小修和验证治理记录已完成。
 
 ## Completed Scope
 
@@ -14,6 +14,9 @@
 - 已创建 Claude Code 兼容 wrapper：`.claude/skills/upstream-absorption/SKILL.md`。
 - 已调用子代理完成只读独立评审，报告见 `reviews/20260707-independent-skill-review.md`。
 - 已修复子代理发现的 4 个问题：治理方案模板字段、逐仓库 authority gate、候选合并前确认清单门禁、分支变量一致性。
+- 本轮验证补充修复两处操作性 `master` 表述，统一改为 `${release_branch}`。
+- 本轮验证报告见 `evidence/20260707-skill-validation.md`。
+- 本轮写入批次自审见 `reviews/20260707-skill-validation-edit-batch-review.md`。
 
 ## Verification
 
@@ -25,7 +28,9 @@
 - 已按用户完整链路要求补强 skill：仓库分析、新一轮治理方案、吸收方案多轮评审修复、合并后多轮复核评审、提交合并和发版。
 - 上一轮 `20260703-auth-usage-token-cost-statistics` 发布收口治理遗留改动已保存到 stash：`wip release closeout docs 20260703-auth-usage-token-cost-statistics before skill cleanup`。
 - 子代理独立评审修复后的最终校验已通过：independent-review audit clean、skill 校验通过、任务文档审计 clean、空白检查通过、冲突标记扫描和本机路径扫描均无匹配。
+- 本轮重新执行 canonical skill / Claude wrapper 校验、硬编码分支扫描、冲突标记扫描、陈旧路径扫描和结构核对；修复后均通过或仅剩预期默认分支变量说明命中。
+- 本轮 edit-batch review 已落地并通过结构审计。
 
 ## Remaining Work
 
-- 等待用户决定是否提交本次项目级 skill 和治理记录。
+- 本任务不包含推送、合并或发版动作；后续可按 `upstream-absorption` skill 继续执行上游吸收 dry-run 或真实吸收流程。

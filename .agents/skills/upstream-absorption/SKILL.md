@@ -21,7 +21,7 @@ description: "Project-level workflow for CLIProxyAPI upstream absorption. Use wh
 - 判断当前请求是新建吸收任务还是恢复已有任务。已 closeout 的历史吸收任务默认不复用。
 - 新建或恢复 `.agents/tasks/<task-id>/`，至少维护 `task.md`、`findings.md`、`progress.md`、`handoff.md`、`evidence/`。
 
-提交、推送、合并 `master`、创建 tag、触发 release、部署或任何外部副作用，必须先获得用户明确授权。用户只要求“检查、梳理、建议”时，不执行这些动作。
+提交、推送、合并 `${release_branch}`、创建 tag、触发 release、部署或任何外部副作用，必须先获得用户明确授权。用户只要求“检查、梳理、建议”时，不执行这些动作。
 
 ## 分支变量
 
@@ -122,7 +122,7 @@ description: "Project-level workflow for CLIProxyAPI upstream absorption. Use wh
 
 13. 收口
    - 更新 `task.md` 状态、`progress.md`、`handoff.md`，必要时创建 `closeout.md`。
-   - 最终答复必须区分：代码改动、治理记录、提交状态、推送状态、`master` 合并状态、发版状态、验证证据和剩余风险。
+   - 最终答复必须区分：代码改动、治理记录、提交状态、推送状态、`${release_branch}` 合并状态、发版状态、验证证据和剩余风险。
 
 ## 前后端协同规则
 

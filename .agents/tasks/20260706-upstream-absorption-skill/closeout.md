@@ -2,7 +2,7 @@
 
 ## 当前状态
 
-项目级 `upstream-absorption` skill 已创建，并已根据子代理独立评审意见完成补强和复验；当前处于待提交状态。
+项目级 `upstream-absorption` skill 已创建，并已根据子代理独立评审意见完成补强和复验。原始 skill 已提交入库；本轮验证发现并修复两处操作性 `master` 硬编码表述，本轮小修和验证治理记录已完成。
 
 ## 已完成范围
 
@@ -49,10 +49,12 @@ rg -n "^(<<<<<<<|=======|>>>>>>>)" .gitignore AGENTS.md .agents/README.md .agent
 - 复核补强后再次执行 skill 校验、任务文档审计、空白检查和冲突标记扫描，均通过。
 - 清理后复核：`git status --short --ignored -- .gitignore AGENTS.md .agents/README.md .agents/skills .claude .agents/tasks/20260706-upstream-absorption-skill .agents/tasks/20260703-auth-usage-token-cost-statistics docs` 显示旧任务改动不在工作区；当前可见改动均属本次 skill 任务。
 - 子代理独立评审修复后再次执行 independent-review audit、skill 校验、任务文档审计、空白检查、冲突标记扫描、本机路径扫描和定点文本检查，均通过或无匹配。
+- 2026-07-07 本轮验证重新执行 canonical skill / Claude wrapper 校验、硬编码分支扫描、冲突标记扫描、陈旧路径扫描和结构核对；修复后仅剩分支变量默认值说明中的 `dev/master` 命中，符合预期。
+- 2026-07-07 本轮写入批次自审已落地：`reviews/20260707-skill-validation-edit-batch-review.md`。
 
 ## 剩余工作
 
-- 是否提交本次项目级 skill、Claude wrapper、入口说明和治理记录，等待用户后续授权。
+- 本任务不包含推送、合并或发版动作；如需继续验证上游吸收 dry-run 或执行真实吸收，需要另行按 skill 门禁推进。
 
 ## 剩余风险
 
