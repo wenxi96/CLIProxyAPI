@@ -21,7 +21,7 @@ description: "Project-level workflow for CLIProxyAPI upstream absorption. Use wh
 - 判断当前请求是新建吸收任务还是恢复已有任务。已 closeout 的历史吸收任务默认不复用。
 - 新建或恢复 `.agents/tasks/<task-id>/`，至少维护 `task.md`、`findings.md`、`progress.md`、`handoff.md`、`evidence/`。
 
-提交、推送、合并 `master`、创建 tag、触发 release、部署或任何外部副作用，必须先获得用户明确授权。用户只要求“检查、梳理、建议”时，不执行这些动作。
+提交、推送、合并 `master`、创建标签、触发发布、部署或任何外部副作用，必须先获得用户明确授权。用户只要求“检查、梳理、建议”时，不执行这些动作。
 
 ## 分支变量
 
@@ -31,7 +31,14 @@ description: "Project-level workflow for CLIProxyAPI upstream absorption. Use wh
 - `integration_branch`: 集成分支，默认 `dev`，若仓库本地规则不同则以本地规则为准。
 - `release_branch`: 发布分支，默认 `master`，若仓库本地规则不同则以本地规则为准。
 
-治理方案、更新清单、冲突预检、候选合并、提交推送、发布分支合入、release candidate gate 和远端核验必须使用同一组分支变量。若使用非默认分支，必须在治理方案和对应报告中记录理由。
+治理方案、更新清单、冲突预检、候选合并、提交推送、发布分支合入、发布候选门禁和远端核验必须使用同一组分支变量。若使用非默认分支，必须在治理方案和对应报告中记录理由。
+
+## 发布分支治理边界
+
+- `.agents/` 治理记录只允许在 `${integration_branch}` 维护，`${release_branch}` 当前树不得包含 `.agents`。
+- 将 `${integration_branch}` 合入 `${release_branch}` 后，在提交、推送、打标签或触发发版前，必须删除 `${release_branch}` 工作树中的 `.agents`，并核验 `git ls-tree -r HEAD -- .agents` 输出为空。
+- 如果 `${release_branch}` 当前树出现 `.agents`，发布候选门禁必须判定为阻断项；先清理 `.agents` 并重新核验，再继续推送、标签或发布。
+- 普通清理只保证当前树不再包含 `.agents`，不重写历史提交或历史标签；只有发现敏感信息时，才另起历史清理任务并单独获得用户授权。
 
 ## 标准流程
 
@@ -49,7 +56,7 @@ description: "Project-level workflow for CLIProxyAPI upstream absorption. Use wh
    - 执行 `git fetch --all --tags --prune`。
    - 记录当前分支、`origin`、`upstream`、`integration_branch`、`release_branch`、`upstream_branch` 和最新 tag。
    - 记录上游目标 SHA：`upstream_target_sha="$(git rev-parse upstream/${upstream_branch})"`，后续清单、预检、评审和合并都必须引用该 SHA。
-   - 计算 `${integration_branch}...upstream/${upstream_branch}`、`${release_branch}...upstream/${upstream_branch}`、最近 fork release tag 到上游目标的增量。
+   - 计算 `${integration_branch}...upstream/${upstream_branch}`、`${release_branch}...upstream/${upstream_branch}`、最近 fork 发布标签到上游目标的增量。
    - 将稳定事实写入 `findings.md`，动作写入 `progress.md`。
 
 4. 生成上游更新清单
@@ -108,16 +115,18 @@ description: "Project-level workflow for CLIProxyAPI upstream absorption. Use wh
 11. 合入发布分支
    - 仅在 `${integration_branch}` 验证通过且用户明确授权后执行。
    - 将 `${integration_branch}` 合入 `${release_branch}`，推送 `origin/${release_branch}`。
+   - `${release_branch}` 合并候选必须排除 `.agents`：提交前执行 `git rm -r --ignore-unmatch .agents` 或等价删除，并确认 `git ls-tree -r HEAD -- .agents` 输出为空。
    - 核验 `origin/${release_branch}` 指向预期提交，并确认 `${release_branch}` 包含本次吸收提交。
-   - 写入 release candidate gate：记录 `master_release_candidate_sha`，并在该 SHA 上完成发版前复验或等价性证明。
+   - 写入发布候选门禁：记录 `master_release_candidate_sha`，并在该 SHA 上完成发版前复验或等价性证明。
    - 发版前复验至少包含版本脚本输出、`git diff --check`、冲突标记扫描，以及仓库要求的构建/测试；若 `master_release_candidate_sha` 与已完成全量验证的 `${integration_branch}` SHA 完全一致，可记录同一 SHA 证据作为测试等价性证明。
 
 12. 发版申请或执行
-   - 若用户要求“申请发版”，只输出 release candidate、目标 tag、变更摘要、验证证据和剩余风险，等待确认。
-   - 若用户明确授权发版，按仓库 release 规则在实际发版提交上计算 tag。
-   - 后端 CLIProxyAPI 特别注意：`scripts/version.sh auto-release` 依赖当前 HEAD 可达 tag，必须在实际发版提交或 detached `${release_branch}` 提交上核验，不能只看 `${integration_branch}` 上的输出。
-   - 创建 tag 前必须确认 `master_release_candidate_sha` 已通过 release candidate gate；tag 必须指向该 SHA。
-   - 创建并推送 tag 后，核验 GitHub Actions、Release 资产、校验和、Docker/GHCR manifest 或前端发布资产。
+   - 若用户要求“申请发版”，只输出发布候选、目标标签、变更摘要、验证证据和剩余风险，等待确认。
+   - 若用户明确授权发版，按仓库发布规则在实际发版提交上计算标签。
+   - 后端 CLIProxyAPI 特别注意：`scripts/version.sh auto-release` 依赖当前 HEAD 可达标签，必须在实际发版提交或 detached `${release_branch}` 提交上核验，不能只看 `${integration_branch}` 上的输出。
+   - 创建标签前必须确认 `master_release_candidate_sha` 已通过发布候选门禁；标签必须指向该 SHA。
+   - 创建标签前必须再次确认 `${release_branch}` 当前树不包含 `.agents`。
+   - 创建并推送标签后，核验 GitHub Actions、GitHub Release 资产、校验和、Docker/GHCR manifest 或前端发布资产。
    - 写入 `evidence/release-verification-report.md`。
 
 13. 收口
@@ -143,7 +152,8 @@ description: "Project-level workflow for CLIProxyAPI upstream absorption. Use wh
 - `git status --short`
 - `git diff --check`
 - 冲突标记扫描
+- 若涉及 `${release_branch}`、标签或发版，核验 `git ls-tree -r HEAD -- .agents` 输出为空
 - 仓库规则要求的测试或构建
-- 远端分支、tag、Actions、Release 或资产核验，按本轮实际动作选择
+- 远端分支、标签、Actions、Release 或资产核验，按本轮实际动作选择
 
 如果无法执行某项验证，必须说明原因和剩余风险。

@@ -39,4 +39,5 @@ Persistence Mode: git-visible
 
 - 默认使用中文记录正文。
 - 项目级 skill 主入口位于 `.agents/skills/<skill-name>/SKILL.md`；Claude Code 兼容 wrapper 可放在 `.claude/skills/<skill-name>/SKILL.md`，但 canonical 内容仍以 `.agents/skills/` 为准。
+- `.agents/` 治理记录只在 `dev` 集成分支维护；`master` 稳定发布分支当前树必须保持不包含 `.agents`。
 - 不在此目录存放敏感信息、令牌、Cookie 或私密配置。
