@@ -1,5 +1,5 @@
 ---
-Status: dev_code_committed
+Status: merged_to_master
 Created: 2026-07-08
 Owner: Codex
 Execution Route: upstream_absorption
@@ -34,7 +34,9 @@ Execution Route: upstream_absorption
 - 已发现并修复 stream usage 在后续读流错误时可能被 failure 记录抢占的问题。
 - 聚焦验证、全量验证、构建和合并后复评已完成。
 - 代码合并提交已创建：`148a4425 merge(upstream): 吸收 v7.2.52`。
-- 当前停在 `dev` 推送与后续 `master` 合入阶段。
+- `dev` 已推送：`origin/dev@a638e2ab2ecb972500e628d8382ae9c0afda0984`。
+- `master` 已合入并推送：`origin/master@9c53e7472bf61b4a6e8f78fce4a29d49d1795afb`。
+- `master` 当前树 `.agents` 文件数为 0。
 
 ## 验收条件
 

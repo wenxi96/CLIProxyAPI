@@ -39,3 +39,11 @@
 - Verification: `git diff --cached --name-only`; `git diff --cached --stat`; `git commit -m "merge(upstream): 吸收 v7.2.52"`
 - Result: 已创建代码合并提交 `148a4425 merge(upstream): 吸收 v7.2.52`；`.agents` 治理文件未混入该提交。
 - Next: 提交治理记录并推送 `dev`。
+
+### 2026-07-08 16:40 HKT 推送 dev 并合入 master
+
+- Action: 提交治理记录，推送 `dev`；切换 `master` 后合入代码提交 `148a4425`，处理 `.agents` 发布分支冲突，推送 `master`。
+- Files: `.agents/tasks/20260708-upstream-v7-2-52-absorption/**`; `config.example.yaml`; `internal/config/config.go`; `internal/runtime/executor/**`; `internal/translator/**`; `sdk/api/handlers/openai/**`; `sdk/cliproxy/**`
+- Verification: `git push origin dev`; `git ls-remote --heads origin dev master`; `git merge --no-commit --no-ff 148a442592ccb803b1b80888b33bc2f76dc90262`; `git rm -r -f --ignore-unmatch .agents`; `go test ./...`; `go build -buildvcs=false -o test-output ./cmd/server`; `git ls-files -u`; `git diff --check`; `rg -n "^(<<<<<<<|=======|>>>>>>>)" .`; `git write-tree && git ls-tree -r --name-only <tree> -- .agents | wc -l`; `git push origin master`; `git ls-tree -r --name-only origin/master -- .agents | wc -l`
+- Result: `origin/dev` 已推送至 `a638e2ab2ecb972500e628d8382ae9c0afda0984`；`origin/master` 已推送至 `9c53e7472bf61b4a6e8f78fce4a29d49d1795afb`；`master` 当前树不包含 `.agents`。
+- Next: 若用户继续要求发版，基于 `master@9c53e7472bf61b4a6e8f78fce4a29d49d1795afb` 执行发版前复验和版本脚本。

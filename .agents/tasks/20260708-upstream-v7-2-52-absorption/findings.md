@@ -38,4 +38,11 @@
 - 合并后识别并修复 1 个行为风险：stream usage 已观察到 usage 后，后续 read/scanner error 不应通过 `PublishFailure` 抢占 token 记录。
 - 提交前复审又识别并修复同类分支遗漏：OpenAI-compatible stream 的 plain JSON error line 分支也需先发布 buffered usage，再按需发布 failure。
 - 聚焦测试、第二轮全量 `go test ./...` 和 `go build -buildvcs=false -o test-output ./cmd/server` 已通过。
-- 当前状态：候选已完成评审和验证，等待用户授权提交/推送。
+- 当前状态：已推送 `dev`，已合入并推送 `master`，尚未发版。
+
+## 合并提交
+
+- `dev` 代码提交：`148a442592ccb803b1b80888b33bc2f76dc90262 merge(upstream): 吸收 v7.2.52`
+- `dev` 治理提交：`a638e2ab2ecb972500e628d8382ae9c0afda0984 docs(agents): 记录后端 v7.2.52 吸收验证`
+- `master` 合并提交：`9c53e7472bf61b4a6e8f78fce4a29d49d1795afb merge(upstream): 发布 v7.2.52 吸收`
+- `master` 当前树 `.agents` 文件数：0。

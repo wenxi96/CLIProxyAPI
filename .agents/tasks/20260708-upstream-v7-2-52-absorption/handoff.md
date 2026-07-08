@@ -2,7 +2,7 @@
 
 ## Current State
 
-后端 `v7.2.52` 候选合并已完成，代码合并提交已创建为 `148a4425 merge(upstream): 吸收 v7.2.52`。当前尚未推送，尚未合入 `master`，尚未发版。
+后端 `v7.2.52` 吸收已完成 dev 提交推送，并已合入 `master` 推送。当前尚未发版。
 
 ## Completed Scope
 
@@ -17,6 +17,9 @@
 - 补充 `TestOpenAICompatExecutorStreamJSONErrorPreservesObservedUsage`。
 - 完成合并后两轮评审与验证证据记录。
 - 创建代码合并提交 `148a4425 merge(upstream): 吸收 v7.2.52`。
+- 推送 `origin/dev@a638e2ab2ecb972500e628d8382ae9c0afda0984`。
+- 合入并推送 `origin/master@9c53e7472bf61b4a6e8f78fce4a29d49d1795afb`。
+- 核验 `origin/master` 当前树 `.agents` 文件数为 0。
 
 ## Verification
 
@@ -36,5 +39,4 @@
 
 ## Remaining Work
 
-- 推送 `dev`。
-- 后续如合入 `master`，必须保持 `master` 当前树不包含 `.agents`。
+- 如继续发版，需按仓库 release 规则在 `master@9c53e7472bf61b4a6e8f78fce4a29d49d1795afb` 上执行发版前复验并计算标签。
