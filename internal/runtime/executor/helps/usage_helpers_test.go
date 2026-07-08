@@ -2,6 +2,7 @@ package helps
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -86,6 +87,43 @@ func TestParseOpenAIStreamUsageResponsesFields(t *testing.T) {
 	}
 	if detail.ReasoningTokens != 2 {
 		t.Fatalf("reasoning tokens = %d, want %d", detail.ReasoningTokens, 2)
+	}
+}
+
+func TestStreamUsageBufferKeepsLastUsage(t *testing.T) {
+	var buffer StreamUsageBuffer
+	buffer.Observe(usage.Detail{}, true)
+	buffer.Observe(usage.Detail{InputTokens: 1, OutputTokens: 1, TotalTokens: 2}, false)
+	buffer.Observe(usage.Detail{InputTokens: 39320, OutputTokens: 26, TotalTokens: 39346, CachedTokens: 33280}, true)
+
+	detail, ok := buffer.Detail()
+	if !ok {
+		t.Fatal("buffer detail ok = false, want true")
+	}
+	if detail.InputTokens != 39320 {
+		t.Fatalf("input tokens = %d, want %d", detail.InputTokens, 39320)
+	}
+	if detail.OutputTokens != 26 {
+		t.Fatalf("output tokens = %d, want %d", detail.OutputTokens, 26)
+	}
+	if detail.TotalTokens != 39346 {
+		t.Fatalf("total tokens = %d, want %d", detail.TotalTokens, 39346)
+	}
+	if detail.CachedTokens != 33280 {
+		t.Fatalf("cached tokens = %d, want %d", detail.CachedTokens, 33280)
+	}
+}
+
+func TestStreamUsageBufferPreservesOnlyZeroUsage(t *testing.T) {
+	var buffer StreamUsageBuffer
+	buffer.Observe(usage.Detail{}, true)
+
+	detail, ok := buffer.Detail()
+	if !ok {
+		t.Fatal("buffer detail ok = false, want true")
+	}
+	if detail != (usage.Detail{}) {
+		t.Fatalf("detail = %+v, want zero detail", detail)
 	}
 }
 
@@ -311,6 +349,38 @@ func TestUsageReporterBuildAdditionalModelRecordSkipsZeroTokens(t *testing.T) {
 	}
 }
 
+func TestUsageReporterUsagePublishPreventsLaterFailure(t *testing.T) {
+	records := make(chan usage.Record, 2)
+	usage.RegisterNamedPlugin("helps-test-usage-wins-over-later-failure", usagePluginFunc(func(_ context.Context, record usage.Record) {
+		if record.Model == "gpt-usage-wins" {
+			records <- record
+		}
+	}))
+
+	reporter := NewUsageReporter(context.Background(), "openai", "gpt-5.4", nil)
+	reporter.model = "gpt-usage-wins"
+	reporter.Publish(context.Background(), usage.Detail{InputTokens: 2, OutputTokens: 3, TotalTokens: 5})
+	reporter.PublishFailure(context.Background(), errors.New("late stream read error"))
+
+	select {
+	case record := <-records:
+		if record.Failed {
+			t.Fatalf("record failed = true, want false")
+		}
+		if record.Detail.TotalTokens != 5 {
+			t.Fatalf("total tokens = %d, want 5", record.Detail.TotalTokens)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for usage record")
+	}
+
+	select {
+	case record := <-records:
+		t.Fatalf("unexpected second usage record: %+v", record)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -321,4 +391,10 @@ type TestUsageExecutor struct{}
 
 func (TestUsageExecutor) Identifier() string {
 	return "test-provider"
+}
+
+type usagePluginFunc func(context.Context, usage.Record)
+
+func (f usagePluginFunc) HandleUsage(ctx context.Context, record usage.Record) {
+	f(ctx, record)
 }

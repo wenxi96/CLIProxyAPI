@@ -11,10 +11,12 @@ import (
 	"net/textproto"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	"github.com/tidwall/gjson"
 )
@@ -407,6 +409,54 @@ func TestOpenAICompatExecutorStreamRejectsPlainJSONAfterBlankLines(t *testing.T)
 	}
 }
 
+func TestOpenAICompatExecutorStreamJSONErrorPreservesObservedUsage(t *testing.T) {
+	const model = "openai-compat-usage-before-json-error"
+	plugin := &captureOpenAICompatUsagePlugin{records: make(chan usage.Record, 4)}
+	usage.RegisterNamedPlugin("openai-compat-json-error-usage-test", plugin)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}` + "\n"))
+		_, _ = w.Write([]byte(`{"error":{"message":"upstream failed after usage","type":"server_error"}}` + "\n"))
+	}))
+	defer server.Close()
+
+	executor := NewOpenAICompatExecutor("openai-compatibility", &config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL + "/v1",
+		"api_key":  "test",
+	}}
+	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   model,
+		Payload: []byte(`{"model":"` + model + `","messages":[{"role":"user","content":"hi"}],"stream":true}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai"),
+		Stream:       true,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+
+	var gotErr error
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			gotErr = chunk.Err
+			break
+		}
+	}
+	if gotErr == nil {
+		t.Fatalf("expected plain JSON stream error")
+	}
+
+	record := waitForOpenAICompatUsageRecord(t, plugin.records, model)
+	if record.Failed {
+		t.Fatalf("usage record failed = true, want false: %+v", record)
+	}
+	if record.Detail.TotalTokens != 5 {
+		t.Fatalf("usage total tokens = %d, want 5", record.Detail.TotalTokens)
+	}
+}
+
 func TestOpenAICompatExecutorStreamSkipsKeepAliveUntilDataLine(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -440,5 +490,34 @@ func TestOpenAICompatExecutorStreamSkipsKeepAliveUntilDataLine(t *testing.T) {
 	}
 	if gjson.Get(got.String(), "choices.0.delta.content").String() != "hello" {
 		t.Fatalf("stream payload = %s", got.String())
+	}
+}
+
+type captureOpenAICompatUsagePlugin struct {
+	records chan usage.Record
+}
+
+func (p *captureOpenAICompatUsagePlugin) HandleUsage(_ context.Context, record usage.Record) {
+	if p == nil {
+		return
+	}
+	select {
+	case p.records <- record:
+	default:
+	}
+}
+
+func waitForOpenAICompatUsageRecord(t *testing.T, records <-chan usage.Record, model string) usage.Record {
+	t.Helper()
+	timeout := time.After(2 * time.Second)
+	for {
+		select {
+		case record := <-records:
+			if record.Provider == "openai-compatibility" && record.Model == model {
+				return record
+			}
+		case <-timeout:
+			t.Fatalf("timed out waiting for OpenAI compatibility usage record")
+		}
 	}
 }
