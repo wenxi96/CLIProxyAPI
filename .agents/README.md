@@ -27,6 +27,7 @@ Persistence Mode: git-visible
 - `20260706-upstream-absorption-skill`：沉淀当前项目上游吸收、冲突处理、评审验证、提交推送、合并 master 与发版申请/核验流程为项目级 skill。
 - `20260707-upstream-absorption-detection`：调用项目级 `upstream-absorption` skill 执行后端上游吸收检测干跑，固定上游目标、生成更新清单并完成无写入冲突预检。
 - `20260707-upstream-v7-2-51-absorption`：后端独立吸收 `upstream/main@8b9c4da2` / `v7.2.51`；已提交到 `dev@148089b3`、合入 `master@d02d8926`，并随 `v7.2.51-wx-2.11` 发布。
+- `20260708-upstream-absorption-detection`：再次检测后端上游状态，固定 `upstream/main@14b13966` / `v7.2.52`，确认存在 7 个新增上游提交且无机械冲突输出。
 - `20260409-fork-install-docker-self-hosting`：补齐 fork 自有 Docker 发布链路与仓库内 Linux 安装更新脚本。
 - `20260409-provider-scoped-routing-pool`：按供应商类别独立启用的范围轮询设计与后续实现。
 - `20260424-absorb-cliproxyapi2-fixes`：制定 CLIProxyAPI2 改动吸收计划并沉淀分批执行方案。
