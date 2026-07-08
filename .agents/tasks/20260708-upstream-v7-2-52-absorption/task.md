@@ -1,5 +1,5 @@
 ---
-Status: plan_review_ready
+Status: dev_code_committed
 Created: 2026-07-08
 Owner: Codex
 Execution Route: upstream_absorption
@@ -29,9 +29,12 @@ Execution Route: upstream_absorption
 
 ## 当前状态
 
-- 检测清单已完成。
-- 冲突预检无机械冲突输出。
-- 方案已进入候选合并前确认阶段。
+- 候选合并已执行：`git merge --no-commit --no-ff 14b139661d98acbbd7ac19eb827754e78118736f`。
+- 实际合并无机械冲突，冲突标记扫描为空。
+- 已发现并修复 stream usage 在后续读流错误时可能被 failure 记录抢占的问题。
+- 聚焦验证、全量验证、构建和合并后复评已完成。
+- 代码合并提交已创建：`148a4425 merge(upstream): 吸收 v7.2.52`。
+- 当前停在 `dev` 推送与后续 `master` 合入阶段。
 
 ## 验收条件
 

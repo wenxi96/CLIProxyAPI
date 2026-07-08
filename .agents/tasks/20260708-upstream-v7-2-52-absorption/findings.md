@@ -30,3 +30,12 @@
 ## 冲突预检
 
 `git merge-tree --write-tree dev upstream/main` 返回合成树 `7c3fa7642c69cb326a256ddd43735c19465c2432`，未输出机械冲突。
+
+## 候选合并后事实
+
+- 已执行 `git merge --no-commit --no-ff 14b139661d98acbbd7ac19eb827754e78118736f`，`MERGE_HEAD` 为 `14b139661d98acbbd7ac19eb827754e78118736f`。
+- 实际 merge 无机械冲突：`git ls-files -u` 无输出，冲突标记扫描无匹配。
+- 合并后识别并修复 1 个行为风险：stream usage 已观察到 usage 后，后续 read/scanner error 不应通过 `PublishFailure` 抢占 token 记录。
+- 提交前复审又识别并修复同类分支遗漏：OpenAI-compatible stream 的 plain JSON error line 分支也需先发布 buffered usage，再按需发布 failure。
+- 聚焦测试、第二轮全量 `go test ./...` 和 `go build -buildvcs=false -o test-output ./cmd/server` 已通过。
+- 当前状态：候选已完成评审和验证，等待用户授权提交/推送。
