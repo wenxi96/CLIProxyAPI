@@ -393,12 +393,12 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		scanner := bufio.NewScanner(httpResp.Body)
 		scanner.Buffer(nil, 52_428_800) // 50MB
 		var param any
+		var streamUsage helps.StreamUsageBuffer
+		defer streamUsage.Publish(ctx, reporter)
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
-			if detail, ok := helps.ParseOpenAIStreamUsage(line); ok {
-				reporter.Publish(ctx, detail)
-			}
+			streamUsage.Observe(helps.ParseOpenAIStreamUsage(line))
 			trimmedLine := bytes.TrimSpace(line)
 			if len(trimmedLine) == 0 {
 				continue
@@ -412,7 +412,9 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 				if bytes.HasPrefix(trimmedLine, []byte("{")) || bytes.HasPrefix(trimmedLine, []byte("[")) {
 					streamErr := statusErr{code: http.StatusBadGateway, msg: string(trimmedLine)}
 					helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
-					reporter.PublishFailure(ctx, streamErr)
+					if !streamUsage.Publish(ctx, reporter) {
+						reporter.PublishFailure(ctx, streamErr)
+					}
 					select {
 					case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
 					case <-ctx.Done():
@@ -434,7 +436,9 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		}
 		if errScan := scanner.Err(); errScan != nil {
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
-			reporter.PublishFailure(ctx, errScan)
+			if !streamUsage.Publish(ctx, reporter) {
+				reporter.PublishFailure(ctx, errScan)
+			}
 			select {
 			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
 			case <-ctx.Done():
@@ -452,7 +456,8 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 				}
 			}
 		}
-		// Ensure we record the request if no usage chunk was ever seen
+		// Ensure we record the request if no usage chunk was ever seen.
+		streamUsage.Publish(ctx, reporter)
 		reporter.EnsurePublished(ctx)
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
