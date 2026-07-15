@@ -7,11 +7,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/translator"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	"github.com/tidwall/gjson"
 )
@@ -88,6 +90,80 @@ func TestGeminiExecutorExecuteCapsMaxOutputTokensBeforeUpstream(t *testing.T) {
 	}
 	if upstreamMaxOutputTokens != 65536 {
 		t.Fatalf("upstream maxOutputTokens = %d, want 65536", upstreamMaxOutputTokens)
+	}
+}
+
+func TestGeminiExecutorStreamPreservesUsageFromFilteredNonTerminalChunk(t *testing.T) {
+	const model = "gemini-filtered-stream-usage-test"
+	records := make(chan usage.Record, 2)
+	usage.RegisterNamedPlugin("gemini-filtered-stream-usage-test", geminiUsageCapturePlugin{records: records})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"ok\"}]}}],\"usageMetadata\":{\"promptTokenCount\":7,\"candidatesTokenCount\":3,\"totalTokenCount\":10}}\n\n"))
+		_, _ = w.Write([]byte("data: {\"candidates\":[{\"finishReason\":\"STOP\"}]}\n\n"))
+	}))
+	defer server.Close()
+
+	exec := NewGeminiExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{
+		ID:       "gemini-filtered-stream-usage-auth",
+		Provider: "gemini",
+		Attributes: map[string]string{
+			"api_key":  "test-key",
+			"base_url": server.URL,
+		},
+	}
+	payload := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`)
+	result, errExecute := exec.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   model,
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FormatGemini,
+		ResponseFormat:  sdktranslator.FormatGemini,
+		OriginalRequest: payload,
+	})
+	if errExecute != nil {
+		t.Fatalf("ExecuteStream() error = %v", errExecute)
+	}
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("stream chunk error: %v", chunk.Err)
+		}
+	}
+
+	record := waitForGeminiUsageRecord(t, records, model)
+	if record.Failed || !record.UsageObserved {
+		t.Fatalf("usage outcome = failed:%v observed:%v, want successful observed usage", record.Failed, record.UsageObserved)
+	}
+	if record.Detail.InputTokens != 7 || record.Detail.OutputTokens != 3 || record.Detail.TotalTokens != 10 {
+		t.Fatalf("usage detail = %+v, want input=7 output=3 total=10", record.Detail)
+	}
+}
+
+type geminiUsageCapturePlugin struct {
+	records chan<- usage.Record
+}
+
+func (p geminiUsageCapturePlugin) HandleUsage(_ context.Context, record usage.Record) {
+	select {
+	case p.records <- record:
+	default:
+	}
+}
+
+func waitForGeminiUsageRecord(t *testing.T, records <-chan usage.Record, model string) usage.Record {
+	t.Helper()
+	timeout := time.After(2 * time.Second)
+	for {
+		select {
+		case record := <-records:
+			if record.Provider == "gemini" && record.Model == model {
+				return record
+			}
+		case <-timeout:
+			t.Fatal("timed out waiting for Gemini usage record")
+		}
 	}
 }
 

@@ -10,10 +10,13 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	"github.com/tidwall/gjson"
 )
@@ -25,6 +28,52 @@ func newCodexOpenAIImageTestAuth(serverURL string) *cliproxyauth.Auth {
 			"base_url": serverURL,
 			"api_key":  "codex-token",
 		},
+	}
+}
+
+func TestPublishCodexImageToolUsageDoesNotFinalizePrimaryUsage(t *testing.T) {
+	records := make(chan coreusage.Record, 2)
+	coreusage.RegisterNamedPlugin("codex-image-tool-usage-order-test", codexImageUsagePlugin{records: records})
+
+	ctx := context.Background()
+	reporter := helps.NewUsageReporter(ctx, "codex", "gpt-5.4", nil)
+	publishCodexImageToolUsage(
+		ctx,
+		reporter,
+		[]byte(`{"tools":[{"type":"image_generation","model":"gpt-image-2"}]}`),
+		[]byte(`{"response":{"tool_usage":{"image_gen":{"input_tokens":4,"output_tokens":6,"total_tokens":10}}}}`),
+	)
+	reporter.PublishObserved(ctx, coreusage.Detail{InputTokens: 2, OutputTokens: 3, TotalTokens: 5})
+
+	got := make(map[string]coreusage.Record, 2)
+	deadline := time.After(2 * time.Second)
+	for len(got) < 2 {
+		select {
+		case record := <-records:
+			got[record.Model] = record
+		case <-deadline:
+			t.Fatalf("timed out waiting for usage records: %#v", got)
+		}
+	}
+	if got["gpt-5.4"].Detail.TotalTokens != 5 {
+		t.Fatalf("primary usage = %+v, want provider facts without premature missing", got["gpt-5.4"])
+	}
+	if got["gpt-image-2"].Detail.TotalTokens != 10 {
+		t.Fatalf("image usage = %+v, want 10 tokens", got["gpt-image-2"])
+	}
+}
+
+type codexImageUsagePlugin struct {
+	records chan<- coreusage.Record
+}
+
+func (p codexImageUsagePlugin) HandleUsage(_ context.Context, record coreusage.Record) {
+	if record.Model != "gpt-5.4" && record.Model != "gpt-image-2" {
+		return
+	}
+	select {
+	case p.records <- record:
+	default:
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/usage"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
@@ -20,8 +21,9 @@ func TestGetUsageAuthRequestsFiltersAndPaginates(t *testing.T) {
 	authIndex := "auth-index_123.~"
 	stats := usage.NewRequestStatistics()
 	base := time.Date(2026, 7, 3, 10, 0, 0, 0, time.UTC)
-	stats.Record(context.Background(), coreusage.Record{
-		APIKey:      "POST /v1/chat/completions",
+	chatContext := logging.WithEndpoint(context.Background(), "POST /v1/chat/completions")
+	responsesContext := logging.WithEndpoint(context.Background(), "POST /v1/responses")
+	stats.Record(chatContext, coreusage.Record{
 		Model:       "gpt-5-mini",
 		RequestedAt: base,
 		Latency:     1200 * time.Millisecond,
@@ -34,8 +36,7 @@ func TestGetUsageAuthRequestsFiltersAndPaginates(t *testing.T) {
 			CachedTokens:    100,
 		},
 	})
-	stats.Record(context.Background(), coreusage.Record{
-		APIKey:      "POST /v1/chat/completions",
+	stats.Record(chatContext, coreusage.Record{
 		Model:       "gpt-5-mini",
 		RequestedAt: base.Add(time.Minute),
 		Failed:      true,
@@ -44,8 +45,7 @@ func TestGetUsageAuthRequestsFiltersAndPaginates(t *testing.T) {
 			TotalTokens: 15,
 		},
 	})
-	stats.Record(context.Background(), coreusage.Record{
-		APIKey:      "POST /v1/responses",
+	stats.Record(responsesContext, coreusage.Record{
 		Model:       "gpt-5-mini",
 		RequestedAt: base.Add(2 * time.Minute),
 		AuthIndex:   authIndex,
@@ -53,8 +53,7 @@ func TestGetUsageAuthRequestsFiltersAndPaginates(t *testing.T) {
 			TotalTokens: 5,
 		},
 	})
-	stats.Record(context.Background(), coreusage.Record{
-		APIKey:      "POST /v1/responses",
+	stats.Record(responsesContext, coreusage.Record{
 		Model:       "gpt-5-nano",
 		RequestedAt: base.Add(3 * time.Minute),
 		AuthIndex:   authIndex,
@@ -102,11 +101,20 @@ func TestGetUsageAuthRequestsFiltersAndPaginates(t *testing.T) {
 	if item.Endpoint != "POST /v1/chat/completions" || item.Model != "gpt-5-mini" || item.Failed {
 		t.Fatalf("item = %+v, want chat completions gpt-5-mini success", item)
 	}
+	if item.ModelAlias != "gpt-5-mini" || item.DetailRole != usage.DetailRolePrimary {
+		t.Fatalf("item model_alias/detail_role = %q/%q, want model alias and primary role", item.ModelAlias, item.DetailRole)
+	}
+	if item.EstimatedCostUSD != nil {
+		t.Fatalf("estimated_cost_usd = %v, want nil", *item.EstimatedCostUSD)
+	}
 	if item.LatencyMs != 1200 {
 		t.Fatalf("latency_ms = %d, want 1200", item.LatencyMs)
 	}
-	if item.Tokens.TotalTokens != 8 {
-		t.Fatalf("total_tokens = %d, want 8 without cached-token double counting", item.Tokens.TotalTokens)
+	if item.Tokens.TotalTokens != 7 {
+		t.Fatalf("total_tokens = %d, want 7 without cached-token or reasoning double counting", item.Tokens.TotalTokens)
+	}
+	if item.Tokens.ComputedTotalTokens != 7 || item.Tokens.TokenUsageSource != usage.TokenUsageSourceProvider {
+		t.Fatalf("tokens = %+v, want computed total and provider usage source", item.Tokens)
 	}
 }
 

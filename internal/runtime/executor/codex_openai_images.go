@@ -99,6 +99,10 @@ func (e *CodexExecutor) executeOpenAIImage(ctx context.Context, auth *cliproxyau
 	mainModel := e.resolveGPTImage2BaseModel()
 	reporter := helps.NewExecutorUsageReporter(ctx, e, mainModel, auth)
 	defer reporter.TrackFailure(ctx, &err)
+	var primaryUsage helps.StreamUsageBuffer
+	defer func() {
+		primaryUsage.Finalize(ctx, reporter, err)
+	}()
 
 	body, errBuild := e.prepareCodexOpenAIImageBody(prepared.Body, req, opts, mainModel)
 	if errBuild != nil {
@@ -155,9 +159,8 @@ func (e *CodexExecutor) executeOpenAIImage(ctx context.Context, auth *cliproxyau
 			collectCodexOutputItemDone(eventData, outputItemsByIndex, &outputItemsFallback)
 		case "response.completed":
 			if detail, ok := helps.ParseCodexUsage(eventData); ok {
-				reporter.Publish(ctx, detail)
+				primaryUsage.Observe(detail, true)
 			}
-			publishCodexImageToolUsage(ctx, reporter, body, eventData)
 			results, createdAt, usageRaw, firstMeta, errExtract := codexExtractImageResults(eventData, outputItemsByIndex, outputItemsFallback)
 			if errExtract != nil {
 				return resp, errExtract
@@ -169,6 +172,7 @@ func (e *CodexExecutor) executeOpenAIImage(ctx context.Context, auth *cliproxyau
 			if errOutput != nil {
 				return resp, errOutput
 			}
+			publishCodexImageToolUsage(ctx, reporter, body, eventData)
 			return cliproxyexecutor.Response{Payload: out, Headers: httpResp.Header.Clone()}, nil
 		}
 	}
@@ -266,6 +270,8 @@ func (e *CodexExecutor) executeOpenAIImageStream(ctx context.Context, auth *clip
 		scanner.Buffer(nil, 52_428_800) // 50MB
 		outputItemsByIndex := make(map[int64][]byte)
 		var outputItemsFallback [][]byte
+		var streamUsage helps.StreamUsageBuffer
+		defer streamUsage.Finalize(ctx, reporter, nil)
 		for scanner.Scan() {
 			line := applyCodexIdentityConfuseResponsePayload(scanner.Bytes(), identityState)
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
@@ -283,18 +289,25 @@ func (e *CodexExecutor) executeOpenAIImageStream(ctx context.Context, auth *clip
 				}
 			case "response.completed":
 				if detail, ok := helps.ParseCodexUsage(eventData); ok {
-					reporter.Publish(ctx, detail)
+					streamUsage.Observe(detail, true)
 				}
-				publishCodexImageToolUsage(ctx, reporter, body, eventData)
 				results, _, usageRaw, _, errExtract := codexExtractImageResults(eventData, outputItemsByIndex, outputItemsFallback)
 				if errExtract != nil {
+					if !streamUsage.PublishFailure(ctx, reporter, errExtract) {
+						reporter.PublishFailure(ctx, errExtract)
+					}
 					sendError(errExtract)
 					return
 				}
 				if len(results) == 0 {
-					sendError(statusErr{code: http.StatusBadGateway, msg: "upstream did not return image output"})
+					errNoOutput := statusErr{code: http.StatusBadGateway, msg: "upstream did not return image output"}
+					if !streamUsage.PublishFailure(ctx, reporter, errNoOutput) {
+						reporter.PublishFailure(ctx, errNoOutput)
+					}
+					sendError(errNoOutput)
 					return
 				}
+				publishCodexImageToolUsage(ctx, reporter, body, eventData)
 				for _, img := range results {
 					frame := codexBuildImageCompletedFrame(img, usageRaw, prepared.ResponseFormat, prepared.StreamPrefix)
 					if len(frame) > 0 && !sendPayload(frame) {
@@ -306,7 +319,9 @@ func (e *CodexExecutor) executeOpenAIImageStream(ctx context.Context, auth *clip
 		}
 		if errScan := scanner.Err(); errScan != nil {
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
-			reporter.PublishFailure(ctx, errScan)
+			if !streamUsage.PublishFailure(ctx, reporter, errScan) {
+				reporter.PublishFailure(ctx, errScan)
+			}
 			sendError(errScan)
 		}
 	}()
@@ -368,8 +383,8 @@ func (e *CodexExecutor) executeDirectOpenAIImage(ctx context.Context, auth *clip
 		return resp, err
 	}
 
-	reporter.Publish(ctx, helps.ParseOpenAIUsage(data))
-	reporter.EnsurePublished(ctx)
+	detail, observed := helps.ParseOpenAIUsage(data)
+	reporter.PublishParsed(ctx, detail, observed)
 	return cliproxyexecutor.Response{Payload: data, Headers: httpResp.Header.Clone()}, nil
 }
 
@@ -433,8 +448,7 @@ func (e *CodexExecutor) executeDirectOpenAIImageStream(ctx context.Context, auth
 			if errClose := httpResp.Body.Close(); errClose != nil {
 				log.Errorf("codex executor: close response body error: %v", errClose)
 			}
-			streamUsage.Publish(ctx, reporter)
-			reporter.EnsurePublished(ctx)
+			streamUsage.Finalize(ctx, reporter, nil)
 		}()
 
 		buffer := make([]byte, 32*1024)
@@ -456,7 +470,7 @@ func (e *CodexExecutor) executeDirectOpenAIImageStream(ctx context.Context, auth
 			if errRead != nil {
 				if errRead != io.EOF {
 					helps.RecordAPIResponseError(ctx, e.cfg, errRead)
-					if !streamUsage.Publish(ctx, reporter) {
+					if !streamUsage.PublishFailure(ctx, reporter, errRead) {
 						reporter.PublishFailure(ctx, errRead)
 					}
 					select {

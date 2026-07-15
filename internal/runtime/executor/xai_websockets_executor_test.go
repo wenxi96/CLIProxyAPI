@@ -16,11 +16,18 @@ import (
 	_ "github.com/router-for-me/CLIProxyAPI/v7/internal/translator"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	"github.com/tidwall/gjson"
 )
 
 func TestXAIWebsocketsExecuteStreamSendsResponseCreateWithPreviousResponseID(t *testing.T) {
+	usageRecords := make(chan coreusage.Record, 1)
+	coreusage.RegisterNamedPlugin("xai-websocket-observed-zero-test", websocketUsageCapturePlugin{
+		provider: "xai",
+		model:    "grok-4.3",
+		records:  usageRecords,
+	})
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	capturedPayload := make(chan []byte, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -118,6 +125,11 @@ func TestXAIWebsocketsExecuteStreamSendsResponseCreateWithPreviousResponseID(t *
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for completed chunk")
+	}
+
+	usageRecord := waitForWebsocketUsageRecord(t, usageRecords)
+	if usageRecord.Failed || !usageRecord.UsageObserved || usageRecord.Detail != (coreusage.Detail{}) {
+		t.Fatalf("usage record = %+v, want observed zero success", usageRecord)
 	}
 }
 

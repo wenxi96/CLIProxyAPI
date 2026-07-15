@@ -3,6 +3,7 @@ package logging
 import (
 	"context"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -10,6 +11,8 @@ import (
 type endpointKey struct{}
 type responseStatusKey struct{}
 type responseHeadersKey struct{}
+type usageDetailRoleKey struct{}
+type usageDetailSequenceKey struct{}
 
 type responseStatusHolder struct {
 	status atomic.Int32
@@ -33,6 +36,48 @@ func GetEndpoint(ctx context.Context) string {
 	}
 	if endpoint, ok := ctx.Value(endpointKey{}).(string); ok {
 		return endpoint
+	}
+	return ""
+}
+
+func WithUsageDetailRole(ctx context.Context, role string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	role = strings.TrimSpace(role)
+	if role == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, usageDetailRoleKey{}, role)
+}
+
+func GetUsageDetailRole(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if role, ok := ctx.Value(usageDetailRoleKey{}).(string); ok {
+		return strings.TrimSpace(role)
+	}
+	return ""
+}
+
+func WithUsageDetailSequence(ctx context.Context, sequence string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	sequence = strings.TrimSpace(sequence)
+	if sequence == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, usageDetailSequenceKey{}, sequence)
+}
+
+func GetUsageDetailSequence(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if sequence, ok := ctx.Value(usageDetailSequenceKey{}).(string); ok {
+		return strings.TrimSpace(sequence)
 	}
 	return ""
 }

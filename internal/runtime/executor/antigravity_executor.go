@@ -818,11 +818,11 @@ attemptLoop:
 			}
 			cacheAntigravityReasoningReplayFromResponse(ctx, replayScope, requestPayload, bodyBytes)
 			bodyBytes = e.resolveWebSearchGroundingURLs(ctx, auth, from, originalPayload, translated, bodyBytes)
-			reporter.Publish(ctx, helps.ParseAntigravityUsage(bodyBytes))
+			detail, observed := helps.ParseAntigravityUsage(bodyBytes)
+			reporter.PublishParsed(ctx, detail, observed)
 			var param any
 			converted := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, bodyBytes, &param)
 			resp = cliproxyexecutor.Response{Payload: converted, Headers: httpResp.Header.Clone()}
-			reporter.EnsurePublished(ctx)
 			return resp, nil
 		}
 
@@ -1047,9 +1047,14 @@ attemptLoop:
 				}()
 				scanner := bufio.NewScanner(resp.Body)
 				scanner.Buffer(nil, streamScannerBuffer)
+				var streamUsage helps.StreamUsageBuffer
+				defer streamUsage.Finalize(ctx, reporter, nil)
 				for scanner.Scan() {
 					line := scanner.Bytes()
 					helps.AppendAPIResponseChunk(ctx, e.cfg, line)
+					if detail, ok := helps.ParseAntigravityStreamUsage(line); ok {
+						streamUsage.Observe(detail, true)
+					}
 
 					// Filter usage metadata for all models
 					// Only retain usage statistics in the terminal chunk
@@ -1060,18 +1065,14 @@ attemptLoop:
 						continue
 					}
 
-					if detail, ok := helps.ParseAntigravityStreamUsage(payload); ok {
-						reporter.Publish(ctx, detail)
-					}
-
 					out <- cliproxyexecutor.StreamChunk{Payload: payload}
 				}
 				if errScan := scanner.Err(); errScan != nil {
 					helps.RecordAPIResponseError(ctx, e.cfg, errScan)
-					reporter.PublishFailure(ctx, errScan)
+					if !streamUsage.PublishFailure(ctx, reporter, errScan) {
+						reporter.PublishFailure(ctx, errScan)
+					}
 					out <- cliproxyexecutor.StreamChunk{Err: errScan}
-				} else {
-					reporter.EnsurePublished(ctx)
 				}
 			}(httpResp)
 
@@ -1088,12 +1089,11 @@ attemptLoop:
 			resp = cliproxyexecutor.Response{Payload: e.convertStreamToNonStream(buffer.Bytes())}
 
 			resp.Payload = e.resolveWebSearchGroundingURLs(ctx, auth, from, originalPayload, translated, resp.Payload)
-			reporter.Publish(ctx, helps.ParseAntigravityUsage(resp.Payload))
+			detail, observed := helps.ParseAntigravityUsage(resp.Payload)
+			reporter.PublishParsed(ctx, detail, observed)
 			var param any
 			converted := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, resp.Payload, &param)
 			resp = cliproxyexecutor.Response{Payload: converted, Headers: httpResp.Header.Clone()}
-			reporter.EnsurePublished(ctx)
-
 			return resp, nil
 		}
 
@@ -1535,11 +1535,16 @@ attemptLoop:
 				scanner := bufio.NewScanner(resp.Body)
 				scanner.Buffer(nil, streamScannerBuffer)
 				var param any
+				var streamUsage helps.StreamUsageBuffer
+				defer streamUsage.Finalize(ctx, reporter, nil)
 				for scanner.Scan() {
 					line := scanner.Bytes()
 					helps.AppendAPIResponseChunk(ctx, e.cfg, line)
 					if replayAccumulator != nil {
 						replayAccumulator.ObserveSSELine(line)
+					}
+					if detail, ok := helps.ParseAntigravityStreamUsage(line); ok {
+						streamUsage.Observe(detail, true)
 					}
 
 					// Filter usage metadata for all models
@@ -1549,10 +1554,6 @@ attemptLoop:
 					payload := helps.JSONPayload(line)
 					if payload == nil {
 						continue
-					}
-
-					if detail, ok := helps.ParseAntigravityStreamUsage(payload); ok {
-						reporter.Publish(ctx, detail)
 					}
 
 					payload = e.resolveWebSearchGroundingURLs(ctx, auth, from, originalPayload, translated, payload)
@@ -1575,13 +1576,13 @@ attemptLoop:
 				}
 				if errScan := scanner.Err(); errScan != nil {
 					helps.RecordAPIResponseError(ctx, e.cfg, errScan)
-					reporter.PublishFailure(ctx, errScan)
+					if !streamUsage.PublishFailure(ctx, reporter, errScan) {
+						reporter.PublishFailure(ctx, errScan)
+					}
 					select {
 					case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
 					case <-ctx.Done():
 					}
-				} else {
-					reporter.EnsurePublished(ctx)
 				}
 			}(httpResp)
 			return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil

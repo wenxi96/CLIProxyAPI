@@ -9,12 +9,16 @@ import (
 	"testing"
 	"time"
 
+	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
 
 func TestParseOpenAIUsageChatCompletions(t *testing.T) {
 	data := []byte(`{"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3,"prompt_tokens_details":{"cached_tokens":4},"completion_tokens_details":{"reasoning_tokens":5}}}`)
-	detail := ParseOpenAIUsage(data)
+	detail, observed := ParseOpenAIUsage(data)
+	if !observed {
+		t.Fatal("ParseOpenAIUsage() observed = false, want true")
+	}
 	if detail.InputTokens != 1 {
 		t.Fatalf("input tokens = %d, want %d", detail.InputTokens, 1)
 	}
@@ -34,7 +38,10 @@ func TestParseOpenAIUsageChatCompletions(t *testing.T) {
 
 func TestParseOpenAIUsageResponses(t *testing.T) {
 	data := []byte(`{"usage":{"input_tokens":10,"output_tokens":20,"total_tokens":30,"input_tokens_details":{"cached_tokens":7},"output_tokens_details":{"reasoning_tokens":9}}}`)
-	detail := ParseOpenAIUsage(data)
+	detail, observed := ParseOpenAIUsage(data)
+	if !observed {
+		t.Fatal("ParseOpenAIUsage() observed = false, want true")
+	}
 	if detail.InputTokens != 10 {
 		t.Fatalf("input tokens = %d, want %d", detail.InputTokens, 10)
 	}
@@ -54,9 +61,108 @@ func TestParseOpenAIUsageResponses(t *testing.T) {
 
 func TestParseOpenAIUsageIgnoresNullUsage(t *testing.T) {
 	data := []byte(`{"usage":null}`)
-	detail := ParseOpenAIUsage(data)
-	if detail != (usage.Detail{}) {
-		t.Fatalf("detail = %+v, want zero detail", detail)
+	detail, observed := ParseOpenAIUsage(data)
+	if observed || detail != (usage.Detail{}) {
+		t.Fatalf("ParseOpenAIUsage() = (%+v, %t), want zero detail and false", detail, observed)
+	}
+}
+
+func TestProviderParsersDistinguishExplicitZeroFromMissingUsage(t *testing.T) {
+	tests := []struct {
+		name    string
+		parse   func([]byte) (usage.Detail, bool)
+		payload []byte
+		null    []byte
+		empty   []byte
+		invalid []byte
+	}{
+		{name: "openai", parse: ParseOpenAIUsage, payload: []byte(`{"usage":{"prompt_tokens":0}}`), null: []byte(`{"usage":null}`), empty: []byte(`{"usage":{}}`), invalid: []byte(`{"usage":{"prompt_tokens":null}}`)},
+		{name: "claude", parse: ParseClaudeUsage, payload: []byte(`{"usage":{"input_tokens":0}}`), null: []byte(`{"usage":null}`), empty: []byte(`{"usage":{}}`), invalid: []byte(`{"usage":{"input_tokens":"zero"}}`)},
+		{name: "gemini", parse: ParseGeminiUsage, payload: []byte(`{"usageMetadata":{"promptTokenCount":0}}`), null: []byte(`{"usageMetadata":null}`), empty: []byte(`{"usageMetadata":{}}`), invalid: []byte(`{"usageMetadata":{"promptTokenCount":null}}`)},
+		{name: "interactions", parse: ParseInteractionsUsage, payload: []byte(`{"usage":{"input_tokens":0}}`), null: []byte(`{"usage":null}`), empty: []byte(`{"usage":{}}`), invalid: []byte(`{"usage":{"input_tokens":"zero"}}`)},
+		{name: "antigravity", parse: ParseAntigravityUsage, payload: []byte(`{"response":{"usageMetadata":{"promptTokenCount":0}}}`), null: []byte(`{"response":{"usageMetadata":null}}`), empty: []byte(`{"response":{"usageMetadata":{}}}`), invalid: []byte(`{"response":{"usageMetadata":{"promptTokenCount":null}}}`)},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			detail, observed := test.parse(test.payload)
+			if !observed || detail != (usage.Detail{}) {
+				t.Fatalf("explicit zero = (%+v, %t), want zero detail and true", detail, observed)
+			}
+			missing, missingObserved := test.parse([]byte(`{}`))
+			if missingObserved || missing != (usage.Detail{}) {
+				t.Fatalf("missing usage = (%+v, %t), want zero detail and false", missing, missingObserved)
+			}
+			for label, payload := range map[string][]byte{"null": test.null, "empty": test.empty, "invalid": test.invalid} {
+				detail, observed := test.parse(payload)
+				if observed || detail != (usage.Detail{}) {
+					t.Fatalf("%s usage = (%+v, %t), want zero detail and false", label, detail, observed)
+				}
+			}
+		})
+	}
+}
+
+func TestInteractionsUsageSkipsInvalidEarlierFallback(t *testing.T) {
+	payload := []byte(`{"usage":null,"metadata":{"total_usage":{"total_input_tokens":2,"total_output_tokens":3,"total_tokens":5}}}`)
+	detail, observed := ParseInteractionsUsage(payload)
+	if !observed || detail.TotalTokens != 5 {
+		t.Fatalf("ParseInteractionsUsage() = (%+v, %t), want valid later fallback", detail, observed)
+	}
+	detail, observed = ParseInteractionsStreamUsage(append([]byte("data: "), payload...))
+	if !observed || detail.TotalTokens != 5 {
+		t.Fatalf("ParseInteractionsStreamUsage() = (%+v, %t), want valid later fallback", detail, observed)
+	}
+}
+
+func TestProviderParsersIgnoreNumericStringsBesideValidNumbers(t *testing.T) {
+	tests := []struct {
+		name    string
+		parse   func([]byte) (usage.Detail, bool)
+		payload []byte
+	}{
+		{name: "openai", parse: ParseOpenAIUsage, payload: []byte(`{"usage":{"prompt_tokens":1,"completion_tokens":"999","total_tokens":"1000"}}`)},
+		{name: "claude", parse: ParseClaudeUsage, payload: []byte(`{"usage":{"input_tokens":1,"output_tokens":"999"}}`)},
+		{name: "gemini", parse: ParseGeminiUsage, payload: []byte(`{"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":"999"}}`)},
+		{name: "interactions", parse: ParseInteractionsUsage, payload: []byte(`{"usage":{"input_tokens":1,"output_tokens":"999"}}`)},
+		{name: "antigravity", parse: ParseAntigravityUsage, payload: []byte(`{"response":{"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":"999"}}}`)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			detail, observed := test.parse(test.payload)
+			if !observed || detail.InputTokens != 1 || detail.OutputTokens != 0 || detail.TotalTokens != 0 {
+				t.Fatalf("parsed usage = (%+v, %t), want only numeric input token", detail, observed)
+			}
+		})
+	}
+}
+
+func TestProviderStreamParsersRejectNullAndEmptyUsage(t *testing.T) {
+	tests := []struct {
+		name  string
+		parse func([]byte) (usage.Detail, bool)
+		null  []byte
+		empty []byte
+		zero  []byte
+	}{
+		{name: "openai", parse: ParseOpenAIStreamUsage, null: []byte(`data: {"usage":null}`), empty: []byte(`data: {"usage":{}}`), zero: []byte(`data: {"usage":{"prompt_tokens":0}}`)},
+		{name: "claude", parse: ParseClaudeStreamUsage, null: []byte(`data: {"usage":null}`), empty: []byte(`data: {"usage":{}}`), zero: []byte(`data: {"usage":{"input_tokens":0}}`)},
+		{name: "gemini", parse: ParseGeminiStreamUsage, null: []byte(`data: {"usageMetadata":null}`), empty: []byte(`data: {"usageMetadata":{}}`), zero: []byte(`data: {"usageMetadata":{"promptTokenCount":0}}`)},
+		{name: "interactions", parse: ParseInteractionsStreamUsage, null: []byte(`data: {"usage":null}`), empty: []byte(`data: {"usage":{}}`), zero: []byte(`data: {"usage":{"input_tokens":0}}`)},
+		{name: "antigravity", parse: ParseAntigravityStreamUsage, null: []byte(`data: {"response":{"usageMetadata":null}}`), empty: []byte(`data: {"response":{"usageMetadata":{}}}`), zero: []byte(`data: {"response":{"usageMetadata":{"promptTokenCount":0}}}`)},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			for label, payload := range map[string][]byte{"null": test.null, "empty": test.empty} {
+				if detail, observed := test.parse(payload); observed {
+					t.Fatalf("%s usage = (%+v, true), want false", label, detail)
+				}
+			}
+			if detail, observed := test.parse(test.zero); !observed || detail != (usage.Detail{}) {
+				t.Fatalf("explicit zero = (%+v, %t), want zero detail and true", detail, observed)
+			}
+		})
 	}
 }
 
@@ -127,9 +233,71 @@ func TestStreamUsageBufferPreservesOnlyZeroUsage(t *testing.T) {
 	}
 }
 
+func TestGeminiStreamUsageAccumulatorHandlesCombinedAndSplitChunks(t *testing.T) {
+	tests := []struct {
+		name   string
+		chunks [][]byte
+	}{
+		{
+			name: "combined SSE frames",
+			chunks: [][]byte{
+				[]byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok\"}]}}],\"usageMetadata\":{\"promptTokenCount\":7,\"candidatesTokenCount\":3,\"totalTokenCount\":10}}\n\ndata: {\"candidates\":[{\"finishReason\":\"STOP\"}]}\n\n"),
+			},
+		},
+		{
+			name: "split usage frame",
+			chunks: [][]byte{
+				[]byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok\"}]}}],\"usageMeta"),
+				[]byte("data\":{\"promptTokenCount\":7,\"candidatesTokenCount\":3,\"totalTokenCount\":10}}\n\ndata: {\"candidates\":[{\"finishReason\":\"STOP\"}]}\n\n"),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var accumulator GeminiStreamUsageAccumulator
+			var buffer StreamUsageBuffer
+			for _, chunk := range tt.chunks {
+				accumulator.Observe(chunk, &buffer)
+			}
+			accumulator.Flush(&buffer)
+
+			detail, ok := buffer.Detail()
+			if !ok {
+				t.Fatal("usage detail ok = false, want true")
+			}
+			if detail.InputTokens != 7 || detail.OutputTokens != 3 || detail.TotalTokens != 10 {
+				t.Fatalf("usage detail = %+v, want input=7 output=3 total=10", detail)
+			}
+		})
+	}
+}
+
+func TestGeminiStreamUsageAccumulatorRecoversAfterOversizedLine(t *testing.T) {
+	var accumulator GeminiStreamUsageAccumulator
+	accumulator.maxPendingBytes = 512
+	var buffer StreamUsageBuffer
+
+	accumulator.Observe([]byte(strings.Repeat("x", 300)), &buffer)
+	accumulator.Observe([]byte(strings.Repeat("x", 213)), &buffer)
+	accumulator.Observe([]byte("discarded\ndata: {\"usageMetadata\":{\"promptTokenCount\":7,\"candidatesTokenCount\":3,\"totalTokenCount\":10}}\n\n"), &buffer)
+	accumulator.Flush(&buffer)
+
+	detail, ok := buffer.Detail()
+	if !ok {
+		t.Fatal("usage detail ok = false, want true after oversized-line recovery")
+	}
+	if detail.InputTokens != 7 || detail.OutputTokens != 3 || detail.TotalTokens != 10 {
+		t.Fatalf("usage detail = %+v, want input=7 output=3 total=10", detail)
+	}
+}
+
 func TestParseClaudeUsageIncludesCacheTokensInTotal(t *testing.T) {
 	data := []byte(`{"usage":{"input_tokens":3085,"output_tokens":253,"cache_read_input_tokens":7,"cache_creation_input_tokens":19514}}`)
-	detail := ParseClaudeUsage(data)
+	detail, observed := ParseClaudeUsage(data)
+	if !observed {
+		t.Fatal("ParseClaudeUsage() observed = false, want true")
+	}
 	if detail.InputTokens != 3085 {
 		t.Fatalf("input tokens = %d, want %d", detail.InputTokens, 3085)
 	}
@@ -145,24 +313,67 @@ func TestParseClaudeUsageIncludesCacheTokensInTotal(t *testing.T) {
 	if detail.CachedTokens != 7 {
 		t.Fatalf("cached tokens = %d, want %d", detail.CachedTokens, 7)
 	}
-	if detail.TotalTokens != 22859 {
-		t.Fatalf("total tokens = %d, want %d", detail.TotalTokens, 22859)
+	if detail.TotalTokens != 0 {
+		t.Fatalf("total tokens = %d, want zero when provider omitted total", detail.TotalTokens)
 	}
 }
 
 func TestParseClaudeUsageFallsBackCachedTokensToCacheCreation(t *testing.T) {
 	data := []byte(`{"usage":{"input_tokens":3085,"output_tokens":253,"cache_creation_input_tokens":19514}}`)
-	detail := ParseClaudeUsage(data)
+	detail, observed := ParseClaudeUsage(data)
+	if !observed {
+		t.Fatal("ParseClaudeUsage() observed = false, want true")
+	}
 	if detail.CachedTokens != 19514 {
 		t.Fatalf("cached tokens = %d, want %d", detail.CachedTokens, 19514)
 	}
-	if detail.TotalTokens != 22852 {
-		t.Fatalf("total tokens = %d, want %d", detail.TotalTokens, 22852)
+	if detail.TotalTokens != 0 {
+		t.Fatalf("total tokens = %d, want zero when provider omitted total", detail.TotalTokens)
+	}
+}
+
+func TestClaudeStreamUsageBufferMergesMessageStartAndMessageDelta(t *testing.T) {
+	var buffer ClaudeStreamUsageBuffer
+	buffer.Observe([]byte(`data: {"type":"message_start","message":{"usage":{"input_tokens":100,"cache_read_input_tokens":30,"cache_creation_input_tokens":20,"output_tokens":1}}}`))
+	buffer.Observe([]byte(`data: {"type":"message_delta","usage":{"output_tokens":25}}`))
+
+	detail, ok := buffer.Detail()
+	if !ok {
+		t.Fatal("buffer detail missing")
+	}
+	if detail.InputTokens != 100 || detail.OutputTokens != 25 {
+		t.Fatalf("detail input/output = %d/%d, want 100/25", detail.InputTokens, detail.OutputTokens)
+	}
+	if detail.CacheReadTokens != 30 || detail.CacheCreationTokens != 20 || detail.CachedTokens != 30 {
+		t.Fatalf("detail cache facts = %+v, want read=30 creation=20 cached=30", detail)
+	}
+	if detail.TotalTokens != 0 {
+		t.Fatalf("detail total_tokens = %d, want zero when provider omitted total", detail.TotalTokens)
+	}
+}
+
+func TestProviderParsersDoNotSynthesizeReportedTotals(t *testing.T) {
+	gemini, geminiObserved := ParseGeminiUsage([]byte(`{"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":4,"thoughtsTokenCount":5}}`))
+	if !geminiObserved {
+		t.Fatal("ParseGeminiUsage() observed = false, want true")
+	}
+	if gemini.TotalTokens != 0 {
+		t.Fatalf("Gemini total_tokens = %d, want zero when totalTokenCount is absent", gemini.TotalTokens)
+	}
+	interactions, interactionsObserved := ParseInteractionsUsage([]byte(`{"usage":{"input_tokens":3,"output_tokens":4,"reasoning_tokens":5}}`))
+	if !interactionsObserved {
+		t.Fatal("ParseInteractionsUsage() observed = false, want true")
+	}
+	if interactions.TotalTokens != 0 {
+		t.Fatalf("Interactions total_tokens = %d, want zero when total_tokens is absent", interactions.TotalTokens)
 	}
 }
 
 func TestParseInteractionsUsage(t *testing.T) {
-	detail := ParseInteractionsUsage([]byte(`{"usage":{"input_tokens":3,"output_tokens":4,"reasoning_tokens":5,"total_tokens":12,"cached_tokens":2}}`))
+	detail, observed := ParseInteractionsUsage([]byte(`{"usage":{"input_tokens":3,"output_tokens":4,"reasoning_tokens":5,"total_tokens":12,"cached_tokens":2}}`))
+	if !observed {
+		t.Fatal("ParseInteractionsUsage() observed = false, want true")
+	}
 	if detail.InputTokens != 3 {
 		t.Fatalf("input tokens = %d, want 3", detail.InputTokens)
 	}
@@ -225,6 +436,32 @@ func TestUsageReporterBuildRecordIncludesLatency(t *testing.T) {
 	}
 	if record.Latency > 3*time.Second {
 		t.Fatalf("latency = %v, want <= 3s", record.Latency)
+	}
+}
+
+func TestSummarizeErrorBodyRedactsSensitiveValues(t *testing.T) {
+	body := []byte(`{"error":{"message":"bad key sk-raw-summary-key"},"authorization":"Basic raw-basic-token","token":"raw-json-token","x-api-token":"raw-x-token","cookie":"session=raw-cookie","total_tokens":12}`)
+	summary := SummarizeErrorBody("application/json", body)
+	if !strings.Contains(summary, "[redacted]") {
+		t.Fatalf("summary = %q, want redacted marker", summary)
+	}
+	for _, secret := range []string{"sk-raw-summary-key", "raw-basic-token", "raw-json-token", "raw-x-token", "raw-cookie"} {
+		if strings.Contains(summary, secret) {
+			t.Fatalf("summary leaked %q: %s", secret, summary)
+		}
+	}
+}
+
+func TestUsageReporterFailureRedactsSensitiveValues(t *testing.T) {
+	reporter := NewUsageReporter(context.Background(), "openai", "gpt-5.4", nil)
+	record := reporter.buildRecord(usage.Detail{}, true, failFromErrors(errors.New("upstream failed with sk-raw-failure-key Authorization: Basic raw-basic-token token=raw-form-token Cookie: session=raw-cookie total_tokens=12")))
+	for _, secret := range []string{"sk-raw-failure-key", "raw-basic-token", "raw-form-token", "raw-cookie"} {
+		if strings.Contains(record.Fail.Body, secret) {
+			t.Fatalf("fail body leaked %q: %s", secret, record.Fail.Body)
+		}
+	}
+	if !strings.Contains(record.Fail.Body, "total_tokens=12") {
+		t.Fatalf("fail body = %q, want total_tokens counter preserved", record.Fail.Body)
 	}
 }
 
@@ -349,7 +586,7 @@ func TestUsageReporterBuildAdditionalModelRecordSkipsZeroTokens(t *testing.T) {
 	}
 }
 
-func TestUsageReporterUsagePublishPreventsLaterFailure(t *testing.T) {
+func TestUsageReporterFinalFailurePublishesUsageFactsOnce(t *testing.T) {
 	records := make(chan usage.Record, 2)
 	usage.RegisterNamedPlugin("helps-test-usage-wins-over-later-failure", usagePluginFunc(func(_ context.Context, record usage.Record) {
 		if record.Model == "gpt-usage-wins" {
@@ -359,13 +596,16 @@ func TestUsageReporterUsagePublishPreventsLaterFailure(t *testing.T) {
 
 	reporter := NewUsageReporter(context.Background(), "openai", "gpt-5.4", nil)
 	reporter.model = "gpt-usage-wins"
-	reporter.Publish(context.Background(), usage.Detail{InputTokens: 2, OutputTokens: 3, TotalTokens: 5})
-	reporter.PublishFailure(context.Background(), errors.New("late stream read error"))
+	reporter.PublishFailureWithUsage(
+		context.Background(),
+		usage.Detail{InputTokens: 2, OutputTokens: 3, TotalTokens: 5},
+		errors.New("stream read error"),
+	)
 
 	select {
 	case record := <-records:
-		if record.Failed {
-			t.Fatalf("record failed = true, want false")
+		if !record.Failed {
+			t.Fatalf("record failed = false, want true")
 		}
 		if record.Detail.TotalTokens != 5 {
 			t.Fatalf("total tokens = %d, want 5", record.Detail.TotalTokens)
@@ -376,8 +616,219 @@ func TestUsageReporterUsagePublishPreventsLaterFailure(t *testing.T) {
 
 	select {
 	case record := <-records:
-		t.Fatalf("unexpected second usage record: %+v", record)
+		t.Fatalf("unexpected duplicate usage record: %+v", record)
 	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestUsageReporterMissingUsageIsTerminal(t *testing.T) {
+	records := make(chan usage.Record, 2)
+	usage.RegisterNamedPlugin("helps-test-terminal-missing", usagePluginFunc(func(_ context.Context, record usage.Record) {
+		if record.Model == "gpt-terminal-missing" {
+			records <- record
+		}
+	}))
+
+	ctx := internallogging.WithRequestID(context.Background(), "req-terminal-missing")
+	reporter := NewUsageReporter(ctx, "openai", "gpt-5.4", nil)
+	reporter.model = "gpt-terminal-missing"
+	reporter.EnsurePublished(ctx)
+	reporter.Publish(ctx, usage.Detail{InputTokens: 2, OutputTokens: 3, TotalTokens: 5})
+
+	select {
+	case record := <-records:
+		if record.Detail.TotalTokens != 0 {
+			t.Fatalf("record total_tokens = %d, want missing usage", record.Detail.TotalTokens)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for missing usage record")
+	}
+
+	select {
+	case record := <-records:
+		t.Fatalf("unexpected usage revision after terminal missing record: %+v", record)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestUsageReporterPublishParsedMissingEmitsExactlyOnce(t *testing.T) {
+	records := make(chan usage.Record, 2)
+	usage.RegisterNamedPlugin("helps-test-publish-parsed-missing", usagePluginFunc(func(_ context.Context, record usage.Record) {
+		if record.Model == "gpt-publish-parsed-missing" {
+			records <- record
+		}
+	}))
+	reporter := NewUsageReporter(context.Background(), "codex", "gpt-publish-parsed-missing", nil)
+	reporter.PublishParsed(context.Background(), usage.Detail{}, false)
+	reporter.EnsurePublished(context.Background())
+
+	select {
+	case record := <-records:
+		if record.UsageObserved || record.Detail != (usage.Detail{}) {
+			t.Fatalf("record = %+v, want one missing-usage record", record)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for missing usage record")
+	}
+	select {
+	case record := <-records:
+		t.Fatalf("unexpected duplicate missing usage record: %+v", record)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestStreamUsageBufferPublishesFailureWithFactsOnce(t *testing.T) {
+	records := make(chan usage.Record, 2)
+	usage.RegisterNamedPlugin("helps-test-stream-failure-with-facts", usagePluginFunc(func(_ context.Context, record usage.Record) {
+		if record.Model == "gpt-stream-failure-with-facts" {
+			records <- record
+		}
+	}))
+
+	ctx := internallogging.WithRequestID(context.Background(), "req-stream-failure-with-facts")
+	reporter := NewUsageReporter(ctx, "openai", "gpt-5.4", nil)
+	reporter.model = "gpt-stream-failure-with-facts"
+	var buffer StreamUsageBuffer
+	buffer.Observe(usage.Detail{InputTokens: 2, OutputTokens: 3, TotalTokens: 5}, true)
+	if !buffer.PublishFailure(ctx, reporter, errors.New("stream read failed")) {
+		t.Fatal("PublishFailure() = false, want true")
+	}
+	buffer.Publish(ctx, reporter)
+
+	select {
+	case record := <-records:
+		if !record.Failed || record.Detail.TotalTokens != 5 {
+			t.Fatalf("record = %+v, want failed usage with preserved facts", record)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for failed usage record")
+	}
+
+	select {
+	case record := <-records:
+		t.Fatalf("unexpected duplicate stream usage record: %+v", record)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestStreamUsageBufferFinalizeMarksContextCancellationFailed(t *testing.T) {
+	records := make(chan usage.Record, 1)
+	usage.RegisterNamedPlugin("helps-test-stream-context-cancel", usagePluginFunc(func(_ context.Context, record usage.Record) {
+		if record.Model == "gpt-stream-context-cancel" {
+			records <- record
+		}
+	}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	reporter := NewUsageReporter(ctx, "openai", "gpt-5.4", nil)
+	reporter.model = "gpt-stream-context-cancel"
+	var buffer StreamUsageBuffer
+	buffer.Observe(usage.Detail{InputTokens: 2, TotalTokens: 2}, true)
+	cancel()
+	buffer.Finalize(ctx, reporter, nil)
+
+	select {
+	case record := <-records:
+		if !record.Failed || record.Detail.TotalTokens != 2 {
+			t.Fatalf("record = %+v, want canceled failure with preserved usage", record)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for canceled usage record")
+	}
+}
+
+func TestStreamUsageBufferPublishesExplicitZeroAsObserved(t *testing.T) {
+	records := make(chan usage.Record, 1)
+	usage.RegisterNamedPlugin("helps-test-stream-observed-zero", usagePluginFunc(func(_ context.Context, record usage.Record) {
+		if record.Model == "gpt-stream-observed-zero" {
+			records <- record
+		}
+	}))
+
+	ctx := context.Background()
+	reporter := NewUsageReporter(ctx, "openai", "gpt-5.4", nil)
+	reporter.model = "gpt-stream-observed-zero"
+	var buffer StreamUsageBuffer
+	buffer.Observe(usage.Detail{}, true)
+	buffer.Finalize(ctx, reporter, nil)
+
+	select {
+	case record := <-records:
+		if !record.UsageObserved || record.Failed {
+			t.Fatalf("record = %+v, want observed zero success", record)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for observed zero usage record")
+	}
+}
+
+func TestUsageReporterDoesNotSynthesizeTotalTokens(t *testing.T) {
+	records := make(chan usage.Record, 1)
+	usage.RegisterNamedPlugin("helps-test-no-synthetic-total", usagePluginFunc(func(_ context.Context, record usage.Record) {
+		if record.Model == "gpt-no-synthetic-total" {
+			records <- record
+		}
+	}))
+
+	reporter := NewUsageReporter(context.Background(), "openai", "gpt-5.4", nil)
+	reporter.model = "gpt-no-synthetic-total"
+	reporter.Publish(context.Background(), usage.Detail{InputTokens: 2, OutputTokens: 3, ReasoningTokens: 4})
+
+	select {
+	case record := <-records:
+		if record.Detail.TotalTokens != 0 {
+			t.Fatalf("reported total_tokens = %d, want zero so canonical usage normalization computes totals", record.Detail.TotalTokens)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for usage record")
+	}
+}
+
+func TestUsageReporterPublishAdditionalModelMarksDetailRole(t *testing.T) {
+	roles := make(chan string, 1)
+	usage.RegisterNamedPlugin("helps-test-additional-model-role", usagePluginFunc(func(ctx context.Context, record usage.Record) {
+		if record.Model == "gpt-image-2" {
+			roles <- internallogging.GetUsageDetailRole(ctx)
+		}
+	}))
+
+	reporter := NewUsageReporter(context.Background(), "codex", "gpt-5.4", nil)
+	reporter.PublishAdditionalModel(context.Background(), "gpt-image-2", usage.Detail{InputTokens: 1, TotalTokens: 1})
+
+	select {
+	case role := <-roles:
+		if role != "additional" {
+			t.Fatalf("detail role = %q, want additional", role)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for additional model record")
+	}
+}
+
+func TestUsageReporterPublishAdditionalModelAddsSequence(t *testing.T) {
+	sequences := make(chan string, 2)
+	usage.RegisterNamedPlugin("helps-test-additional-model-sequence", usagePluginFunc(func(ctx context.Context, record usage.Record) {
+		if record.Model == "gpt-image-2-sequence" {
+			sequences <- internallogging.GetUsageDetailSequence(ctx)
+		}
+	}))
+
+	reporter := NewUsageReporter(context.Background(), "codex", "gpt-5.4", nil)
+	reporter.PublishAdditionalModel(context.Background(), "gpt-image-2-sequence", usage.Detail{InputTokens: 1, TotalTokens: 1})
+	reporter.PublishAdditionalModel(context.Background(), "gpt-image-2-sequence", usage.Detail{InputTokens: 2, TotalTokens: 2})
+
+	var got []string
+	deadline := time.After(time.Second)
+	for len(got) < 2 {
+		select {
+		case sequence := <-sequences:
+			got = append(got, sequence)
+		case <-deadline:
+			t.Fatalf("timed out waiting for additional model sequences, got %v", got)
+		}
+	}
+	if got[0] != "1" || got[1] != "2" {
+		t.Fatalf("sequences = %v, want [1 2]", got)
 	}
 }
 

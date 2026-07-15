@@ -83,7 +83,7 @@ func TestPersistAndRestoreRequestStatisticsRoundTrip(t *testing.T) {
 	if snapshot.TotalTokens != 42 {
 		t.Fatalf("snapshot.TotalTokens = %d, want 42", snapshot.TotalTokens)
 	}
-	details := snapshot.APIs["test-key"].Models["gpt-5.4"].Details
+	details := snapshot.APIs[redactedHash("test-key")].Models["gpt-5.4"].Details
 	if len(details) != 2 {
 		t.Fatalf("details len = %d, want 2", len(details))
 	}
@@ -169,6 +169,167 @@ func TestRestoreRequestStatisticsInvalidFileReturnsError(t *testing.T) {
 	}
 }
 
+func TestRestoreRequestStatisticsPreservesLegacyTotalOnlyDetails(t *testing.T) {
+	stats := NewRequestStatistics()
+	path := filepath.Join(t.TempDir(), StatisticsFileName)
+	data := []byte(`{
+  "version": 1,
+  "usage": {
+    "apis": {
+      "POST /v1/chat/completions": {
+        "models": {
+          "gpt-5.4": {
+            "details": [{
+              "request_id": "legacy-total-only",
+              "timestamp": "2026-07-09T12:00:00Z",
+              "endpoint": "POST /v1/chat/completions",
+              "model": "gpt-5.4",
+              "provider": "openai",
+              "auth_index": "auth-legacy",
+              "tokens": {
+                "total_tokens": 123
+              }
+            }]
+          }
+        }
+      }
+    }
+  }
+}`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write legacy snapshot: %v", err)
+	}
+
+	loaded, result, err := RestoreRequestStatistics(path, stats)
+	if err != nil {
+		t.Fatalf("RestoreRequestStatistics() error = %v", err)
+	}
+	if !loaded || result.Added != 1 || result.Skipped != 0 {
+		t.Fatalf("RestoreRequestStatistics() = loaded=%t result=%+v, want one added legacy detail", loaded, result)
+	}
+
+	snapshot := stats.Snapshot()
+	if snapshot.TotalTokens != 123 {
+		t.Fatalf("snapshot total_tokens = %d, want legacy total 123", snapshot.TotalTokens)
+	}
+	detail := snapshot.APIs["POST /v1/chat/completions"].Models["gpt-5.4"].Details[0]
+	if detail.Tokens.TotalTokens != 123 || detail.Tokens.ReportedTotalTokens != 123 {
+		t.Fatalf("detail tokens = %+v, want legacy total preserved as reported total", detail.Tokens)
+	}
+	if snapshot.Auths["auth-legacy"].Tokens.TotalTokens != 123 {
+		t.Fatalf("auth total_tokens = %d, want 123", snapshot.Auths["auth-legacy"].Tokens.TotalTokens)
+	}
+}
+
+func TestRestoreRequestStatisticsPreservesLegacyTotalWhenComponentsExist(t *testing.T) {
+	stats := NewRequestStatistics()
+	path := filepath.Join(t.TempDir(), StatisticsFileName)
+	data := []byte(`{
+  "version": 1,
+  "usage": {
+    "apis": {
+      "POST /v1/chat/completions": {
+        "models": {
+          "gpt-5.4": {
+            "details": [{
+              "request_id": "legacy-component-total",
+              "timestamp": "2026-07-09T12:00:00Z",
+              "model": "gpt-5.4",
+              "provider": "openai",
+              "auth_index": "auth-legacy-components",
+              "tokens": {
+                "input_tokens": 10,
+                "output_tokens": 20,
+                "reasoning_tokens": 30,
+                "total_tokens": 99
+              }
+            }]
+          }
+        }
+      }
+    }
+  }
+}`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write legacy snapshot: %v", err)
+	}
+
+	loaded, result, err := RestoreRequestStatistics(path, stats)
+	if err != nil {
+		t.Fatalf("RestoreRequestStatistics() error = %v", err)
+	}
+	if !loaded || result.Added != 1 || result.Skipped != 0 {
+		t.Fatalf("RestoreRequestStatistics() = loaded=%t result=%+v, want one added legacy detail", loaded, result)
+	}
+
+	snapshot := stats.Snapshot()
+	if snapshot.TotalTokens != 99 {
+		t.Fatalf("snapshot total_tokens = %d, want legacy total 99", snapshot.TotalTokens)
+	}
+	redactedAPIName := redactedHash("POST /v1/chat/completions")
+	detail := snapshot.APIs[redactedAPIName].Models["gpt-5.4"].Details[0]
+	if detail.Endpoint != "" {
+		t.Fatalf("detail endpoint = %q, want endpoint-shaped legacy API key withheld", detail.Endpoint)
+	}
+	if detail.Tokens.TotalTokens != 99 || detail.Tokens.ReportedTotalTokens != 99 || detail.Tokens.ComputedTotalTokens != 30 {
+		t.Fatalf("detail tokens = %+v, want legacy total preserved and computed total retained", detail.Tokens)
+	}
+}
+
+func TestRestoreRequestStatisticsRedactsLegacyAPIMapKey(t *testing.T) {
+	stats := NewRequestStatistics()
+	path := filepath.Join(t.TempDir(), StatisticsFileName)
+	data := []byte(`{
+  "version": 1,
+  "usage": {
+    "apis": {
+      "test-key": {
+        "models": {
+          "gpt-5.4": {
+            "details": [{
+              "request_id": "legacy-api-key",
+              "timestamp": "2026-07-09T12:00:00Z",
+              "model": "gpt-5.4",
+              "auth_index": "auth-redacted",
+              "tokens": {
+                "total_tokens": 12
+              }
+            }]
+          }
+        }
+      }
+    }
+  }
+}`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write legacy snapshot: %v", err)
+	}
+
+	loaded, result, err := RestoreRequestStatistics(path, stats)
+	if err != nil {
+		t.Fatalf("RestoreRequestStatistics() error = %v", err)
+	}
+	if !loaded || result.Added != 1 || result.Skipped != 0 {
+		t.Fatalf("RestoreRequestStatistics() = loaded=%t result=%+v, want one added legacy detail", loaded, result)
+	}
+
+	snapshot := stats.Snapshot()
+	if _, ok := snapshot.APIs["test-key"]; ok {
+		t.Fatalf("legacy raw API map key leaked in snapshot APIs: %#v", snapshot.APIs)
+	}
+	redactedKey := redactedHash("test-key")
+	modelSnapshot, ok := snapshot.APIs[redactedKey].Models["gpt-5.4"]
+	if !ok {
+		t.Fatalf("missing redacted legacy API map key %q in snapshot APIs: %#v", redactedKey, snapshot.APIs)
+	}
+	if len(modelSnapshot.Details) != 1 {
+		t.Fatalf("details len = %d, want 1", len(modelSnapshot.Details))
+	}
+	if modelSnapshot.Details[0].Endpoint == "test-key" {
+		t.Fatalf("legacy raw API map key leaked in detail endpoint")
+	}
+}
+
 func TestRestoreRequestStatisticsDeduplicatesRepeatedLoads(t *testing.T) {
 	stats := NewRequestStatistics()
 	recordUsageForPersistenceTest(stats, coreusage.Record{
@@ -222,7 +383,7 @@ func TestMergeSnapshotRebuildsAuthsFromDetailsAndIgnoresImportedAuths(t *testing
 							Timestamp: timestamp,
 							Source:    "restore@example.com",
 							AuthIndex: "auth-from-detail",
-							Tokens: TokenStats{
+							Tokens: RequestTokenStats{
 								InputTokens:  10,
 								OutputTokens: 20,
 							},

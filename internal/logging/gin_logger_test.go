@@ -95,6 +95,15 @@ func TestIsAIAPIPathIncludesCodexBackend(t *testing.T) {
 	}
 }
 
+func TestIsAIAPIPathIncludesInteractions(t *testing.T) {
+	if !isAIAPIPath("/v1beta/interactions") {
+		t.Fatalf("expected /v1beta/interactions to be treated as AI API path")
+	}
+	if !isAIAPIPath("/v1beta/interactions/abc") {
+		t.Fatalf("expected /v1beta/interactions/abc to be treated as AI API path")
+	}
+}
+
 func TestGinLogrusLoggerAddsRequestIDForCodexBackend(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

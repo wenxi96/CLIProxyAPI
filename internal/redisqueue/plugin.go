@@ -8,6 +8,7 @@ import (
 	"time"
 
 	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+	internalusage "github.com/router-for-me/CLIProxyAPI/v7/internal/usage"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
 
@@ -30,28 +31,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		timestamp = time.Now()
 	}
 
-	modelName := strings.TrimSpace(record.Model)
-	if modelName == "" {
-		modelName = "unknown"
-	}
-	aliasName := strings.TrimSpace(record.Alias)
-	if aliasName == "" {
-		aliasName = modelName
-	}
-	provider := strings.TrimSpace(record.Provider)
-	if provider == "" {
-		provider = "unknown"
-	}
-	executorType := strings.TrimSpace(record.ExecutorType)
-	if executorType == "" {
-		executorType = "unknown"
-	}
-	authType := strings.TrimSpace(record.AuthType)
-	if authType == "" {
-		authType = "unknown"
-	}
-	apiKey := strings.TrimSpace(record.APIKey)
-	requestID := strings.TrimSpace(internallogging.GetRequestID(ctx))
+	detail := internalusage.CanonicalRequestDetail(ctx, record)
 	reasoningEffort := strings.TrimSpace(record.ReasoningEffort)
 	if reasoningEffort == "" {
 		reasoningEffort = coreusage.ReasoningEffortFromContext(ctx)
@@ -61,50 +41,20 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		serviceTier = coreusage.ServiceTierFromContext(ctx)
 	}
 
-	tokens := tokenStats{
-		InputTokens:         record.Detail.InputTokens,
-		OutputTokens:        record.Detail.OutputTokens,
-		ReasoningTokens:     record.Detail.ReasoningTokens,
-		CachedTokens:        record.Detail.CachedTokens,
-		CacheReadTokens:     record.Detail.CacheReadTokens,
-		CacheCreationTokens: record.Detail.CacheCreationTokens,
-		TotalTokens:         record.Detail.TotalTokens,
-	}
-	if tokens.TotalTokens == 0 {
-		tokens.TotalTokens = tokens.InputTokens + tokens.OutputTokens + tokens.ReasoningTokens
-	}
-	if tokens.TotalTokens == 0 {
-		tokens.TotalTokens = tokens.InputTokens + tokens.OutputTokens + tokens.ReasoningTokens + tokens.CachedTokens
-	}
-
-	failed := record.Failed
-	if !failed {
-		failed = !resolveSuccess(ctx)
-	}
+	failed := detail.Failed
 	fail := resolveFail(ctx, record, failed)
 
-	detail := requestDetail{
-		Timestamp:       timestamp,
-		LatencyMs:       record.Latency.Milliseconds(),
-		TTFTMs:          record.TTFT.Milliseconds(),
-		Source:          record.Source,
-		AuthIndex:       record.AuthIndex,
-		Tokens:          tokens,
-		Failed:          failed,
-		Fail:            fail,
-		ResponseHeaders: record.ResponseHeaders,
+	if detail.Timestamp.IsZero() {
+		detail.Timestamp = timestamp
 	}
 
 	payload, err := json.Marshal(queuedUsageDetail{
-		requestDetail:   detail,
-		Provider:        provider,
-		ExecutorType:    executorType,
-		Model:           modelName,
-		Alias:           aliasName,
-		Endpoint:        resolveEndpoint(ctx),
-		AuthType:        authType,
-		APIKey:          apiKey,
-		RequestID:       requestID,
+		RequestDetail:   detail,
+		APIKeyHash:      internalusage.APIKeyHash(record.APIKey),
+		Alias:           detail.ModelAlias,
+		TTFTMs:          normaliseDurationMillis(record.TTFT),
+		Fail:            fail,
+		ResponseHeaders: sanitizeResponseHeaders(record.ResponseHeaders),
 		ReasoningEffort: reasoningEffort,
 		ServiceTier:     serviceTier,
 	})
@@ -115,39 +65,14 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 }
 
 type queuedUsageDetail struct {
-	requestDetail
-	Provider        string `json:"provider"`
-	ExecutorType    string `json:"executor_type"`
-	Model           string `json:"model"`
-	Alias           string `json:"alias"`
-	Endpoint        string `json:"endpoint"`
-	AuthType        string `json:"auth_type"`
-	APIKey          string `json:"api_key"`
-	RequestID       string `json:"request_id"`
-	ReasoningEffort string `json:"reasoning_effort"`
-	ServiceTier     string `json:"service_tier"`
-}
-
-type requestDetail struct {
-	Timestamp       time.Time   `json:"timestamp"`
-	LatencyMs       int64       `json:"latency_ms"`
+	internalusage.RequestDetail
+	APIKeyHash      string      `json:"api_key_hash,omitempty"`
+	Alias           string      `json:"alias,omitempty"`
 	TTFTMs          int64       `json:"ttft_ms"`
-	Source          string      `json:"source"`
-	AuthIndex       string      `json:"auth_index"`
-	Tokens          tokenStats  `json:"tokens"`
-	Failed          bool        `json:"failed"`
 	Fail            failDetail  `json:"fail"`
 	ResponseHeaders http.Header `json:"response_headers,omitempty"`
-}
-
-type tokenStats struct {
-	InputTokens         int64 `json:"input_tokens"`
-	OutputTokens        int64 `json:"output_tokens"`
-	ReasoningTokens     int64 `json:"reasoning_tokens"`
-	CachedTokens        int64 `json:"cached_tokens"`
-	CacheReadTokens     int64 `json:"cache_read_tokens"`
-	CacheCreationTokens int64 `json:"cache_creation_tokens"`
-	TotalTokens         int64 `json:"total_tokens"`
+	ReasoningEffort string      `json:"reasoning_effort"`
+	ServiceTier     string      `json:"service_tier"`
 }
 
 type failDetail struct {
@@ -158,7 +83,7 @@ type failDetail struct {
 func resolveFail(ctx context.Context, record coreusage.Record, failed bool) failDetail {
 	fail := failDetail{
 		StatusCode: record.Fail.StatusCode,
-		Body:       strings.TrimSpace(record.Fail.Body),
+		Body:       internalusage.SanitizeSensitiveText(record.Fail.Body),
 	}
 	if !failed {
 		return failDetail{StatusCode: 200}
@@ -180,8 +105,54 @@ func resolveSuccess(ctx context.Context) bool {
 	return status < httpStatusBadRequest
 }
 
-func resolveEndpoint(ctx context.Context) string {
-	return strings.TrimSpace(internallogging.GetEndpoint(ctx))
+func sanitizeResponseHeaders(headers http.Header) http.Header {
+	if len(headers) == 0 {
+		return nil
+	}
+	sanitized := make(http.Header)
+	for key, values := range headers {
+		if !isAllowedUsageHeaderName(key) {
+			continue
+		}
+		cleanValues := make([]string, 0, len(values))
+		for _, value := range values {
+			cleanValues = append(cleanValues, internalusage.SanitizeSensitiveText(value))
+		}
+		sanitized[key] = cleanValues
+	}
+	if len(sanitized) == 0 {
+		return nil
+	}
+	return sanitized
+}
+
+func isAllowedUsageHeaderName(name string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	if normalized == "" {
+		return false
+	}
+	switch normalized {
+	case "content-type", "date", "retry-after", "request-id", "x-request-id",
+		"x-upstream-request-id", "openai-request-id", "anthropic-request-id",
+		"traceparent",
+		"ratelimit-limit", "ratelimit-remaining", "ratelimit-reset", "ratelimit-policy",
+		"x-ratelimit-limit", "x-ratelimit-remaining", "x-ratelimit-reset",
+		"x-ratelimit-limit-requests", "x-ratelimit-remaining-requests", "x-ratelimit-reset-requests",
+		"x-ratelimit-limit-tokens", "x-ratelimit-remaining-tokens", "x-ratelimit-reset-tokens",
+		"anthropic-ratelimit-requests-limit", "anthropic-ratelimit-requests-remaining", "anthropic-ratelimit-requests-reset",
+		"anthropic-ratelimit-tokens-limit", "anthropic-ratelimit-tokens-remaining", "anthropic-ratelimit-tokens-reset",
+		"anthropic-ratelimit-input-tokens-limit", "anthropic-ratelimit-input-tokens-remaining", "anthropic-ratelimit-input-tokens-reset",
+		"anthropic-ratelimit-output-tokens-limit", "anthropic-ratelimit-output-tokens-remaining", "anthropic-ratelimit-output-tokens-reset":
+		return true
+	}
+	return false
+}
+
+func normaliseDurationMillis(duration time.Duration) int64 {
+	if duration <= 0 {
+		return 0
+	}
+	return duration.Milliseconds()
 }
 
 const httpStatusBadRequest = 400
