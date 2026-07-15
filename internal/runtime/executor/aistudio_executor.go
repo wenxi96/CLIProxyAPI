@@ -183,7 +183,8 @@ func (e *AIStudioExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth,
 	if wsResp.Status < 200 || wsResp.Status >= 300 {
 		return resp, statusErr{code: wsResp.Status, msg: string(wsResp.Body)}
 	}
-	reporter.Publish(ctx, helps.ParseGeminiUsage(wsResp.Body))
+	detail, observed := helps.ParseGeminiUsage(wsResp.Body)
+	reporter.PublishParsed(ctx, detail, observed)
 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 	var param any
 	out := sdktranslator.TranslateNonStream(ctx, body.toFormat, responseFormat, req.Model, opts.OriginalRequest, translatedReq, wsResp.Body, &param)
@@ -293,10 +294,19 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 		responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 		var param any
 		metadataLogged := false
+		var streamUsage helps.StreamUsageBuffer
+		var usageAccumulator helps.GeminiStreamUsageAccumulator
+		defer func() {
+			usageAccumulator.Flush(&streamUsage)
+			streamUsage.Finalize(ctx, reporter, nil)
+		}()
 		processEvent := func(event wsrelay.StreamEvent) bool {
 			if event.Err != nil {
 				helps.RecordAPIResponseError(ctx, e.cfg, event.Err)
-				reporter.PublishFailure(ctx, event.Err)
+				usageAccumulator.Flush(&streamUsage)
+				if !streamUsage.PublishFailure(ctx, reporter, event.Err) {
+					reporter.PublishFailure(ctx, event.Err)
+				}
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Err: fmt.Errorf("wsrelay: %v", event.Err)}:
 				case <-ctx.Done():
@@ -314,10 +324,8 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 				if len(event.Payload) > 0 {
 					reporter.MarkFirstResponseByte()
 					helps.AppendAPIResponseChunk(ctx, e.cfg, event.Payload)
+					usageAccumulator.Observe(event.Payload, &streamUsage)
 					filtered := helps.FilterSSEUsageMetadata(event.Payload)
-					if detail, ok := helps.ParseGeminiStreamUsage(filtered); ok {
-						reporter.Publish(ctx, detail)
-					}
 					lines := sdktranslator.TranslateStream(ctx, body.toFormat, responseFormat, req.Model, opts.OriginalRequest, translatedReq, filtered, &param)
 					for i := range lines {
 						select {
@@ -329,6 +337,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 					break
 				}
 			case wsrelay.MessageTypeStreamEnd:
+				usageAccumulator.Flush(&streamUsage)
 				return false
 			case wsrelay.MessageTypeHTTPResp:
 				if !metadataLogged && event.Status > 0 {
@@ -340,6 +349,8 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 					reporter.MarkFirstResponseByte()
 					helps.AppendAPIResponseChunk(ctx, e.cfg, event.Payload)
 				}
+				usageAccumulator.Flush(&streamUsage)
+				streamUsage.Observe(helps.ParseGeminiUsage(event.Payload))
 				lines := sdktranslator.TranslateStream(ctx, body.toFormat, responseFormat, req.Model, opts.OriginalRequest, translatedReq, event.Payload, &param)
 				for i := range lines {
 					select {
@@ -348,11 +359,13 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 						return false
 					}
 				}
-				reporter.Publish(ctx, helps.ParseGeminiUsage(event.Payload))
 				return false
 			case wsrelay.MessageTypeError:
 				helps.RecordAPIResponseError(ctx, e.cfg, event.Err)
-				reporter.PublishFailure(ctx, event.Err)
+				usageAccumulator.Flush(&streamUsage)
+				if !streamUsage.PublishFailure(ctx, reporter, event.Err) {
+					reporter.PublishFailure(ctx, event.Err)
+				}
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Err: fmt.Errorf("wsrelay: %v", event.Err)}:
 				case <-ctx.Done():

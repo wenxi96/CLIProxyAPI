@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+	internalusage "github.com/router-for-me/CLIProxyAPI/v7/internal/usage"
 	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
 
@@ -22,6 +24,20 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 		responseHeaders := http.Header{}
 		responseHeaders.Add("X-Upstream-Request-Id", "upstream-req-1")
 		responseHeaders.Add("Retry-After", "30")
+		responseHeaders.Add("Authorization", "Bearer raw-access-token")
+		responseHeaders.Add("Set-Cookie", "session=raw-cookie")
+		responseHeaders.Add("X-Api-Key", "sk-raw-response-key")
+		responseHeaders.Add("X-Trace-Token", "raw-trace-token")
+		responseHeaders.Add("Location", "https://example.com/callback?signature=raw-location-signature")
+		responseHeaders.Add("WWW-Authenticate", `Bearer token="raw-auth-challenge"`)
+		responseHeaders.Add("X-Upstream-Error", "upstream token=raw-error-token")
+		responseHeaders.Add("X-Signed-Metadata", "signature=raw-header-signature")
+		responseHeaders.Add("X-Credential", "raw-header-credential")
+		responseHeaders.Add("X-Password", "raw-header-password")
+		responseHeaders.Add("X-Codex-Api-Key", "plainsecret123")
+		responseHeaders.Add("X-Codex-Turn-State", `{"turn_id":"sensitive-turn"}`)
+		responseHeaders.Add("X-RateLimit-Api-Key", "plainsecret123")
+		responseHeaders.Add("Tracestate", "vendor=plainsecret123")
 
 		plugin := &usageQueuePlugin{}
 		plugin.HandleUsage(ctx, coreusage.Record{
@@ -53,14 +69,79 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 		requireStringField(t, payload, "alias", "client-gpt")
 		requireStringField(t, payload, "endpoint", "POST /v1/chat/completions")
 		requireStringField(t, payload, "auth_type", "apikey")
+		requireStringField(t, payload, "model_alias", "client-gpt")
 		requireMissingField(t, payload, "user_api_key")
+		requireMissingField(t, payload, "api_key")
+		requireStringField(t, payload, "api_key_hash", internalusage.APIKeyHash("test-key"))
 		requireStringField(t, payload, "request_id", "ctx-request-id")
 		requireStringField(t, payload, "reasoning_effort", "medium")
 		requireStringField(t, payload, "service_tier", "priority")
 		requireHeaderField(t, payload, "response_headers", "X-Upstream-Request-Id", []string{"upstream-req-1"})
 		requireHeaderField(t, payload, "response_headers", "Retry-After", []string{"30"})
+		requireMissingHeaderField(t, payload, "response_headers", "Authorization")
+		requireMissingHeaderField(t, payload, "response_headers", "Set-Cookie")
+		requireMissingHeaderField(t, payload, "response_headers", "X-Api-Key")
+		requireMissingHeaderField(t, payload, "response_headers", "X-Trace-Token")
+		requireMissingHeaderField(t, payload, "response_headers", "Location")
+		requireMissingHeaderField(t, payload, "response_headers", "WWW-Authenticate")
+		requireMissingHeaderField(t, payload, "response_headers", "X-Upstream-Error")
+		requireMissingHeaderField(t, payload, "response_headers", "X-Signed-Metadata")
+		requireMissingHeaderField(t, payload, "response_headers", "X-Credential")
+		requireMissingHeaderField(t, payload, "response_headers", "X-Password")
+		requireMissingHeaderField(t, payload, "response_headers", "X-Codex-Api-Key")
+		requireMissingHeaderField(t, payload, "response_headers", "X-Codex-Turn-State")
+		requireMissingHeaderField(t, payload, "response_headers", "X-RateLimit-Api-Key")
+		requireMissingHeaderField(t, payload, "response_headers", "Tracestate")
 		requireBoolField(t, payload, "failed", false)
 		requireFailField(t, payload, http.StatusOK, "")
+		data, errMarshal := json.Marshal(payload)
+		if errMarshal != nil {
+			t.Fatalf("marshal payload: %v", errMarshal)
+		}
+		for _, secret := range []string{
+			"raw-access-token",
+			"raw-cookie",
+			"sk-raw-response-key",
+			"raw-trace-token",
+			"raw-location-signature",
+			"raw-auth-challenge",
+			"raw-error-token",
+			"raw-header-signature",
+			"raw-header-credential",
+			"raw-header-password",
+		} {
+			if strings.Contains(string(data), secret) {
+				t.Fatalf("queue payload leaked %q: %s", secret, data)
+			}
+		}
+	})
+}
+
+func TestUsageQueuePluginPreservesExplicitProviderZeroUsage(t *testing.T) {
+	withEnabledQueue(t, func() {
+		ctx := internallogging.WithRequestID(context.Background(), "req-zero-usage")
+		ctx = internallogging.WithEndpoint(ctx, "POST /v1/responses")
+		plugin := &usageQueuePlugin{}
+		plugin.HandleUsage(ctx, coreusage.Record{
+			Provider:      "openai",
+			Model:         "gpt-5.4",
+			AuthIndex:     "auth-zero-usage",
+			RequestedAt:   time.Date(2026, 7, 15, 10, 0, 0, 0, time.UTC),
+			UsageObserved: true,
+		})
+
+		payload := popSinglePayload(t)
+		raw, ok := payload["tokens"]
+		if !ok {
+			t.Fatal("payload missing tokens")
+		}
+		var tokens internalusage.RequestTokenStats
+		if err := json.Unmarshal(raw, &tokens); err != nil {
+			t.Fatalf("unmarshal tokens: %v", err)
+		}
+		if tokens.TokenUsageSource != internalusage.TokenUsageSourceProvider || tokens.TotalTokens != 0 {
+			t.Fatalf("tokens = %+v, want explicit provider-reported zero usage", tokens)
+		}
 	})
 }
 
@@ -150,12 +231,43 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndFailureAndGinRequestID(t 
 	})
 }
 
+func TestUsageQueuePluginRedactsFailureBody(t *testing.T) {
+	withEnabledQueue(t, func() {
+		ctx := internallogging.WithRequestID(context.Background(), "gin-request-id")
+		ctx = internallogging.WithEndpoint(ctx, "GET /v1/responses")
+		ctx = internallogging.WithResponseStatusHolder(ctx)
+		internallogging.SetResponseStatus(ctx, http.StatusInternalServerError)
+
+		plugin := &usageQueuePlugin{}
+		plugin.HandleUsage(ctx, coreusage.Record{
+			Provider:    "openai",
+			Model:       "gpt-5.4-mini",
+			Alias:       "client-mini",
+			APIKey:      "test-key",
+			AuthIndex:   "0",
+			AuthType:    "apikey",
+			Source:      "user@example.com",
+			RequestedAt: time.Date(2026, 4, 25, 0, 0, 0, 0, time.UTC),
+			Latency:     2500 * time.Millisecond,
+			Fail: coreusage.Failure{
+				StatusCode: http.StatusInternalServerError,
+				Body:       `{"error":{"message":"bad key sk-raw-failure-key"},"authorization":"Basic raw-basic-token","token":"raw-json-token","x-api-token":"raw-x-token","cookie":"session=raw-cookie","total_tokens":12}`,
+			},
+		})
+
+		payload := popSinglePayload(t)
+		requireBoolField(t, payload, "failed", true)
+		requireFailBodyExcludes(t, payload, "sk-raw-failure-key", "raw-basic-token", "raw-json-token", "raw-x-token", "raw-cookie")
+	})
+}
+
 func TestUsageQueuePluginAsyncIgnoresRecycledGinContext(t *testing.T) {
 	withEnabledQueue(t, func() {
 		ginCtx := newTestGinContext(t, http.MethodPost, "/v1/chat/completions", http.StatusOK)
 		ctx := context.WithValue(context.Background(), "gin", ginCtx)
 		ctx = internallogging.WithRequestID(ctx, "ctx-request-id")
 		ctx = internallogging.WithEndpoint(ctx, "POST /v1/chat/completions")
+		ctx = internallogging.WithClientIP(ctx, "198.51.100.22")
 		ctx = internallogging.WithResponseStatusHolder(ctx)
 		internallogging.SetResponseStatus(ctx, http.StatusInternalServerError)
 
@@ -193,7 +305,9 @@ func TestUsageQueuePluginAsyncIgnoresRecycledGinContext(t *testing.T) {
 		requireStringField(t, payload, "endpoint", "POST /v1/chat/completions")
 		requireStringField(t, payload, "alias", "client-gpt")
 		requireMissingField(t, payload, "user_api_key")
+		requireMissingField(t, payload, "api_key")
 		requireStringField(t, payload, "request_id", "ctx-request-id")
+		requireStringField(t, payload, "client_ip", "198.51.100.22")
 		requireBoolField(t, payload, "failed", true)
 		requireFailField(t, payload, http.StatusBadGateway, "bad gateway")
 	})
@@ -334,6 +448,29 @@ func requireFailField(t *testing.T, payload map[string]json.RawMessage, wantStat
 	}
 }
 
+func requireFailBodyExcludes(t *testing.T, payload map[string]json.RawMessage, secrets ...string) {
+	t.Helper()
+
+	raw, ok := payload["fail"]
+	if !ok {
+		t.Fatalf("payload missing %q", "fail")
+	}
+	var got struct {
+		Body string `json:"body"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal fail: %v", err)
+	}
+	if !strings.Contains(got.Body, "[redacted]") {
+		t.Fatalf("fail body = %q, want redacted marker", got.Body)
+	}
+	for _, secret := range secrets {
+		if strings.Contains(got.Body, secret) {
+			t.Fatalf("fail body leaked %q: %s", secret, got.Body)
+		}
+	}
+}
+
 func requireHeaderField(t *testing.T, payload map[string]json.RawMessage, field, key string, want []string) {
 	t.Helper()
 
@@ -356,5 +493,21 @@ func requireHeaderField(t *testing.T, payload map[string]json.RawMessage, field,
 		if got[i] != want[i] {
 			t.Fatalf("%s[%q] = %v, want %v", field, key, got, want)
 		}
+	}
+}
+
+func requireMissingHeaderField(t *testing.T, payload map[string]json.RawMessage, field, key string) {
+	t.Helper()
+
+	raw, ok := payload[field]
+	if !ok {
+		return
+	}
+	var headers map[string][]string
+	if err := json.Unmarshal(raw, &headers); err != nil {
+		t.Fatalf("unmarshal %q: %v", field, err)
+	}
+	if _, ok := headers[key]; ok {
+		t.Fatalf("%s unexpectedly contains header %q", field, key)
 	}
 }

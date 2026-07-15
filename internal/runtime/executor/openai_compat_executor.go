@@ -189,9 +189,8 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		return resp, err
 	}
 	helps.AppendAPIResponseChunk(ctx, e.cfg, body)
-	reporter.Publish(ctx, helps.ParseOpenAIUsage(body))
-	// Ensure we at least record the request even if upstream doesn't return usage
-	reporter.EnsurePublished(ctx)
+	detail, observed := helps.ParseOpenAIUsage(body)
+	reporter.PublishParsed(ctx, detail, observed)
 	// Translate response back to source format when needed
 	var param any
 	out := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, body, &param)
@@ -282,8 +281,8 @@ func (e *OpenAICompatExecutor) executeImages(ctx context.Context, auth *cliproxy
 		return resp, err
 	}
 
-	reporter.Publish(ctx, helps.ParseOpenAIUsage(body))
-	reporter.EnsurePublished(ctx)
+	detail, observed := helps.ParseOpenAIUsage(body)
+	reporter.PublishParsed(ctx, detail, observed)
 	resp = cliproxyexecutor.Response{Payload: body, Headers: httpResp.Header.Clone()}
 	return resp, nil
 }
@@ -394,7 +393,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		scanner.Buffer(nil, 52_428_800) // 50MB
 		var param any
 		var streamUsage helps.StreamUsageBuffer
-		defer streamUsage.Publish(ctx, reporter)
+		defer streamUsage.Finalize(ctx, reporter, nil)
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
@@ -412,7 +411,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 				if bytes.HasPrefix(trimmedLine, []byte("{")) || bytes.HasPrefix(trimmedLine, []byte("[")) {
 					streamErr := statusErr{code: http.StatusBadGateway, msg: string(trimmedLine)}
 					helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
-					if !streamUsage.Publish(ctx, reporter) {
+					if !streamUsage.PublishFailure(ctx, reporter, streamErr) {
 						reporter.PublishFailure(ctx, streamErr)
 					}
 					select {
@@ -436,7 +435,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		}
 		if errScan := scanner.Err(); errScan != nil {
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
-			if !streamUsage.Publish(ctx, reporter) {
+			if !streamUsage.PublishFailure(ctx, reporter, errScan) {
 				reporter.PublishFailure(ctx, errScan)
 			}
 			select {
@@ -456,9 +455,6 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 				}
 			}
 		}
-		// Ensure we record the request if no usage chunk was ever seen.
-		streamUsage.Publish(ctx, reporter)
-		reporter.EnsurePublished(ctx)
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
 }

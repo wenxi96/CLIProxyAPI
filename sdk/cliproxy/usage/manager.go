@@ -35,6 +35,8 @@ type Record struct {
 	Failed      bool
 	Fail        Failure
 	Detail      Detail
+	// UsageObserved distinguishes an explicit provider-reported zero from missing usage.
+	UsageObserved bool
 	// ResponseHeaders stores a snapshot of upstream response headers for usage sinks.
 	ResponseHeaders http.Header
 }

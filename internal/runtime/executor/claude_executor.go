@@ -363,13 +363,15 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 			return resp, errValidate
 		}
 		lines := bytes.Split(data, []byte("\n"))
+		var streamUsage helps.ClaudeStreamUsageBuffer
 		for _, line := range lines {
-			if detail, ok := helps.ParseClaudeStreamUsage(line); ok {
-				reporter.Publish(ctx, detail)
-			}
+			streamUsage.Observe(line)
 		}
+		streamUsage.Publish(ctx, reporter)
+		reporter.EnsurePublished(ctx)
 	} else {
-		reporter.Publish(ctx, helps.ParseClaudeUsage(data))
+		detail, observed := helps.ParseClaudeUsage(data)
+		reporter.PublishParsed(ctx, detail, observed)
 	}
 	data = restoreClaudeOAuthToolNamesFromResponse(data, claudeToolPrefix, auth.ToolPrefixDisabled(), oauthToolNamesReverseMap)
 	var param any
@@ -546,6 +548,18 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			scanner := bufio.NewScanner(decodedBody)
 			scanner.Buffer(nil, 52_428_800) // 50MB
 			var event bytes.Buffer
+			var streamUsage helps.ClaudeStreamUsageBuffer
+			defer func() {
+				if errContext := ctx.Err(); errContext != nil {
+					if !streamUsage.PublishFailure(ctx, reporter, errContext) {
+						reporter.PublishFailure(ctx, errContext)
+					}
+					return
+				}
+				if !streamUsage.Publish(ctx, reporter) {
+					reporter.EnsurePublished(ctx)
+				}
+			}()
 			flushEvent := func() bool {
 				if event.Len() == 0 {
 					return true
@@ -562,9 +576,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			for scanner.Scan() {
 				line := scanner.Bytes()
 				helps.AppendAPIResponseChunk(ctx, e.cfg, line)
-				if detail, ok := helps.ParseClaudeStreamUsage(line); ok {
-					reporter.Publish(ctx, detail)
-				}
+				streamUsage.Observe(line)
 				line = restoreClaudeOAuthToolNamesFromStreamLine(line, claudeToolPrefix, auth.ToolPrefixDisabled(), oauthToolNamesReverseMap)
 				event.Write(line)
 				event.WriteByte('\n')
@@ -577,11 +589,16 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			}
 			if errScan := scanner.Err(); errScan != nil {
 				helps.RecordAPIResponseError(ctx, e.cfg, errScan)
-				reporter.PublishFailure(ctx, errScan)
+				if !streamUsage.PublishFailure(ctx, reporter, errScan) {
+					reporter.PublishFailure(ctx, errScan)
+				}
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
 				case <-ctx.Done():
 				}
+			} else {
+				streamUsage.Publish(ctx, reporter)
+				reporter.EnsurePublished(ctx)
 			}
 			return
 		}
@@ -590,12 +607,22 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		scanner := bufio.NewScanner(decodedBody)
 		scanner.Buffer(nil, 52_428_800) // 50MB
 		var param any
+		var streamUsage helps.ClaudeStreamUsageBuffer
+		defer func() {
+			if errContext := ctx.Err(); errContext != nil {
+				if !streamUsage.PublishFailure(ctx, reporter, errContext) {
+					reporter.PublishFailure(ctx, errContext)
+				}
+				return
+			}
+			if !streamUsage.Publish(ctx, reporter) {
+				reporter.EnsurePublished(ctx)
+			}
+		}()
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
-			if detail, ok := helps.ParseClaudeStreamUsage(line); ok {
-				reporter.Publish(ctx, detail)
-			}
+			streamUsage.Observe(line)
 			line = restoreClaudeOAuthToolNamesFromStreamLine(line, claudeToolPrefix, auth.ToolPrefixDisabled(), oauthToolNamesReverseMap)
 			chunks := sdktranslator.TranslateStream(
 				ctx,
@@ -617,11 +644,16 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		}
 		if errScan := scanner.Err(); errScan != nil {
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
-			reporter.PublishFailure(ctx, errScan)
+			if !streamUsage.PublishFailure(ctx, reporter, errScan) {
+				reporter.PublishFailure(ctx, errScan)
+			}
 			select {
 			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
 			case <-ctx.Done():
 			}
+		} else {
+			streamUsage.Publish(ctx, reporter)
+			reporter.EnsurePublished(ctx)
 		}
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil

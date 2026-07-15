@@ -26,6 +26,7 @@ var aiAPIPrefixes = []string{
 	"/v1/responses",
 	"/openai/v1/videos",
 	"/v1beta/models/",
+	"/v1beta/interactions",
 	"/backend-api/codex/",
 }
 
@@ -55,6 +56,7 @@ func GinLogrusLogger() gin.HandlerFunc {
 			requestID = GenerateRequestID()
 			SetGinRequestID(c, requestID)
 			ctx := WithRequestID(c.Request.Context(), requestID)
+			ctx = WithClientIP(ctx, ResolveClientIP(c))
 			c.Request = c.Request.WithContext(ctx)
 		}
 

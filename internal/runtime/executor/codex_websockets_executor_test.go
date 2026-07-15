@@ -15,6 +15,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	"github.com/tidwall/gjson"
@@ -94,6 +95,12 @@ func TestCodexWebsocketsExecutePreservesPreviousResponseIDUpstream(t *testing.T)
 }
 
 func TestCodexWebsocketsExecuteStreamPassesThroughUpstreamWebsocketPayloadForDownstreamWebsocket(t *testing.T) {
+	usageRecords := make(chan coreusage.Record, 1)
+	coreusage.RegisterNamedPlugin("codex-websocket-observed-zero-test", websocketUsageCapturePlugin{
+		provider: "codex",
+		model:    "gpt-5-codex",
+		records:  usageRecords,
+	})
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	capturedPayload := make(chan []byte, 1)
 	delta := []byte(`{"type":"response.output_text.delta","delta":"hello"}`)
@@ -154,6 +161,20 @@ func TestCodexWebsocketsExecuteStreamPassesThroughUpstreamWebsocketPayloadForDow
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for first stream chunk")
 	}
+	select {
+	case chunk, ok := <-result.Chunks:
+		if !ok {
+			t.Fatal("stream closed before terminal chunk")
+		}
+		if chunk.Err != nil {
+			t.Fatalf("terminal chunk error = %v", chunk.Err)
+		}
+		if got := gjson.GetBytes(bytes.TrimSpace(chunk.Payload), "type").String(); got != "response.completed" {
+			t.Fatalf("terminal chunk type = %q, want response.completed", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for terminal stream chunk")
+	}
 
 	select {
 	case payload := <-capturedPayload:
@@ -162,6 +183,88 @@ func TestCodexWebsocketsExecuteStreamPassesThroughUpstreamWebsocketPayloadForDow
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for upstream websocket payload")
+	}
+
+	usageRecord := waitForWebsocketUsageRecord(t, usageRecords)
+	if usageRecord.Failed || !usageRecord.UsageObserved || usageRecord.Detail != (coreusage.Detail{}) {
+		t.Fatalf("usage record = %+v, want observed zero success", usageRecord)
+	}
+}
+
+func TestCodexWebsocketsExecuteStreamCancellationPublishesFailure(t *testing.T) {
+	usageRecords := make(chan coreusage.Record, 1)
+	coreusage.RegisterNamedPlugin("codex-websocket-cancel-usage-test", websocketUsageCapturePlugin{
+		provider: "codex",
+		model:    "gpt-5-codex-cancel",
+		records:  usageRecords,
+	})
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	requestRead := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		if _, _, errRead := conn.ReadMessage(); errRead != nil {
+			t.Errorf("read upstream websocket message: %v", errRead)
+			return
+		}
+		close(requestRead)
+		time.Sleep(500 * time.Millisecond)
+	}))
+	defer server.Close()
+
+	exec := NewCodexWebsocketsExecutor(&config.Config{SDKConfig: config.SDKConfig{DisableImageGeneration: config.DisableImageGenerationAll}})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "sk-test", "base_url": server.URL}}
+	ctx, cancel := context.WithCancel(context.Background())
+	result, err := exec.ExecuteStream(ctx, auth, cliproxyexecutor.Request{
+		Model:   "gpt-5-codex-cancel",
+		Payload: []byte(`{"model":"gpt-5-codex-cancel","input":[{"role":"user","content":"hello"}]}`),
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("codex")})
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+	select {
+	case <-requestRead:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for upstream request")
+	}
+	cancel()
+	for range result.Chunks {
+	}
+
+	usageRecord := waitForWebsocketUsageRecord(t, usageRecords)
+	if !usageRecord.Failed || usageRecord.UsageObserved {
+		t.Fatalf("usage record = %+v, want cancellation failure without observed usage", usageRecord)
+	}
+}
+
+type websocketUsageCapturePlugin struct {
+	provider string
+	model    string
+	records  chan<- coreusage.Record
+}
+
+func (p websocketUsageCapturePlugin) HandleUsage(_ context.Context, record coreusage.Record) {
+	if record.Provider != p.provider || record.Model != p.model {
+		return
+	}
+	select {
+	case p.records <- record:
+	default:
+	}
+}
+
+func waitForWebsocketUsageRecord(t *testing.T, records <-chan coreusage.Record) coreusage.Record {
+	t.Helper()
+	select {
+	case record := <-records:
+		return record
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for websocket usage record")
+		return coreusage.Record{}
 	}
 }
 

@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	StatisticsFileVersion    = 1
+	StatisticsFileVersion    = 2
 	StatisticsFileName       = "usage-statistics.snapshot"
 	legacyStatisticsFileName = "usage-statistics.json"
 )
@@ -84,7 +84,7 @@ func LoadSnapshotFile(path string) (StatisticsSnapshot, error) {
 			if errPayload := json.Unmarshal(trimmed, &payload); errPayload != nil {
 				return snapshot, fmt.Errorf("usage: decode snapshot payload: %w", errPayload)
 			}
-			if payload.Version != 0 && payload.Version != StatisticsFileVersion {
+			if payload.Version != 0 && payload.Version != 1 && payload.Version != StatisticsFileVersion {
 				return snapshot, fmt.Errorf("usage: unsupported snapshot version %d", payload.Version)
 			}
 			return payload.Usage, nil

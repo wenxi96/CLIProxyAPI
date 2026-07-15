@@ -71,10 +71,11 @@ type RequestStatistics struct {
 
 	apis map[string]*apiStats
 
-	requestsByDay  map[string]int64
-	requestsByHour map[int]int64
-	tokensByDay    map[string]int64
-	tokensByHour   map[int]int64
+	requestsByDay   map[string]int64
+	requestsByHour  map[int]int64
+	tokensByDay     map[string]int64
+	tokensByHour    map[int]int64
+	detailLocations map[string]detailLocation
 }
 
 // apiStats holds aggregated metrics for a single API key.
@@ -91,24 +92,50 @@ type modelStats struct {
 	Details       []RequestDetail
 }
 
-// RequestDetail stores the timestamp, latency, and token usage for a single request.
+// RequestDetail stores the canonical request context and token facts for a single request.
 type RequestDetail struct {
-	Timestamp time.Time  `json:"timestamp"`
-	LatencyMs int64      `json:"latency_ms"`
-	Source    string     `json:"source"`
-	ClientIP  string     `json:"client_ip"`
-	AuthIndex string     `json:"auth_index"`
-	Tokens    TokenStats `json:"tokens"`
-	Failed    bool       `json:"failed"`
+	RequestID        string            `json:"request_id"`
+	ClientIP         string            `json:"client_ip"`
+	Timestamp        time.Time         `json:"timestamp"`
+	Endpoint         string            `json:"endpoint"`
+	Model            string            `json:"model"`
+	Provider         string            `json:"provider"`
+	ExecutorType     string            `json:"executor_type"`
+	AuthType         string            `json:"auth_type"`
+	ModelAlias       string            `json:"model_alias"`
+	Source           string            `json:"source"`
+	AuthIndex        string            `json:"auth_index"`
+	DetailRole       string            `json:"detail_role"`
+	DetailSequence   string            `json:"detail_sequence,omitempty"`
+	Failed           bool              `json:"failed"`
+	LatencyMs        int64             `json:"latency_ms"`
+	EstimatedCostUSD *float64          `json:"estimated_cost_usd"`
+	Tokens           RequestTokenStats `json:"tokens"`
 }
 
-// TokenStats captures the token usage breakdown for a request.
+// TokenStats captures aggregate token usage counters.
 type TokenStats struct {
 	InputTokens     int64 `json:"input_tokens"`
 	OutputTokens    int64 `json:"output_tokens"`
 	ReasoningTokens int64 `json:"reasoning_tokens"`
 	CachedTokens    int64 `json:"cached_tokens"`
 	TotalTokens     int64 `json:"total_tokens"`
+}
+
+// RequestTokenStats captures request-level token facts and normalization metadata.
+type RequestTokenStats struct {
+	InputTokens         int64  `json:"input_tokens"`
+	OutputTokens        int64  `json:"output_tokens"`
+	ReasoningTokens     int64  `json:"reasoning_tokens"`
+	CachedTokens        int64  `json:"cached_tokens"`
+	CacheReadTokens     int64  `json:"cache_read_tokens"`
+	CacheCreationTokens int64  `json:"cache_creation_tokens"`
+	TotalTokens         int64  `json:"total_tokens"`
+	ReportedTotalTokens int64  `json:"reported_total_tokens"`
+	ComputedTotalTokens int64  `json:"computed_total_tokens"`
+	TokenUsageSource    string `json:"token_usage_source"`
+	CacheSplitStatus    string `json:"cache_split_status"`
+	ReasoningCostMode   string `json:"reasoning_cost_mode"`
 }
 
 // StatisticsSnapshot represents an immutable view of the aggregated metrics.
@@ -182,17 +209,12 @@ type AuthRequestPage struct {
 	Items     []AuthRequestDetail `json:"items"`
 }
 
-// AuthRequestDetail stores one request detail enriched with endpoint and model.
-type AuthRequestDetail struct {
-	Timestamp        time.Time  `json:"timestamp"`
-	Endpoint         string     `json:"endpoint"`
-	Model            string     `json:"model"`
-	Source           string     `json:"source"`
-	AuthIndex        string     `json:"auth_index"`
-	Failed           bool       `json:"failed"`
-	LatencyMs        int64      `json:"latency_ms"`
-	Tokens           TokenStats `json:"tokens"`
-	EstimatedCostUSD *float64   `json:"estimated_cost_usd"`
+// AuthRequestDetail stores one paginated canonical request detail.
+type AuthRequestDetail = RequestDetail
+
+type authRequestListItem struct {
+	apiBucket string
+	detail    AuthRequestDetail
 }
 
 var defaultRequestStatistics = NewRequestStatistics()
@@ -203,11 +225,12 @@ func GetRequestStatistics() *RequestStatistics { return defaultRequestStatistics
 // NewRequestStatistics constructs an empty statistics store.
 func NewRequestStatistics() *RequestStatistics {
 	return &RequestStatistics{
-		apis:           make(map[string]*apiStats),
-		requestsByDay:  make(map[string]int64),
-		requestsByHour: make(map[int]int64),
-		tokensByDay:    make(map[string]int64),
-		tokensByHour:   make(map[int]int64),
+		apis:            make(map[string]*apiStats),
+		requestsByDay:   make(map[string]int64),
+		requestsByHour:  make(map[int]int64),
+		tokensByDay:     make(map[string]int64),
+		tokensByHour:    make(map[int]int64),
+		detailLocations: make(map[string]detailLocation),
 	}
 }
 
@@ -219,54 +242,124 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 	if !statisticsEnabled.Load() {
 		return
 	}
-	timestamp := record.RequestedAt
-	if timestamp.IsZero() {
-		timestamp = time.Now()
-	}
-	detail := normaliseDetail(record.Detail)
-	totalTokens := detail.TotalTokens
-	statsKey := record.APIKey
-	if statsKey == "" {
-		statsKey = resolveAPIIdentifier(ctx, record)
-	}
-	failed := record.Failed
-	if !failed {
-		failed = !resolveSuccess(ctx)
-	}
-	success := !failed
-	modelName := record.Model
-	if modelName == "" {
-		modelName = "unknown"
-	}
-	dayKey := timestamp.Format("2006-01-02")
-	hourKey := timestamp.Hour()
+	detail := CanonicalRequestDetail(ctx, record)
+	statsKey := safeAPIIdentifier(ctx, record, detail)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.upsertDetailLocked(statsKey, detail.Model, detail)
+}
+
+type detailUpsertStatus int
+
+const (
+	detailUpsertSkipped detailUpsertStatus = iota
+	detailUpsertAdded
+	detailUpsertEnriched
+)
+
+type detailLocation struct {
+	apiName    string
+	modelName  string
+	stats      *apiStats
+	modelStats *modelStats
+	index      int
+}
+
+func (s *RequestStatistics) upsertDetailLocked(apiName, model string, detail RequestDetail) detailUpsertStatus {
+	detail = normalizeRequestDetail(detail, detail.Provider)
+	apiName = safeImportedAPIName(apiName, detail)
+	model = defaultIfEmpty(model, detail.Model)
+
+	s.ensureDetailLocationsLocked()
+	identity := detailIdentityKey(apiName, model, detail)
+	if existing, ok := s.detailLocations[identity]; ok && existing.modelStats != nil && existing.index >= 0 && existing.index < len(existing.modelStats.Details) {
+		current := existing.modelStats.Details[existing.index]
+		if !shouldEnrichDetail(current, detail) {
+			return detailUpsertSkipped
+		}
+		merged := mergeEnrichedDetail(current, detail)
+		existing.modelStats.Details[existing.index] = merged
+		s.applyTokenDeltaLocked(existing.stats, existing.modelStats, current, merged)
+		s.applyOutcomeDeltaLocked(current, merged)
+		delete(s.detailLocations, identity)
+		s.detailLocations[detailIdentityKey(existing.apiName, existing.modelName, merged)] = existing
+		s.markChangedLocked()
+		return detailUpsertEnriched
+	}
+
+	stats, ok := s.apis[apiName]
+	if !ok || stats == nil {
+		stats = &apiStats{Models: make(map[string]*modelStats)}
+		s.apis[apiName] = stats
+	} else if stats.Models == nil {
+		stats.Models = make(map[string]*modelStats)
+	}
+	s.addDetailLocked(apiName, stats, model, detail)
+	return detailUpsertAdded
+}
+
+func (s *RequestStatistics) ensureDetailLocationsLocked() {
+	if s.detailLocations != nil {
+		return
+	}
+	s.detailLocations = make(map[string]detailLocation)
+	for apiName, stats := range s.apis {
+		if stats == nil {
+			continue
+		}
+		for modelName, modelStatsValue := range stats.Models {
+			if modelStatsValue == nil {
+				continue
+			}
+			for index, detail := range modelStatsValue.Details {
+				identity := detailIdentityKey(apiName, modelName, detail)
+				if _, exists := s.detailLocations[identity]; !exists {
+					s.detailLocations[identity] = detailLocation{
+						apiName:    apiName,
+						modelName:  modelName,
+						stats:      stats,
+						modelStats: modelStatsValue,
+						index:      index,
+					}
+				}
+			}
+		}
+	}
+}
+
+func (s *RequestStatistics) addDetailLocked(apiName string, stats *apiStats, model string, detail RequestDetail) {
+	totalTokens := detail.Tokens.TotalTokens
+	stats.TotalRequests++
+	stats.TotalTokens += totalTokens
+	modelStatsValue, ok := stats.Models[model]
+	if !ok {
+		modelStatsValue = &modelStats{}
+		stats.Models[model] = modelStatsValue
+	}
+	modelStatsValue.TotalRequests++
+	modelStatsValue.TotalTokens += totalTokens
+	detailIndex := len(modelStatsValue.Details)
+	modelStatsValue.Details = append(modelStatsValue.Details, detail)
+	s.detailLocations[detailIdentityKey(apiName, model, detail)] = detailLocation{
+		apiName:    apiName,
+		modelName:  model,
+		stats:      stats,
+		modelStats: modelStatsValue,
+		index:      detailIndex,
+	}
+
 	s.totalRequests++
-	if success {
-		s.successCount++
-	} else {
+	if detail.Failed {
 		s.failureCount++
+	} else {
+		s.successCount++
 	}
 	s.totalTokens += totalTokens
 
-	stats, ok := s.apis[statsKey]
-	if !ok {
-		stats = &apiStats{Models: make(map[string]*modelStats)}
-		s.apis[statsKey] = stats
-	}
-	s.updateAPIStats(stats, modelName, RequestDetail{
-		Timestamp: timestamp,
-		LatencyMs: normaliseLatency(record.Latency),
-		Source:    record.Source,
-		ClientIP:  resolveClientIP(ctx),
-		AuthIndex: record.AuthIndex,
-		Tokens:    detail,
-		Failed:    failed,
-	})
-
+	dayKey := detail.Timestamp.Format("2006-01-02")
+	hourKey := detail.Timestamp.Hour()
 	s.requestsByDay[dayKey]++
 	s.requestsByHour[hourKey]++
 	s.tokensByDay[dayKey] += totalTokens
@@ -274,17 +367,37 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 	s.markChangedLocked()
 }
 
-func (s *RequestStatistics) updateAPIStats(stats *apiStats, model string, detail RequestDetail) {
-	stats.TotalRequests++
-	stats.TotalTokens += detail.Tokens.TotalTokens
-	modelStatsValue, ok := stats.Models[model]
-	if !ok {
-		modelStatsValue = &modelStats{}
-		stats.Models[model] = modelStatsValue
+func (s *RequestStatistics) applyTokenDeltaLocked(stats *apiStats, modelStatsValue *modelStats, oldDetail, newDetail RequestDetail) {
+	delta := newDetail.Tokens.TotalTokens - oldDetail.Tokens.TotalTokens
+	if delta == 0 {
+		return
 	}
-	modelStatsValue.TotalRequests++
-	modelStatsValue.TotalTokens += detail.Tokens.TotalTokens
-	modelStatsValue.Details = append(modelStatsValue.Details, detail)
+	if stats != nil {
+		stats.TotalTokens += delta
+	}
+	if modelStatsValue != nil {
+		modelStatsValue.TotalTokens += delta
+	}
+	s.totalTokens += delta
+	if !oldDetail.Timestamp.IsZero() {
+		dayKey := oldDetail.Timestamp.Format("2006-01-02")
+		hourKey := oldDetail.Timestamp.Hour()
+		s.tokensByDay[dayKey] += delta
+		s.tokensByHour[hourKey] += delta
+	}
+}
+
+func (s *RequestStatistics) applyOutcomeDeltaLocked(oldDetail, newDetail RequestDetail) {
+	if oldDetail.Failed == newDetail.Failed {
+		return
+	}
+	if oldDetail.Failed {
+		s.failureCount--
+		s.successCount++
+		return
+	}
+	s.successCount--
+	s.failureCount++
 }
 
 // Snapshot returns a copy of the aggregated metrics for external consumption.
@@ -319,6 +432,9 @@ func (s *RequestStatistics) SnapshotWithState() (StatisticsSnapshot, uint64, uin
 		for modelName, modelStatsValue := range stats.Models {
 			requestDetails := make([]RequestDetail, len(modelStatsValue.Details))
 			copy(requestDetails, modelStatsValue.Details)
+			for index := range requestDetails {
+				requestDetails[index].EstimatedCostUSD = cloneFloat64Ptr(requestDetails[index].EstimatedCostUSD)
+			}
 			apiSnapshot.Models[modelName] = ModelSnapshot{
 				TotalRequests: modelStatsValue.TotalRequests,
 				TotalTokens:   modelStatsValue.TotalTokens,
@@ -383,7 +499,20 @@ func (s *RequestStatistics) ListAuthRequests(authIndex string, filter AuthReques
 	s.mu.RUnlock()
 
 	sort.SliceStable(items, func(i, j int) bool {
-		return items[i].Timestamp.After(items[j].Timestamp)
+		leftDetail := items[i].detail
+		rightDetail := items[j].detail
+		if !leftDetail.Timestamp.Equal(rightDetail.Timestamp) {
+			return leftDetail.Timestamp.After(rightDetail.Timestamp)
+		}
+		if items[i].apiBucket != items[j].apiBucket {
+			return items[i].apiBucket < items[j].apiBucket
+		}
+		leftIdentity := detailIdentityKey(items[i].apiBucket, leftDetail.Model, leftDetail)
+		rightIdentity := detailIdentityKey(items[j].apiBucket, rightDetail.Model, rightDetail)
+		if leftIdentity != rightIdentity {
+			return leftIdentity < rightIdentity
+		}
+		return detailFactsHash(leftDetail) < detailFactsHash(rightDetail)
 	})
 
 	page.Total = len(items)
@@ -394,12 +523,15 @@ func (s *RequestStatistics) ListAuthRequests(authIndex string, filter AuthReques
 	if end > len(items) {
 		end = len(items)
 	}
-	page.Items = items[filter.Offset:end]
+	page.Items = make([]AuthRequestDetail, 0, end-filter.Offset)
+	for _, item := range items[filter.Offset:end] {
+		page.Items = append(page.Items, item.detail)
+	}
 	return page
 }
 
-func (s *RequestStatistics) collectAuthRequestDetailsLocked(authIndex string, filter AuthRequestFilter) []AuthRequestDetail {
-	items := make([]AuthRequestDetail, 0)
+func (s *RequestStatistics) collectAuthRequestDetailsLocked(authIndex string, filter AuthRequestFilter) []authRequestListItem {
+	items := make([]authRequestListItem, 0)
 	modelFilter := strings.TrimSpace(filter.Model)
 	for endpoint, stats := range s.apis {
 		if stats == nil {
@@ -413,6 +545,7 @@ func (s *RequestStatistics) collectAuthRequestDetailsLocked(authIndex string, fi
 				continue
 			}
 			for _, detail := range modelStatsValue.Details {
+				detail = normalizeRequestDetail(detail, detail.Provider)
 				if strings.TrimSpace(detail.AuthIndex) != authIndex {
 					continue
 				}
@@ -425,16 +558,13 @@ func (s *RequestStatistics) collectAuthRequestDetailsLocked(authIndex string, fi
 				if filter.To != nil && detail.Timestamp.After(*filter.To) {
 					continue
 				}
-				items = append(items, AuthRequestDetail{
-					Timestamp: detail.Timestamp,
-					Endpoint:  endpoint,
-					Model:     modelName,
-					Source:    detail.Source,
-					AuthIndex: detail.AuthIndex,
-					Failed:    detail.Failed,
-					LatencyMs: detail.LatencyMs,
-					Tokens:    normaliseTokenStats(detail.Tokens),
-				})
+				if detail.Endpoint == "" {
+					detail.Endpoint = endpoint
+				}
+				if detail.Model == "" || detail.Model == "unknown" {
+					detail.Model = modelName
+				}
+				items = append(items, authRequestListItem{apiBucket: endpoint, detail: detail})
 			}
 		}
 	}
@@ -450,6 +580,7 @@ func buildAuthUsageSnapshots(apis map[string]APISnapshot) map[string]AuthUsageSn
 				modelName = "unknown"
 			}
 			for _, detail := range modelSnapshot.Details {
+				detail = normalizeRequestDetail(detail, detail.Provider)
 				authIndex := strings.TrimSpace(detail.AuthIndex)
 				if authIndex == "" {
 					continue
@@ -474,14 +605,13 @@ func addDetailToAuthUsage(authSnapshot *AuthUsageSnapshot, modelName string, det
 	if authSnapshot == nil {
 		return
 	}
-	tokens := normaliseTokenStats(detail.Tokens)
 	authSnapshot.TotalRequests++
 	if detail.Failed {
 		authSnapshot.FailureCount++
 	} else {
 		authSnapshot.SuccessCount++
 	}
-	authSnapshot.Tokens = addTokenStats(authSnapshot.Tokens, tokens)
+	authSnapshot.Tokens = addRequestTokens(authSnapshot.Tokens, detail.Tokens, detail.Provider)
 	updateAuthTimeRange(authSnapshot, detail.Timestamp)
 
 	modelSnapshot := authSnapshot.Models[modelName]
@@ -491,7 +621,7 @@ func addDetailToAuthUsage(authSnapshot *AuthUsageSnapshot, modelName string, det
 	} else {
 		modelSnapshot.SuccessCount++
 	}
-	modelSnapshot.Tokens = addTokenStats(modelSnapshot.Tokens, tokens)
+	modelSnapshot.Tokens = addRequestTokens(modelSnapshot.Tokens, detail.Tokens, detail.Provider)
 	authSnapshot.Models[modelName] = modelSnapshot
 }
 
@@ -510,19 +640,10 @@ func updateAuthTimeRange(authSnapshot *AuthUsageSnapshot, timestamp time.Time) {
 	}
 }
 
-func addTokenStats(left, right TokenStats) TokenStats {
-	return TokenStats{
-		InputTokens:     left.InputTokens + right.InputTokens,
-		OutputTokens:    left.OutputTokens + right.OutputTokens,
-		ReasoningTokens: left.ReasoningTokens + right.ReasoningTokens,
-		CachedTokens:    left.CachedTokens + right.CachedTokens,
-		TotalTokens:     left.TotalTokens + right.TotalTokens,
-	}
-}
-
 type MergeResult struct {
-	Added   int64 `json:"added"`
-	Skipped int64 `json:"skipped"`
+	Added    int64 `json:"added"`
+	Skipped  int64 `json:"skipped"`
+	Enriched int64 `json:"enriched,omitempty"`
 }
 
 // MergeSnapshot merges an exported statistics snapshot into the current store.
@@ -536,32 +657,10 @@ func (s *RequestStatistics) MergeSnapshot(snapshot StatisticsSnapshot) MergeResu
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	seen := make(map[string]struct{})
-	for apiName, stats := range s.apis {
-		if stats == nil {
-			continue
-		}
-		for modelName, modelStatsValue := range stats.Models {
-			if modelStatsValue == nil {
-				continue
-			}
-			for _, detail := range modelStatsValue.Details {
-				seen[dedupKey(apiName, modelName, detail)] = struct{}{}
-			}
-		}
-	}
-
 	for apiName, apiSnapshot := range snapshot.APIs {
 		apiName = strings.TrimSpace(apiName)
 		if apiName == "" {
 			continue
-		}
-		stats, ok := s.apis[apiName]
-		if !ok || stats == nil {
-			stats = &apiStats{Models: make(map[string]*modelStats)}
-			s.apis[apiName] = stats
-		} else if stats.Models == nil {
-			stats.Models = make(map[string]*modelStats)
 		}
 		for modelName, modelSnapshot := range apiSnapshot.Models {
 			modelName = strings.TrimSpace(modelName)
@@ -569,52 +668,25 @@ func (s *RequestStatistics) MergeSnapshot(snapshot StatisticsSnapshot) MergeResu
 				modelName = "unknown"
 			}
 			for _, detail := range modelSnapshot.Details {
-				detail.Tokens = normaliseTokenStats(detail.Tokens)
-				if detail.LatencyMs < 0 {
-					detail.LatencyMs = 0
+				detail.Endpoint = safeImportedEndpoint(apiName, detail.Endpoint)
+				if detail.Model == "" {
+					detail.Model = modelName
 				}
-				if detail.Timestamp.IsZero() {
-					detail.Timestamp = time.Now()
-				}
-				key := dedupKey(apiName, modelName, detail)
-				if _, exists := seen[key]; exists {
+				detail = normalizeRequestDetail(detail, detail.Provider)
+				targetAPIName := safeImportedAPIName(apiName, detail)
+				switch s.upsertDetailLocked(targetAPIName, modelName, detail) {
+				case detailUpsertAdded:
+					result.Added++
+				case detailUpsertEnriched:
+					result.Enriched++
+				default:
 					result.Skipped++
-					continue
 				}
-				seen[key] = struct{}{}
-				s.recordImported(apiName, modelName, stats, detail)
-				result.Added++
 			}
 		}
 	}
 
 	return result
-}
-
-func (s *RequestStatistics) recordImported(apiName, modelName string, stats *apiStats, detail RequestDetail) {
-	totalTokens := detail.Tokens.TotalTokens
-	if totalTokens < 0 {
-		totalTokens = 0
-	}
-
-	s.totalRequests++
-	if detail.Failed {
-		s.failureCount++
-	} else {
-		s.successCount++
-	}
-	s.totalTokens += totalTokens
-
-	s.updateAPIStats(stats, modelName, detail)
-
-	dayKey := detail.Timestamp.Format("2006-01-02")
-	hourKey := detail.Timestamp.Hour()
-
-	s.requestsByDay[dayKey]++
-	s.requestsByHour[hourKey]++
-	s.tokensByDay[dayKey] += totalTokens
-	s.tokensByHour[hourKey] += totalTokens
-	s.markChangedLocked()
 }
 
 // HasPendingPersistence reports whether the in-memory snapshot contains changes
@@ -658,67 +730,12 @@ func (s *RequestStatistics) markChangedLocked() {
 	s.changeCount++
 }
 
-func dedupKey(apiName, modelName string, detail RequestDetail) string {
-	timestamp := detail.Timestamp.UTC().Format(time.RFC3339Nano)
-	tokens := normaliseTokenStats(detail.Tokens)
-	return fmt.Sprintf(
-		"%s|%s|%s|%s|%s|%s|%t|%d|%d|%d|%d|%d",
-		apiName,
-		modelName,
-		timestamp,
-		detail.Source,
-		strings.TrimSpace(detail.ClientIP),
-		detail.AuthIndex,
-		detail.Failed,
-		tokens.InputTokens,
-		tokens.OutputTokens,
-		tokens.ReasoningTokens,
-		tokens.CachedTokens,
-		tokens.TotalTokens,
-	)
-}
-
-// resolveClientIP shares the same IP resolution logic as the main HTTP logger,
-// keeping usage client_ip consistent with the client IP shown in request logs.
-func resolveClientIP(ctx context.Context) string {
-	if ctx == nil {
-		return ""
-	}
-	ginCtx, ok := ctx.Value("gin").(*gin.Context)
-	if !ok || ginCtx == nil || ginCtx.Request == nil {
-		return ""
-	}
-	return logging.ResolveClientIP(ginCtx)
-}
-
-func resolveAPIIdentifier(ctx context.Context, record coreusage.Record) string {
-	if ctx != nil {
-		if ginCtx, ok := ctx.Value("gin").(*gin.Context); ok && ginCtx != nil {
-			path := ginCtx.FullPath()
-			if path == "" && ginCtx.Request != nil {
-				path = ginCtx.Request.URL.Path
-			}
-			method := ""
-			if ginCtx.Request != nil {
-				method = ginCtx.Request.Method
-			}
-			if path != "" {
-				if method != "" {
-					return method + " " + path
-				}
-				return path
-			}
-		}
-	}
-	if record.Provider != "" {
-		return record.Provider
-	}
-	return "unknown"
-}
-
 func resolveSuccess(ctx context.Context) bool {
 	if ctx == nil {
 		return true
+	}
+	if status := logging.GetResponseStatus(ctx); status != 0 {
+		return status < httpStatusBadRequest
 	}
 	ginCtx, ok := ctx.Value("gin").(*gin.Context)
 	if !ok || ginCtx == nil {
@@ -732,33 +749,6 @@ func resolveSuccess(ctx context.Context) bool {
 }
 
 const httpStatusBadRequest = 400
-
-func normaliseDetail(detail coreusage.Detail) TokenStats {
-	tokens := TokenStats{
-		InputTokens:     detail.InputTokens,
-		OutputTokens:    detail.OutputTokens,
-		ReasoningTokens: detail.ReasoningTokens,
-		CachedTokens:    detail.CachedTokens,
-		TotalTokens:     detail.TotalTokens,
-	}
-	if tokens.TotalTokens == 0 {
-		tokens.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens
-	}
-	if tokens.TotalTokens == 0 {
-		tokens.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens + detail.CachedTokens
-	}
-	return tokens
-}
-
-func normaliseTokenStats(tokens TokenStats) TokenStats {
-	if tokens.TotalTokens == 0 {
-		tokens.TotalTokens = tokens.InputTokens + tokens.OutputTokens + tokens.ReasoningTokens
-	}
-	if tokens.TotalTokens == 0 {
-		tokens.TotalTokens = tokens.InputTokens + tokens.OutputTokens + tokens.ReasoningTokens + tokens.CachedTokens
-	}
-	return tokens
-}
 
 func normaliseLatency(latency time.Duration) int64 {
 	if latency <= 0 {

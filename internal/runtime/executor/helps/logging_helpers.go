@@ -14,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+	internalusage "github.com/router-for-me/CLIProxyAPI/v7/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
@@ -629,17 +630,17 @@ func SummarizeErrorBody(contentType string, body []byte) string {
 	}
 	if isHTML {
 		if title := extractHTMLTitle(body); title != "" {
-			return title
+			return internalusage.SanitizeSensitiveText(title)
 		}
 		return "[html body omitted]"
 	}
 
 	// Try to extract error message from JSON response
 	if message := extractJSONErrorMessage(body); message != "" {
-		return message
+		return internalusage.SanitizeSensitiveText(message)
 	}
 
-	return string(body)
+	return internalusage.SanitizeSensitiveText(string(body))
 }
 
 func extractHTMLTitle(body []byte) string {

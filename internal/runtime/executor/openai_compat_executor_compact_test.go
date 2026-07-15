@@ -449,8 +449,8 @@ func TestOpenAICompatExecutorStreamJSONErrorPreservesObservedUsage(t *testing.T)
 	}
 
 	record := waitForOpenAICompatUsageRecord(t, plugin.records, model)
-	if record.Failed {
-		t.Fatalf("usage record failed = true, want false: %+v", record)
+	if !record.Failed {
+		t.Fatalf("usage record failed = false, want terminal stream error preserved: %+v", record)
 	}
 	if record.Detail.TotalTokens != 5 {
 		t.Fatalf("usage total tokens = %d, want 5", record.Detail.TotalTokens)
