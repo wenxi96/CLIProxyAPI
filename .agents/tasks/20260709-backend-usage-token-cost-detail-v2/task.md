@@ -1,5 +1,5 @@
 ---
-Status: reviewed-ready
+Status: released
 Created: 2026-07-09
 Owner: backend
 Execution Route: multi_agent

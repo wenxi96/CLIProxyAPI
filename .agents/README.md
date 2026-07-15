@@ -24,7 +24,7 @@ Persistence Mode: git-visible
 - `20260702-batch-quota-query-parity`：将批量检查正式额度查询调整为复用 canonical quota query service，并对齐单文件刷新展示字段；已作为后续 Codex 展示对齐修复的前置基础。
 - `20260703-codex-batch-quota-display-parity`：修复 Codex 批量检查把月度窗口误展示为 5 小时、并出现空周额度的问题；已提交到 `dev@61d34dfd`、合入 `master@766ec81c`，并随 `v7.2.49-wx-2.9` 发布。
 - `20260703-auth-usage-token-cost-statistics`：规划按认证文件 `auth_index` 记录和聚合请求 token、估算金额，并提供单认证文件调用明细 API。
-- `20260709-backend-usage-token-cost-detail-v2`：在已发布认证文件 usage 统计基础上，升级请求级 token / cache / reasoning / cost 契约，补齐 canonical detail、去重、queue 派生和 client_ip 统一解析。
+- `20260709-backend-usage-token-cost-detail-v2`：请求级 token / cache / reasoning / cost 契约升级；代码已提交到 `dev@e34cd9aa`、合入 `master@5f1c3646`，并随 `v7.2.52-wx-2.13` 发布。
 - `20260706-upstream-absorption-skill`：沉淀当前项目上游吸收、冲突处理、评审验证、提交推送、合并 master 与发版申请/核验流程为项目级 skill。
 - `20260707-upstream-absorption-detection`：调用项目级 `upstream-absorption` skill 执行后端上游吸收检测干跑，固定上游目标、生成更新清单并完成无写入冲突预检。
 - `20260707-upstream-v7-2-51-absorption`：后端独立吸收 `upstream/main@8b9c4da2` / `v7.2.51`；已提交到 `dev@148089b3`、合入 `master@d02d8926`，并随 `v7.2.51-wx-2.11` 发布。

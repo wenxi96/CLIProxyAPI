@@ -135,3 +135,11 @@
 - Verification: 缓存 `golang:1.26` 镜像内 tracked 与 untracked changed Go files `gofmt -l` 无输出；`go test -count=1 ./sdk/pluginapi ./internal/pluginhost ./internal/logging ./internal/usage ./internal/runtime/executor/helps ./internal/redisqueue ./internal/api/handlers/management ./internal/runtime/executor` 通过；`go test -count=1 ./...` 通过；`go build -o test-output ./cmd/server` 通过并删除产物；`git diff --check` 通过，全部 untracked 文件逐个 `git diff --no-index --check` 无输出；standard-doc、independent-review、edit-batch-review 三类治理审计均为 clean；`git status --short --branch` 未出现非预期文件。
 - Result: 后端当前候选的静态评审与动态提交前门禁均已闭环，状态恢复为 `reviewed-ready`；尚未提交、推送或合并。
 - Next: 等待用户明确授权后，分别提交后端代码与仅进入 `dev` 的 `.agents` 治理记录。
+
+### 2026-07-15 17:23 后端提交、合入与发布收口
+
+- Action: 在 `dev` 分离提交代码与治理记录并推送，只将代码提交 cherry-pick 到 `master`；复验 master 候选后推送，按版本脚本创建正式 tag，并核验 Release、GHCR 和远端 refs。
+- Files: `.agents/README.md`; `.agents/tasks/20260709-backend-usage-token-cost-detail-v2/task.md`; `.agents/tasks/20260709-backend-usage-token-cost-detail-v2/progress.md`; `.agents/tasks/20260709-backend-usage-token-cost-detail-v2/handoff.md`; `.agents/tasks/20260709-backend-usage-token-cost-detail-v2/closeout.md`; `.agents/tasks/20260709-backend-usage-token-cost-detail-v2/reviews/2026-07-15-release-closeout-edit-batch-review.md`
+- Verification: `dev@e34cd9aa` 代码提交和 `dev@884af3a3` 治理提交已推送；`master@5f1c3646` 仅含代码且无 `.agents`；master 上 `go test -count=1 ./...` 与 server build 通过；`v7.2.52-wx-2.13` 指向 master；Actions `release#29403076268`、`docker-image#29403076015` completed/success；Release API 返回 11 个 uploaded assets，checksums 覆盖 10 个归档，Linux amd64 range download 返回 HTTP 206；GHCR version/latest/sha tag 指向同一 amd64+arm64 manifest digest `sha256:7545bb4c2968f2789cb5fb7e5a9023e78a52e5a93c0766a0de17694ce39374ef`；release closeout standard-doc/edit-batch 审计 clean，tracked/untracked whitespace 与冲突标记检查通过。
+- Result: 后端任务已发布并进入 `released`；运行实例未在本轮切换，发布范围为 GitHub Release 与 GHCR 制品。
+- Next: 仅将本轮 `.agents` 收口提交推送到 `dev`，不修改 `master`。
