@@ -67,6 +67,7 @@ func CanonicalRequestDetail(ctx context.Context, record coreusage.Record) Reques
 		DetailRole:     normalizeDetailRole(logging.GetUsageDetailRole(ctx)),
 		DetailSequence: strings.TrimSpace(logging.GetUsageDetailSequence(ctx)),
 		Failed:         failed,
+		Generate:       coreusage.GenerateFlag(coreusage.GenerateEnabled(record.Generate)),
 		LatencyMs:      normaliseLatency(record.Latency),
 		Tokens:         normaliseDetail(record.Detail, record.Provider),
 	}
@@ -81,6 +82,11 @@ func CanonicalRequestDetail(ctx context.Context, record coreusage.Record) Reques
 
 func normalizeRequestDetail(detail RequestDetail, provider string) RequestDetail {
 	detail.EstimatedCostUSD = cloneFloat64Ptr(detail.EstimatedCostUSD)
+	if detail.Generate == nil {
+		detail.Generate = coreusage.GenerateFlag(true)
+	} else {
+		detail.Generate = cloneBoolPtr(detail.Generate)
+	}
 	detail.RequestID = strings.TrimSpace(detail.RequestID)
 	detail.ClientIP = strings.TrimSpace(detail.ClientIP)
 	detail.Endpoint = sanitizeOutputIdentifier(detail.Endpoint)
@@ -368,10 +374,18 @@ func detailIdentitySequence(detail RequestDetail) string {
 }
 
 func shouldEnrichDetail(existing, incoming RequestDetail) bool {
+	return shouldEnrichDetailWithGenerate(existing, incoming, incoming.Generate != nil)
+}
+
+func shouldEnrichDetailWithGenerate(existing, incoming RequestDetail, incomingGenerateExplicit bool) bool {
 	existing = normalizeRequestDetail(existing, existing.Provider)
 	incoming = normalizeRequestDetail(incoming, incoming.Provider)
-	if detailFactsHash(existing) == detailFactsHash(incoming) {
+	sameGenerate := coreusage.GenerateEnabled(existing.Generate) == coreusage.GenerateEnabled(incoming.Generate)
+	if detailFactsHash(existing) == detailFactsHash(incoming) && sameGenerate {
 		return incoming.Failed && !existing.Failed || estimatedCostChanged(existing.EstimatedCostUSD, incoming.EstimatedCostUSD)
+	}
+	if !sameGenerate && incomingGenerateExplicit {
+		return true
 	}
 	if !hasTokenFacts(existing.Tokens) && hasTokenFacts(incoming.Tokens) {
 		return true
@@ -387,6 +401,10 @@ func estimatedCostChanged(existing, incoming *float64) bool {
 }
 
 func mergeEnrichedDetail(existing, incoming RequestDetail) RequestDetail {
+	return mergeEnrichedDetailWithGenerate(existing, incoming, incoming.Generate != nil)
+}
+
+func mergeEnrichedDetailWithGenerate(existing, incoming RequestDetail, incomingGenerateExplicit bool) RequestDetail {
 	existing = normalizeRequestDetail(existing, existing.Provider)
 	incoming = normalizeRequestDetail(incoming, incoming.Provider)
 	merged := existing
@@ -433,11 +451,22 @@ func mergeEnrichedDetail(existing, incoming RequestDetail) RequestDetail {
 	if incoming.EstimatedCostUSD != nil {
 		merged.EstimatedCostUSD = cloneFloat64Ptr(incoming.EstimatedCostUSD)
 	}
+	if incomingGenerateExplicit {
+		merged.Generate = cloneBoolPtr(incoming.Generate)
+	}
 	merged.Tokens = incoming.Tokens
 	return normalizeRequestDetail(merged, merged.Provider)
 }
 
 func cloneFloat64Ptr(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func cloneBoolPtr(value *bool) *bool {
 	if value == nil {
 		return nil
 	}
