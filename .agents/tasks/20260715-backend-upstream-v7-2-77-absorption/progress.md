@@ -84,3 +84,10 @@
 - Verification: `git ls-remote --heads origin dev` 返回 `81f11fa42195e410aa019820e886fc94ce06ccae`，与本地 `HEAD` 一致。
 - Result: 后端代码已进入远端 `dev`；`.agents` 治理记录仍作为独立 dev-only 提交处理。
 - Next: 提交并推送治理记录；之后等待用户单独授权合入 `master`。
+
+### 2026-07-16 17:40 后端治理记录提交并推送 dev
+
+- Action: 将本轮清单、冲突、评审、验证与 handoff 证据提交为 `8f40683b` 并推送 `origin/dev`。
+- Verification: 推送后 `origin/dev` 与本地 `dev` 一致，主工作树无未提交改动。
+- Result: 代码与治理证据均已进入 `dev`；治理内容未进入 `master`。
+- Next: 等待用户明确授权代码合入 `master`。

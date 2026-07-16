@@ -21,7 +21,6 @@
 
 ## Remaining Work
 
-- 提交并推送本轮 dev-only 治理记录。
 - 等待用户明确授权后再将代码合入 `master`；未授权前不打 tag、不发版。
 
 ## Resume Pointers

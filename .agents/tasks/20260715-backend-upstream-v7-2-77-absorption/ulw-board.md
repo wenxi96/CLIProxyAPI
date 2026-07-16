@@ -10,11 +10,11 @@
 - 目标: v7.2.80 候选合并、冲突解决、评审和验证闭环。
 - 证据目标: conflict resolution、review、verification 与 post-merge review loop 已完成。
 - 最近安全锚点: `dev@1c36ebc54f939b15cd3765fee233a75a6f5aeb6d`
-- 下一步: 提交并推送 dev-only 治理记录，然后等待 `master` 合入授权。
+- 下一步: 等待 `master` 合入授权。
 - 恢复触发条件: `L02-backend-candidate-merge`
 - 阻塞项: none
 - Loop 文件: loops/L02-candidate-merge.md
-- 备注: 代码已推送 `dev@81f11fa4`；尚未授权 master 合入或发版。
+- 备注: 代码与治理证据已推送 dev；尚未授权 master 合入或发版。
 
 ## Loop 索引
 

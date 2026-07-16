@@ -36,7 +36,7 @@
 
 ## 恢复契约
 
-- 下一步: 提交并推送 dev-only 治理记录，然后等待 `master` 合入授权。
+- 下一步: 等待 `master` 合入授权。
 - 恢复触发条件: `L03-backend-master-merge-authorization`
 - 阻塞项: none
 - 最近安全锚点: `dev@1c36ebc54f939b15cd3765fee233a75a6f5aeb6d`
@@ -51,3 +51,4 @@
 - 2026-07-16：完成候选 merge 和 11 个冲突解决；修复 `Generate` enrichment；最终独立复评 `No findings / ready`。
 - 2026-07-16：Docker Go 1.26 全量测试、server build、gofmt、diff check、冲突标记扫描全部通过，L02 accepted/close。
 - 2026-07-16：候选提交为 `81f11fa4`，已快进并推送 `origin/dev`，远端 SHA 核验一致。
+- 2026-07-16：治理证据提交为 `8f40683b` 并推送 dev；当前仅等待 master checkpoint。

@@ -3,7 +3,7 @@
   "currentLoopId": "L02",
   "state": "active",
   "phase": "close",
-  "nextAction": "commit and push dev-only governance records, then wait for master merge authorization",
+  "nextAction": "wait for master merge authorization",
   "resumeTrigger": "L03-backend-master-merge-authorization",
   "blockedBy": "",
   "lastSafeAnchor": "dev@1c36ebc54f939b15cd3765fee233a75a6f5aeb6d",
@@ -14,5 +14,5 @@
   "lastDocAuditAt": "2026-07-16T17:15:00+08:00",
   "lastDocAuditResult": "passed",
   "lastDocAuditScope": "L02 candidate review and verification ready checkpoint",
-  "updatedAt": "2026-07-16T17:30:00+08:00"
+  "updatedAt": "2026-07-16T17:40:00+08:00"
 }
