@@ -98,3 +98,10 @@
 - Verification: 非 `.agents` 业务树与 `81f11fa4` 完全等价；master `.agents` 为空；Docker Go 1.26 全量测试、server build、gofmt、diff check 和冲突扫描通过；远端 SHA 核验一致。
 - Result: 后端代码已进入远端 master，治理提交仍只存在于 dev。
 - Next: 等待发版授权；未授权前不创建或推送 tag。
+
+### 2026-07-16 21:00 后端发布完成
+
+- Action: 以无 tree 变化的 ancestry merge 恢复 `v7.2.80` 可达基线，最终 master 为 `273fbba0`；计算并推送 `v7.2.80-wx-2.14`。
+- Verification: tag 指向 master；release run `29498942117` success；docker run `29498942179` success；10 个归档与 checksums 存在；GHCR version/latest/sha tags digest 一致并包含 amd64/arm64。
+- Result: 后端发布链路完整通过，任务 accepted。
+- Next: none。

@@ -5,7 +5,8 @@
 - 代码来源：`dev` 中已验证代码提交 `81f11fa42195e410aa019820e886fc94ce06ccae`。
 - 合入方式：在 `origin/master@5f1c3646` 上执行 `git cherry-pick -m 1 81f11fa4`。
 - 原因：代码提交第一父链包含 dev-only `.agents` 历史；使用 mainline cherry-pick 只提取本轮上游吸收业务差异，不把治理提交带入 master。
-- Master candidate：`91b635004a8d8972f5fcfe15b657b530f26f7ead`。
+- Code-only candidate：`91b635004a8d8972f5fcfe15b657b530f26f7ead`。
+- 最终 master：`273fbba0679b8f522bdd55cbf79695ef0a782e19`；使用 `ours` merge 记录 `v7.2.80` 上游祖先关系，前后 tree SHA 完全一致。
 
 ## 等价性与边界
 
@@ -22,11 +23,11 @@
 
 ## 远端核验
 
-- `origin/master`：`91b635004a8d8972f5fcfe15b657b530f26f7ead`。
+- `origin/master`：`273fbba0679b8f522bdd55cbf79695ef0a782e19`。
 - 本地 master 与远端一致。
 - 远端 master 业务树与 `dev` 代码提交等价。
 - 远端 master 当前树不包含 `.agents`。
 
 ## 结论
 
-后端代码已按 code-only 策略合入并推送 master；未创建 tag，未触发本轮发版。
+后端代码已按 code-only 策略合入 master，并通过无 tree 变化的 ancestry merge 恢复正确版本基线；master 不包含 `.agents`。

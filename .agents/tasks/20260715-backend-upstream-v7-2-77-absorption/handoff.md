@@ -2,7 +2,7 @@
 
 ## Current State
 
-后端固定目标 `09da52ad` / `v7.2.80` 已提交推送 dev，并以 code-only 策略合入 `master@91b635004a8d8972f5fcfe15b657b530f26f7ead`。11 个冲突全部解决，usage `Generate` enrichment finding 已修复，最终独立复评 `No findings / ready`，master candidate 全量 Go 测试和 server build 通过。当前等待发版授权。
+后端固定目标 `09da52ad` / `v7.2.80` 已完整吸收、评审、验证并发布。最终 `master@273fbba0` 无 `.agents`，标签 `v7.2.80-wx-2.14` 的 Release、checksums 与 GHCR 多架构镜像均核验通过。任务已进入 accepted terminal checkpoint。
 
 ## Completed Scope
 
@@ -21,7 +21,7 @@
 
 ## Remaining Work
 
-- 等待用户明确授权后再创建 tag 和发版。
+- 无剩余工作；后续新增需求创建新任务。
 
 ## Resume Pointers
 
@@ -29,3 +29,5 @@
 - Current loop: `loops/L02-candidate-merge.md`
 - Governance plan: `evidence/governance-plan.md`
 - Review loop: `evidence/post-merge-review-loop.md`
+- Release verification: `evidence/release-verification-report.md`
+- Closeout: `closeout.md`
