@@ -16,6 +16,7 @@ Persistence Mode: git-visible
 
 ## 当前活跃任务
 
+- `20260715-backend-upstream-v7-2-77-absorption`：后端 `v7.2.80` 已提交并推送 `dev@81f11fa4`，当前等待代码合入 `master` 的单独授权。
 - `20260331-auth-file-batch-check`：认证文件批量检查与汇总展示。
 - `20260403-absorb-arron-usage-persistence`：吸收参考仓库 usage 快照恢复与周期持久化能力。
 - `20260408-auth-zero-quota-auto-disable`：额度查询型认证文件在额度真实耗尽后自动禁用。
