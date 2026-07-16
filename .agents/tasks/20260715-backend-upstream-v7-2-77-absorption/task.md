@@ -13,4 +13,5 @@
 - L02 候选合并、冲突解决、两轮评审和最终全量验证已完成。
 - 独立复评结论：`No findings / ready`。
 - 代码已提交并推送 `dev@81f11fa42195e410aa019820e886fc94ce06ccae`。
-- 当前停在 `master` 合入授权 checkpoint；尚未合入 `master` 或发版。
+- 代码已以 code-only 方式合入并推送 `master@91b635004a8d8972f5fcfe15b657b530f26f7ead`，master 当前树无 `.agents`。
+- 当前停在发版授权 checkpoint；尚未创建 tag 或执行发版。

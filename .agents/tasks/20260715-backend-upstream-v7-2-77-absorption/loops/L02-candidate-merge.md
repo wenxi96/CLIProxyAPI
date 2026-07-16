@@ -36,8 +36,8 @@
 
 ## 恢复契约
 
-- 下一步: 等待 `master` 合入授权。
-- 恢复触发条件: `L03-backend-master-merge-authorization`
+- 下一步: 等待发版授权。
+- 恢复触发条件: `L03-backend-release-authorization`
 - 阻塞项: none
 - 最近安全锚点: `dev@1c36ebc54f939b15cd3765fee233a75a6f5aeb6d`
 - 优先阅读的文件 / 证据:
@@ -52,3 +52,4 @@
 - 2026-07-16：Docker Go 1.26 全量测试、server build、gofmt、diff check、冲突标记扫描全部通过，L02 accepted/close。
 - 2026-07-16：候选提交为 `81f11fa4`，已快进并推送 `origin/dev`，远端 SHA 核验一致。
 - 2026-07-16：治理证据提交为 `8f40683b` 并推送 dev；当前仅等待 master checkpoint。
+- 2026-07-16：从 master 基线 mainline cherry-pick 代码提交，生成并推送 `master@91b63500`；业务树等价、`.agents` 为空、全量验证通过。

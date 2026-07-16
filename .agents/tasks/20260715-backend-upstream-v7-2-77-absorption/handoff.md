@@ -2,7 +2,7 @@
 
 ## Current State
 
-后端固定目标 `09da52ad` / `v7.2.80` 已提交并推送到 `dev@81f11fa42195e410aa019820e886fc94ce06ccae`。11 个冲突全部解决，usage `Generate` enrichment finding 已修复，最终独立复评 `No findings / ready`，全量 Go 测试和 server build 通过。当前等待 `master` 合入授权。
+后端固定目标 `09da52ad` / `v7.2.80` 已提交推送 dev，并以 code-only 策略合入 `master@91b635004a8d8972f5fcfe15b657b530f26f7ead`。11 个冲突全部解决，usage `Generate` enrichment finding 已修复，最终独立复评 `No findings / ready`，master candidate 全量 Go 测试和 server build 通过。当前等待发版授权。
 
 ## Completed Scope
 
@@ -21,7 +21,7 @@
 
 ## Remaining Work
 
-- 等待用户明确授权后再将代码合入 `master`；未授权前不打 tag、不发版。
+- 等待用户明确授权后再创建 tag 和发版。
 
 ## Resume Pointers
 
