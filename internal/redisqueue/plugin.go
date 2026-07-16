@@ -38,8 +38,12 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 	}
 	serviceTier := strings.TrimSpace(record.ServiceTier)
 	if serviceTier == "" {
+		serviceTier = strings.TrimSpace(record.RequestServiceTier)
+	}
+	if serviceTier == "" {
 		serviceTier = coreusage.ServiceTierFromContext(ctx)
 	}
+	responseServiceTier := strings.TrimSpace(record.ResponseServiceTier)
 
 	failed := detail.Failed
 	fail := resolveFail(ctx, record, failed)
@@ -49,14 +53,15 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 	}
 
 	payload, err := json.Marshal(queuedUsageDetail{
-		RequestDetail:   detail,
-		APIKeyHash:      internalusage.APIKeyHash(record.APIKey),
-		Alias:           detail.ModelAlias,
-		TTFTMs:          normaliseDurationMillis(record.TTFT),
-		Fail:            fail,
-		ResponseHeaders: sanitizeResponseHeaders(record.ResponseHeaders),
-		ReasoningEffort: reasoningEffort,
-		ServiceTier:     serviceTier,
+		RequestDetail:       detail,
+		APIKeyHash:          internalusage.APIKeyHash(record.APIKey),
+		Alias:               detail.ModelAlias,
+		TTFTMs:              normaliseDurationMillis(record.TTFT),
+		Fail:                fail,
+		ResponseHeaders:     sanitizeResponseHeaders(record.ResponseHeaders),
+		ReasoningEffort:     reasoningEffort,
+		ServiceTier:         serviceTier,
+		ResponseServiceTier: responseServiceTier,
 	})
 	if err != nil {
 		return
@@ -66,13 +71,14 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 
 type queuedUsageDetail struct {
 	internalusage.RequestDetail
-	APIKeyHash      string      `json:"api_key_hash,omitempty"`
-	Alias           string      `json:"alias,omitempty"`
-	TTFTMs          int64       `json:"ttft_ms"`
-	Fail            failDetail  `json:"fail"`
-	ResponseHeaders http.Header `json:"response_headers,omitempty"`
-	ReasoningEffort string      `json:"reasoning_effort"`
-	ServiceTier     string      `json:"service_tier"`
+	APIKeyHash          string      `json:"api_key_hash,omitempty"`
+	Alias               string      `json:"alias,omitempty"`
+	TTFTMs              int64       `json:"ttft_ms"`
+	Fail                failDetail  `json:"fail"`
+	ResponseHeaders     http.Header `json:"response_headers,omitempty"`
+	ReasoningEffort     string      `json:"reasoning_effort"`
+	ServiceTier         string      `json:"service_tier"`
+	ResponseServiceTier string      `json:"response_service_tier,omitempty"`
 }
 
 type failDetail struct {

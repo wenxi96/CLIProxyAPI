@@ -108,6 +108,7 @@ type RequestDetail struct {
 	DetailRole       string            `json:"detail_role"`
 	DetailSequence   string            `json:"detail_sequence,omitempty"`
 	Failed           bool              `json:"failed"`
+	Generate         *bool             `json:"generate,omitempty"`
 	LatencyMs        int64             `json:"latency_ms"`
 	EstimatedCostUSD *float64          `json:"estimated_cost_usd"`
 	Tokens           RequestTokenStats `json:"tokens"`
@@ -268,6 +269,10 @@ type detailLocation struct {
 }
 
 func (s *RequestStatistics) upsertDetailLocked(apiName, model string, detail RequestDetail) detailUpsertStatus {
+	return s.upsertDetailLockedWithGenerate(apiName, model, detail, detail.Generate != nil)
+}
+
+func (s *RequestStatistics) upsertDetailLockedWithGenerate(apiName, model string, detail RequestDetail, incomingGenerateExplicit bool) detailUpsertStatus {
 	detail = normalizeRequestDetail(detail, detail.Provider)
 	apiName = safeImportedAPIName(apiName, detail)
 	model = defaultIfEmpty(model, detail.Model)
@@ -276,10 +281,10 @@ func (s *RequestStatistics) upsertDetailLocked(apiName, model string, detail Req
 	identity := detailIdentityKey(apiName, model, detail)
 	if existing, ok := s.detailLocations[identity]; ok && existing.modelStats != nil && existing.index >= 0 && existing.index < len(existing.modelStats.Details) {
 		current := existing.modelStats.Details[existing.index]
-		if !shouldEnrichDetail(current, detail) {
+		if !shouldEnrichDetailWithGenerate(current, detail, incomingGenerateExplicit) {
 			return detailUpsertSkipped
 		}
-		merged := mergeEnrichedDetail(current, detail)
+		merged := mergeEnrichedDetailWithGenerate(current, detail, incomingGenerateExplicit)
 		existing.modelStats.Details[existing.index] = merged
 		s.applyTokenDeltaLocked(existing.stats, existing.modelStats, current, merged)
 		s.applyOutcomeDeltaLocked(current, merged)
@@ -668,13 +673,14 @@ func (s *RequestStatistics) MergeSnapshot(snapshot StatisticsSnapshot) MergeResu
 				modelName = "unknown"
 			}
 			for _, detail := range modelSnapshot.Details {
+				incomingGenerateExplicit := detail.Generate != nil
 				detail.Endpoint = safeImportedEndpoint(apiName, detail.Endpoint)
 				if detail.Model == "" {
 					detail.Model = modelName
 				}
 				detail = normalizeRequestDetail(detail, detail.Provider)
 				targetAPIName := safeImportedAPIName(apiName, detail)
-				switch s.upsertDetailLocked(targetAPIName, modelName, detail) {
+				switch s.upsertDetailLockedWithGenerate(targetAPIName, modelName, detail, incomingGenerateExplicit) {
 				case detailUpsertAdded:
 					result.Added++
 				case detailUpsertEnriched:

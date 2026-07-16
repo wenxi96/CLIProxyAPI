@@ -273,6 +273,60 @@ func TestCommitAndPushLockedPushesBeforeRunningGC(t *testing.T) {
 	}
 }
 
+func TestEnsureRepositoryDisablesCommitSigningBeforeCommitAndPush(t *testing.T) {
+	root := t.TempDir()
+	remoteDir := setupGitRemoteRepository(t, root, "master",
+		testBranchSpec{name: "master", contents: "remote master branch\n"},
+	)
+
+	baseDir := filepath.Join(root, "workspace", "auths")
+	store := NewGitTokenStore(remoteDir, "", "", "")
+	store.SetBaseDir(baseDir)
+	if err := store.EnsureRepository(); err != nil {
+		t.Fatalf("EnsureRepository initial clone: %v", err)
+	}
+
+	workspaceDir := filepath.Join(root, "workspace")
+	repo, err := git.PlainOpen(workspaceDir)
+	if err != nil {
+		t.Fatalf("open workspace repo: %v", err)
+	}
+	cfg, err := repo.Config()
+	if err != nil {
+		t.Fatalf("get workspace repo config: %v", err)
+	}
+	cfg.Commit.GpgSign = gitconfig.OptBoolTrue
+	if err := repo.SetConfig(cfg); err != nil {
+		t.Fatalf("enable workspace commit signing: %v", err)
+	}
+
+	reopened := NewGitTokenStore(remoteDir, "", "", "")
+	reopened.SetBaseDir(baseDir)
+	if err := reopened.EnsureRepository(); err != nil {
+		t.Fatalf("EnsureRepository reopen: %v", err)
+	}
+
+	cfg, err = repo.Config()
+	if err != nil {
+		t.Fatalf("get workspace repo config after reopen: %v", err)
+	}
+	if got := cfg.Commit.GpgSign; got != gitconfig.OptBoolFalse {
+		t.Fatalf("commit.gpgsign = %v, want false", got)
+	}
+
+	if err := os.WriteFile(filepath.Join(workspaceDir, "branch.txt"), []byte("unsigned local update\n"), 0o600); err != nil {
+		t.Fatalf("write local branch marker: %v", err)
+	}
+	reopened.mu.Lock()
+	err = reopened.commitAndPushLocked("Update without commit signing", "branch.txt")
+	reopened.mu.Unlock()
+	if err != nil {
+		t.Fatalf("commitAndPushLocked: %v", err)
+	}
+
+	assertRemoteBranchContents(t, remoteDir, "master", "unsigned local update\n")
+}
+
 func TestEnsureRepositoryFollowsRenamedRemoteDefaultBranchWhenAvailable(t *testing.T) {
 	root := t.TempDir()
 	remoteDir := setupGitRemoteRepository(t, root, "master",
@@ -357,6 +411,14 @@ func setupGitRemoteRepository(t *testing.T, root, defaultBranch string, branches
 	seedRepo, err := git.PlainInit(seedDir, false)
 	if err != nil {
 		t.Fatalf("init seed repo: %v", err)
+	}
+	seedConfig, errConfig := seedRepo.Config()
+	if errConfig != nil {
+		t.Fatalf("get seed repo config: %v", errConfig)
+	}
+	seedConfig.Commit.GpgSign = gitconfig.OptBoolFalse
+	if errSetConfig := seedRepo.SetConfig(seedConfig); errSetConfig != nil {
+		t.Fatalf("disable seed repo commit signing: %v", errSetConfig)
 	}
 	if err := seedRepo.Storer.SetReference(plumbing.NewSymbolicReference(plumbing.HEAD, plumbing.NewBranchReferenceName(defaultBranch))); err != nil {
 		t.Fatalf("set seed HEAD: %v", err)

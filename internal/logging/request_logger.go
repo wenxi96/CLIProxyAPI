@@ -39,6 +39,7 @@ const externalLogRedactedValue = "[REDACTED]"
 const (
 	WebsocketTimelineSourceContextKey    = "WEBSOCKET_TIMELINE_SOURCE"
 	APIRequestSourceContextKey           = "API_REQUEST_SOURCE"
+	DeferredAPIRequestContextKey         = "DEFERRED_API_REQUEST"
 	APIResponseSourceContextKey          = "API_RESPONSE_SOURCE"
 	APIResponseCapturedContextKey        = "API_RESPONSE_CAPTURED"
 	APIWebsocketTimelineSourceContextKey = "API_WEBSOCKET_TIMELINE_SOURCE"
@@ -48,6 +49,9 @@ var (
 	externalLogJSONSecretPattern = regexp.MustCompile(`(?i)("(?:(?:api[_-]?key)|(?:auth[_-]?token)|(?:access[_-]?token)|(?:refresh[_-]?token)|(?:id[_-]?token)|password|secret|authorization|cookie)"\s*:\s*")[^"]*(")`)
 	externalLogFormSecretPattern = regexp.MustCompile(`(?i)(\b(?:key|api[_-]?key|auth[_-]?token|access[_-]?token|refresh[_-]?token|id[_-]?token|password|secret)=)[^&\s]+`)
 )
+
+// DeferredAPIRequest builds an upstream request log only when an error log needs it.
+type DeferredAPIRequest func() []byte
 
 type homeRequestLogClient interface {
 	HeartbeatOK() bool

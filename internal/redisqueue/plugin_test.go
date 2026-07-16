@@ -41,18 +41,20 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 
 		plugin := &usageQueuePlugin{}
 		plugin.HandleUsage(ctx, coreusage.Record{
-			Provider:        "openai",
-			ExecutorType:    "KimiExecutor",
-			Model:           "gpt-5.4",
-			Alias:           "client-gpt",
-			APIKey:          "test-key",
-			AuthIndex:       "0",
-			AuthType:        "apikey",
-			Source:          "user@example.com",
-			ReasoningEffort: "medium",
-			ServiceTier:     "priority",
-			RequestedAt:     time.Date(2026, 4, 25, 0, 0, 0, 0, time.UTC),
-			Latency:         1500 * time.Millisecond,
+			Provider:            "openai",
+			ExecutorType:        "KimiExecutor",
+			Model:               "gpt-5.4",
+			Alias:               "client-gpt",
+			APIKey:              "test-key",
+			AuthIndex:           "0",
+			AuthType:            "apikey",
+			Source:              "user@example.com",
+			ReasoningEffort:     "medium",
+			ServiceTier:         "auto",
+			ResponseServiceTier: "default",
+			Generate:            coreusage.GenerateFlag(true),
+			RequestedAt:         time.Date(2026, 4, 25, 0, 0, 0, 0, time.UTC),
+			Latency:             1500 * time.Millisecond,
 			Detail: coreusage.Detail{
 				InputTokens:  10,
 				OutputTokens: 20,
@@ -75,7 +77,9 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 		requireStringField(t, payload, "api_key_hash", internalusage.APIKeyHash("test-key"))
 		requireStringField(t, payload, "request_id", "ctx-request-id")
 		requireStringField(t, payload, "reasoning_effort", "medium")
-		requireStringField(t, payload, "service_tier", "priority")
+		requireStringField(t, payload, "service_tier", "auto")
+		requireMissingField(t, payload, "request_service_tier")
+		requireStringField(t, payload, "response_service_tier", "default")
 		requireHeaderField(t, payload, "response_headers", "X-Upstream-Request-Id", []string{"upstream-req-1"})
 		requireHeaderField(t, payload, "response_headers", "Retry-After", []string{"30"})
 		requireMissingHeaderField(t, payload, "response_headers", "Authorization")
@@ -93,6 +97,7 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 		requireMissingHeaderField(t, payload, "response_headers", "X-RateLimit-Api-Key")
 		requireMissingHeaderField(t, payload, "response_headers", "Tracestate")
 		requireBoolField(t, payload, "failed", false)
+		requireBoolField(t, payload, "generate", true)
 		requireFailField(t, payload, http.StatusOK, "")
 		data, errMarshal := json.Marshal(payload)
 		if errMarshal != nil {
@@ -142,6 +147,85 @@ func TestUsageQueuePluginPreservesExplicitProviderZeroUsage(t *testing.T) {
 		if tokens.TokenUsageSource != internalusage.TokenUsageSourceProvider || tokens.TotalTokens != 0 {
 			t.Fatalf("tokens = %+v, want explicit provider-reported zero usage", tokens)
 		}
+	})
+}
+
+func TestUsageQueuePluginPayloadIncludesGenerateFalse(t *testing.T) {
+	withEnabledQueue(t, func() {
+		ctx := internallogging.WithResponseStatusHolder(context.Background())
+		internallogging.SetResponseStatus(ctx, http.StatusOK)
+
+		(&usageQueuePlugin{}).HandleUsage(ctx, coreusage.Record{
+			Provider: "openai",
+			Model:    "gpt-5.4",
+			Generate: coreusage.GenerateFlag(false),
+			Detail: coreusage.Detail{
+				InputTokens: 1,
+				TotalTokens: 1,
+			},
+		})
+
+		payload := popSinglePayload(t)
+		requireBoolField(t, payload, "generate", false)
+	})
+}
+
+func TestUsageQueuePluginPayloadDefaultsGenerateTrueWhenOmitted(t *testing.T) {
+	withEnabledQueue(t, func() {
+		ctx := internallogging.WithResponseStatusHolder(context.Background())
+		internallogging.SetResponseStatus(ctx, http.StatusOK)
+
+		// Legacy callers construct usage.Record without Generate; omission must publish as true.
+		(&usageQueuePlugin{}).HandleUsage(ctx, coreusage.Record{
+			Provider: "openai",
+			Model:    "gpt-5.4",
+			Detail: coreusage.Detail{
+				InputTokens: 1,
+				TotalTokens: 1,
+			},
+		})
+
+		payload := popSinglePayload(t)
+		requireBoolField(t, payload, "generate", true)
+	})
+}
+
+func TestUsageQueuePluginEmitsSingleCanonicalAutoTier(t *testing.T) {
+	withEnabledQueue(t, func() {
+		ctx := coreusage.WithServiceTier(context.Background(), coreusage.AutoServiceTier)
+		ctx = internallogging.WithResponseStatusHolder(ctx)
+		internallogging.SetResponseStatus(ctx, http.StatusOK)
+
+		(&usageQueuePlugin{}).HandleUsage(ctx, coreusage.Record{
+			Provider: "openai",
+			Model:    "gpt-5.4",
+			Detail: coreusage.Detail{
+				InputTokens: 1,
+				TotalTokens: 1,
+			},
+		})
+
+		payload := popSinglePayload(t)
+		requireStringField(t, payload, "service_tier", "auto")
+		requireMissingField(t, payload, "request_service_tier")
+	})
+}
+
+func TestUsageQueuePluginAcceptsDeprecatedRequestTierRecordField(t *testing.T) {
+	withEnabledQueue(t, func() {
+		ctx := internallogging.WithResponseStatusHolder(context.Background())
+		internallogging.SetResponseStatus(ctx, http.StatusOK)
+
+		(&usageQueuePlugin{}).HandleUsage(ctx, coreusage.Record{
+			Provider:           "openai",
+			Model:              "gpt-5.4",
+			RequestServiceTier: "priority",
+			Detail:             coreusage.Detail{InputTokens: 1, TotalTokens: 1},
+		})
+
+		payload := popSinglePayload(t)
+		requireStringField(t, payload, "service_tier", "priority")
+		requireMissingField(t, payload, "request_service_tier")
 	})
 }
 
