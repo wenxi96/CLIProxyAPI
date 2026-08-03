@@ -6,12 +6,9 @@ package cliproxy
 import (
 	"context"
 	"fmt"
-	"strings"
-	"time"
 
 	configaccess "github.com/router-for-me/CLIProxyAPI/v7/internal/access/config_access"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/authquota"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
@@ -50,6 +47,9 @@ type Builder struct {
 
 	// coreManager handles core authentication and execution.
 	coreManager *coreauth.Manager
+
+	// cooldownStateStore overrides runtime cooldown persistence.
+	cooldownStateStore coreauth.CooldownStateStore
 
 	// pluginHost owns dynamic plugin lifecycle and adapters.
 	pluginHost *pluginhost.Host
@@ -149,6 +149,12 @@ func (b *Builder) WithCoreAuthManager(mgr *coreauth.Manager) *Builder {
 	return b
 }
 
+// WithCooldownStateStore overrides the store used for runtime cooldown persistence.
+func (b *Builder) WithCooldownStateStore(store coreauth.CooldownStateStore) *Builder {
+	b.cooldownStateStore = store
+	return b
+}
+
 // WithPluginHost overrides the dynamic plugin host used by the service.
 func (b *Builder) WithPluginHost(host *pluginhost.Host) *Builder {
 	b.pluginHost = host
@@ -187,6 +193,9 @@ func (b *Builder) Build() (*Service, error) {
 	}
 	if b.configPath == "" {
 		return nil, fmt.Errorf("cliproxy: configuration path is required")
+	}
+	if errValidate := b.cfg.ValidateCredentialWeights(); errValidate != nil {
+		return nil, fmt.Errorf("cliproxy: validate credential weights: %w", errValidate)
 	}
 	b.cfg.NormalizePluginsConfig()
 	if errResolvePluginsDir := b.cfg.ResolvePluginsDir(); errResolvePluginsDir != nil && b.cfg.Plugins.Enabled {
@@ -230,73 +239,47 @@ func (b *Builder) Build() (*Service, error) {
 	accessManager.SetProviders(sdkaccess.RegisteredProviders())
 
 	coreManager := b.coreManager
-	var tokenStore coreauth.Store
-	var selector coreauth.Selector
+	cooldownStateStore := b.cooldownStateStore
+	var appliedRoutingState *routingRuntimeState
 	if coreManager == nil {
-		tokenStore = sdkAuth.GetTokenStore()
+		tokenStore := sdkAuth.GetTokenStore()
 		if dirSetter, ok := tokenStore.(interface{ SetBaseDir(string) }); ok && b.cfg != nil {
 			dirSetter.SetBaseDir(b.cfg.AuthDir)
 		}
-
-		strategy := ""
-		sessionAffinity := false
-		sessionAffinityTTL := time.Hour
-		if b.cfg != nil {
-			strategy = strings.ToLower(strings.TrimSpace(b.cfg.Routing.Strategy))
-			// Support both legacy ClaudeCodeSessionAffinity and new universal SessionAffinity
-			sessionAffinity = b.cfg.Routing.SessionAffinity
-			if ttlStr := strings.TrimSpace(b.cfg.Routing.SessionAffinityTTL); ttlStr != "" {
-				if parsed, err := time.ParseDuration(ttlStr); err == nil && parsed > 0 {
-					sessionAffinityTTL = parsed
-				}
+		if cooldownStateStore == nil {
+			if provider, ok := tokenStore.(coreauth.CooldownStateStoreProvider); ok {
+				cooldownStateStore = provider.CooldownStateStore()
 			}
 		}
-		switch strategy {
-		case "fill-first", "fillfirst", "ff":
-			selector = &coreauth.FillFirstSelector{}
-		default:
-			selector = &coreauth.RoundRobinSelector{}
-		}
 
-		// Wrap with session affinity if enabled (failover is always on)
-		if sessionAffinity {
-			selector = coreauth.NewSessionAffinitySelectorWithConfig(coreauth.SessionAffinityConfig{
-				Fallback: selector,
-				TTL:      sessionAffinityTTL,
-			})
-		}
-
+		routingState := normalizedRoutingRuntimeState(b.cfg)
+		coreManager = coreauth.NewManager(tokenStore, newRoutingSelector(routingState), nil)
+		appliedRoutingState = &routingState
+	}
+	// Attach a default RoundTripper provider so providers can opt-in per-auth transports.
+	coreManager.SetRoundTripperProvider(newDefaultRoundTripperProvider())
+	coreManager.SetConfig(b.cfg)
+	coreManager.SetOAuthModelAlias(b.cfg.OAuthModelAlias)
+	if pluginHost != nil {
+		coreManager.SetPluginScheduler(pluginHost)
 	}
 
 	service := &Service{
-		cfg:            b.cfg,
-		configPath:     b.configPath,
-		tokenProvider:  tokenProvider,
-		apiKeyProvider: apiKeyProvider,
-		watcherFactory: watcherFactory,
-		hooks:          b.hooks,
-		authManager:    authManager,
-		accessManager:  accessManager,
-		coreManager:    coreManager,
-		pluginHost:     pluginHost,
-		serverOptions:  append([]api.ServerOption(nil), b.serverOptions...),
+		cfg:                 b.cfg,
+		configPath:          b.configPath,
+		tokenProvider:       tokenProvider,
+		apiKeyProvider:      apiKeyProvider,
+		watcherFactory:      watcherFactory,
+		hooks:               b.hooks,
+		authManager:         authManager,
+		accessManager:       accessManager,
+		coreManager:         coreManager,
+		cooldownStateStore:  cooldownStateStore,
+		pluginHost:          pluginHost,
+		appliedRoutingState: appliedRoutingState,
+		serverOptions:       append([]api.ServerOption(nil), b.serverOptions...),
 	}
-	if b.coreManager == nil {
-		service.coreManager = coreauth.NewManager(tokenStore, selector, authMaintenanceHook{
-			next:    coreauth.NoopHook{},
-			service: service,
-		})
-	}
-	// Attach a default RoundTripper provider so providers can opt-in per-auth transports.
-	service.coreManager.SetRoundTripperProvider(newDefaultRoundTripperProvider())
-	service.coreManager.SetConfig(b.cfg)
-	service.coreManager.SetQuotaChecker(authquota.NewService(authquota.Options{
-		ConfigProvider: service.coreManager.CurrentConfig,
-	}))
-	service.coreManager.SetOAuthModelAlias(b.cfg.OAuthModelAlias)
-	if pluginHost != nil {
-		service.coreManager.SetPluginScheduler(pluginHost)
-	}
+	coreManager.SetHook(authMaintenanceHook{service: service})
 	if b.postAuthHook != nil {
 		service.serverOptions = append(service.serverOptions, api.WithPostAuthHook(b.postAuthHook))
 	}

@@ -234,6 +234,9 @@ func (r *UsageReporter) publishWithOutcome(ctx context.Context, detail usage.Det
 	if r == nil {
 		return
 	}
+	if observed || hasNonZeroTokenUsage(detail) {
+		detail = normalizeUsageBreakdown(detail, r.provider, r.executorType)
+	}
 	detail, failed, fail, ok := r.claimPublish(detail, observed, failed, fail)
 	if !ok {
 		return
@@ -250,7 +253,21 @@ func hasNonZeroTokenUsage(detail usage.Detail) bool {
 		detail.CachedTokens != 0 ||
 		detail.CacheReadTokens != 0 ||
 		detail.CacheCreationTokens != 0 ||
-		detail.TotalTokens != 0
+		detail.TotalTokens != 0 ||
+		detail.TokenBreakdown.TotalTokens != 0 ||
+		detail.TokenBreakdown.UnclassifiedTokens != 0
+}
+
+func normalizeUsageBreakdown(detail usage.Detail, provider, executorType string) usage.Detail {
+	if !hasNonZeroTokenUsage(detail) && !detail.TokenBreakdown.Valid() {
+		return detail
+	}
+	originalTotal := detail.TotalTokens
+	normalized := usage.EnsureTokenBreakdownForProvider(detail, provider, executorType)
+	// Keep the provider-reported top-level total untouched. Downstream sinks
+	// normalize legacy totals from the canonical breakdown when required.
+	normalized.TotalTokens = originalTotal
+	return normalized
 }
 
 func hasUsageDetailMetadata(detail usage.Detail) bool {
@@ -317,6 +334,9 @@ func (r *UsageReporter) buildRecord(detail usage.Detail, failed bool, failures .
 func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, failed bool, fail usage.Failure) usage.Record {
 	if r == nil {
 		return usage.Record{Model: model, Detail: detail, Failed: failed, Fail: fail, Generate: usage.GenerateFlag(true)}
+	}
+	if hasNonZeroTokenUsage(detail) {
+		detail = normalizeUsageBreakdown(detail, r.provider, r.executorType)
 	}
 	return usage.Record{
 		Provider:            r.provider,

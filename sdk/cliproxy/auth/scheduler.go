@@ -16,10 +16,11 @@ import (
 type schedulerStrategy int
 
 const (
-	schedulerStrategyCurrent    schedulerStrategy = -1
-	schedulerStrategyCustom     schedulerStrategy = 0
-	schedulerStrategyRoundRobin schedulerStrategy = 1
-	schedulerStrategyFillFirst  schedulerStrategy = 2
+	schedulerStrategyCurrent            schedulerStrategy = -1
+	schedulerStrategyCustom             schedulerStrategy = 0
+	schedulerStrategyRoundRobin         schedulerStrategy = 1
+	schedulerStrategyFillFirst          schedulerStrategy = 2
+	schedulerStrategyWeightedRoundRobin schedulerStrategy = 3
 )
 
 // scheduledState describes how an auth currently participates in a model shard.
@@ -34,12 +35,13 @@ const (
 
 // authScheduler keeps the incremental provider/model scheduling state used by Manager.
 type authScheduler struct {
-	mu            sync.Mutex
-	strategy      schedulerStrategy
-	providers     map[string]*providerScheduler
-	authProviders map[string]string
-	mixedCursors  map[string]int
-	scopedPool    *ScopedPoolManager
+	mu                  sync.Mutex
+	strategy            schedulerStrategy
+	providers           map[string]*providerScheduler
+	authProviders       map[string]string
+	mixedCursors        map[string]int
+	mixedWeightedStates map[string]*smoothWeightedState
+	scopedPool          *ScopedPoolManager
 }
 
 // providerScheduler stores auth metadata and model shards for a single provider.
@@ -54,6 +56,7 @@ type scheduledAuthMeta struct {
 	auth              *Auth
 	providerKey       string
 	priority          int
+	weight            int64
 	websocketEnabled  bool
 	supportedModelSet map[string]struct{}
 }
@@ -65,6 +68,20 @@ type modelScheduler struct {
 	priorityOrder   []int
 	readyByPriority map[int]*readyBucket
 	blocked         cooldownQueue
+}
+
+func (m *modelScheduler) authsLocked() []*Auth {
+	if m == nil || len(m.entries) == 0 {
+		return nil
+	}
+	out := make([]*Auth, 0, len(m.entries))
+	for _, entry := range m.entries {
+		if entry == nil || entry.auth == nil {
+			continue
+		}
+		out = append(out, entry.auth)
+	}
+	return out
 }
 
 // scheduledAuth stores the runtime scheduling state for a single auth inside a model shard.
@@ -83,15 +100,17 @@ type readyBucket struct {
 
 // readyView holds the selection order for flat round-robin traversal.
 type readyView struct {
-	flat   []*scheduledAuth
-	cursor int
+	flat          []*scheduledAuth
+	cursor        int
+	weightedState smoothWeightedState
 }
 
 // cooldownQueue is the blocked auth collection ordered by next retry time during rebuilds.
 type cooldownQueue []*scheduledAuth
 
 type readyViewCursorState struct {
-	cursor int
+	cursor        int
+	weightedState smoothWeightedState
 }
 
 type readyBucketCursorState struct {
@@ -100,7 +119,20 @@ type readyBucketCursorState struct {
 }
 
 func snapshotReadyViewCursors(view readyView) readyViewCursorState {
-	return readyViewCursorState{cursor: view.cursor}
+	state := readyViewCursorState{cursor: view.cursor}
+	if len(view.weightedState.current) > 0 {
+		state.weightedState.current = make(map[string]int64, len(view.weightedState.current))
+		for authID, current := range view.weightedState.current {
+			state.weightedState.current[authID] = current
+		}
+	}
+	if len(view.weightedState.weights) > 0 {
+		state.weightedState.weights = make(map[string]int64, len(view.weightedState.weights))
+		for authID, weight := range view.weightedState.weights {
+			state.weightedState.weights[authID] = weight
+		}
+	}
+	return state
 }
 
 func restoreReadyViewCursors(view *readyView, state readyViewCursorState) {
@@ -110,6 +142,12 @@ func restoreReadyViewCursors(view *readyView, state readyViewCursorState) {
 	if len(view.flat) > 0 {
 		view.cursor = normalizeCursor(state.cursor, len(view.flat))
 	}
+	weights := scheduledWeightVector(view.flat)
+	if len(state.weightedState.current) == 0 || !weightVectorsEqual(state.weightedState.weights, weights) {
+		return
+	}
+	view.weightedState.current = state.weightedState.current
+	view.weightedState.weights = weights
 }
 
 func normalizeCursor(cursor, size int) int {
@@ -126,11 +164,12 @@ func normalizeCursor(cursor, size int) int {
 // newAuthScheduler constructs an empty scheduler configured for the supplied selector strategy.
 func newAuthScheduler(selector Selector) *authScheduler {
 	return &authScheduler{
-		strategy:      selectorStrategy(selector),
-		providers:     make(map[string]*providerScheduler),
-		authProviders: make(map[string]string),
-		mixedCursors:  make(map[string]int),
-		scopedPool:    newScopedPoolManager(),
+		strategy:            selectorStrategy(selector),
+		providers:           make(map[string]*providerScheduler),
+		authProviders:       make(map[string]string),
+		mixedCursors:        make(map[string]int),
+		mixedWeightedStates: make(map[string]*smoothWeightedState),
+		scopedPool:          newScopedPoolManager(),
 	}
 }
 
@@ -139,6 +178,8 @@ func selectorStrategy(selector Selector) schedulerStrategy {
 	switch selector.(type) {
 	case *FillFirstSelector:
 		return schedulerStrategyFillFirst
+	case *WeightedRoundRobinSelector:
+		return schedulerStrategyWeightedRoundRobin
 	case nil, *RoundRobinSelector:
 		return schedulerStrategyRoundRobin
 	default:
@@ -155,6 +196,7 @@ func (s *authScheduler) setSelector(selector Selector) {
 	defer s.mu.Unlock()
 	s.strategy = selectorStrategy(selector)
 	clear(s.mixedCursors)
+	clear(s.mixedWeightedStates)
 }
 
 func (s *authScheduler) setScopedPoolConfig(strategy string, cfg internalconfig.RoutingScopedPoolConfig) {
@@ -173,12 +215,7 @@ func (s *authScheduler) setQuotaSupportEvaluator(evaluator quotaSupportEvaluator
 
 func (s *authScheduler) scopedPoolSnapshot() PoolSnapshot {
 	if s == nil || s.scopedPool == nil {
-		return PoolSnapshot{
-			GeneratedAt: time.Now(),
-			Strategy:    "round-robin",
-			Providers:   map[string]PoolProviderSnapshot{},
-			Auths:       map[string]PoolAuthSnapshot{},
-		}
+		return PoolSnapshot{GeneratedAt: time.Now(), Strategy: "round-robin", Providers: map[string]PoolProviderSnapshot{}, Auths: map[string]PoolAuthSnapshot{}}
 	}
 	return s.scopedPool.Snapshot()
 }
@@ -214,6 +251,7 @@ func (s *authScheduler) rebuild(auths []*Auth) {
 	s.providers = make(map[string]*providerScheduler)
 	s.authProviders = make(map[string]string)
 	s.mixedCursors = make(map[string]int)
+	s.mixedWeightedStates = make(map[string]*smoothWeightedState)
 	if s.scopedPool != nil {
 		s.scopedPool.Rebuild(auths)
 	}
@@ -259,6 +297,7 @@ func (s *authScheduler) pickSingleWithStrategy(ctx context.Context, provider, mo
 	providerKey := strings.ToLower(strings.TrimSpace(provider))
 	modelKey := canonicalModelKey(model)
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
+	eligibility := authSelectionEligibilityForRequest(ctx, opts)
 	preferWebsocket := cliproxyexecutor.DownstreamWebsocket(ctx) && providerPrefersWebsocketTransport(providerKey) && pinnedAuthID == ""
 
 	s.mu.Lock()
@@ -274,20 +313,7 @@ func (s *authScheduler) pickSingleWithStrategy(ctx context.Context, provider, mo
 	if shard == nil {
 		return nil, &Error{Code: "auth_not_found", Message: "no auth available"}
 	}
-	predicate := func(entry *scheduledAuth) bool {
-		if entry == nil || entry.auth == nil {
-			return false
-		}
-		if pinnedAuthID != "" && entry.auth.ID != pinnedAuthID {
-			return false
-		}
-		if len(tried) > 0 {
-			if _, ok := tried[entry.auth.ID]; ok {
-				return false
-			}
-		}
-		return true
-	}
+	predicate := scheduledAuthPredicate(eligibility, tried, pinnedAuthID, strategy == schedulerStrategyWeightedRoundRobin)
 	predicate = combineScheduledPredicates(predicate, s.scopedPoolPredicateLocked(providerKey, shard))
 	if picked := shard.pickReadyLocked(preferWebsocket, strategy, predicate); picked != nil {
 		return picked, nil
@@ -331,6 +357,7 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 		return picked, providerKey, nil
 	}
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
+	eligibility := authSelectionEligibilityForRequest(ctx, opts)
 	modelKey := canonicalModelKey(model)
 
 	s.mu.Lock()
@@ -348,16 +375,7 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 			return nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
 		}
 		shard := providerState.ensureModelLocked(modelKey, time.Now())
-		predicate := func(entry *scheduledAuth) bool {
-			if entry == nil || entry.auth == nil || entry.auth.ID != pinnedAuthID {
-				return false
-			}
-			if len(tried) == 0 {
-				return true
-			}
-			_, ok := tried[pinnedAuthID]
-			return !ok
-		}
+		predicate := scheduledAuthPredicate(eligibility, tried, pinnedAuthID, strategy == schedulerStrategyWeightedRoundRobin)
 		predicate = combineScheduledPredicates(predicate, s.scopedPoolPredicateLocked(providerKey, shard))
 		if picked := shard.pickReadyLocked(false, strategy, predicate); picked != nil {
 			return picked, providerKey, nil
@@ -365,9 +383,9 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 		return nil, "", shard.unavailableErrorLocked("mixed", model, predicate)
 	}
 
-	basePredicate := triedPredicate(tried)
+	predicate := scheduledAuthPredicate(eligibility, tried, "", strategy == schedulerStrategyWeightedRoundRobin)
+	predicate = combineScheduledPredicates(predicate, s.scopedPoolMixedPredicateLocked(normalized))
 	candidateShards := make([]*modelScheduler, len(normalized))
-	candidatePredicates := make([]func(*scheduledAuth) bool, len(normalized))
 	bestPriority := 0
 	hasCandidate := false
 	now := time.Now()
@@ -381,8 +399,6 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 		if shard == nil {
 			continue
 		}
-		predicate := combineScheduledPredicates(basePredicate, s.scopedPoolPredicateLocked(providerKey, shard))
-		candidatePredicates[providerIndex] = predicate
 		priorityReady, okPriority := shard.highestReadyPriorityLocked(false, predicate)
 		if !okPriority {
 			continue
@@ -393,7 +409,7 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 		}
 	}
 	if !hasCandidate {
-		return nil, "", s.mixedUnavailableErrorLocked(normalized, model, tried)
+		return nil, "", s.mixedUnavailableErrorLocked(normalized, model, predicate)
 	}
 
 	if strategy == schedulerStrategyFillFirst {
@@ -402,15 +418,51 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 			if shard == nil {
 				continue
 			}
-			picked := shard.pickReadyAtPriorityLocked(false, bestPriority, s.strategy, candidatePredicates[providerIndex])
+			picked := shard.pickReadyAtPriorityLocked(false, bestPriority, strategy, predicate)
 			if picked != nil {
 				return picked, providerKey, nil
 			}
 		}
-		return nil, "", s.mixedUnavailableErrorLocked(normalized, model, tried)
+		return nil, "", s.mixedUnavailableErrorLocked(normalized, model, predicate)
 	}
 
 	cursorKey := strings.Join(normalized, ",") + ":" + modelKey
+	if strategy == schedulerStrategyWeightedRoundRobin {
+		entries := make([]*scheduledAuth, 0)
+		for _, shard := range candidateShards {
+			if shard == nil {
+				continue
+			}
+			bucket := shard.readyByPriority[bestPriority]
+			if bucket != nil {
+				entries = append(entries, bucket.all.flat...)
+			}
+		}
+		sort.Slice(entries, func(i, j int) bool {
+			if entries[i] == nil || entries[i].auth == nil {
+				return false
+			}
+			if entries[j] == nil || entries[j].auth == nil {
+				return true
+			}
+			return entries[i].auth.ID < entries[j].auth.ID
+		})
+		if s.mixedWeightedStates == nil {
+			s.mixedWeightedStates = make(map[string]*smoothWeightedState)
+		}
+		state := s.mixedWeightedStates[cursorKey]
+		if state == nil {
+			state = &smoothWeightedState{}
+			s.mixedWeightedStates[cursorKey] = state
+		}
+		state.prepare(scheduledWeightVectorMatching(entries, predicate))
+		picked := pickSmoothWeightedScheduled(entries, state.current, predicate)
+		if picked != nil && picked.meta != nil {
+			return picked.auth, picked.meta.providerKey, nil
+		}
+		return nil, "", s.mixedUnavailableErrorLocked(normalized, model, predicate)
+	}
+
 	weights := make([]int, len(normalized))
 	segmentStarts := make([]int, len(normalized))
 	segmentEnds := make([]int, len(normalized))
@@ -418,13 +470,13 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 	for providerIndex, shard := range candidateShards {
 		segmentStarts[providerIndex] = totalWeight
 		if shard != nil {
-			weights[providerIndex] = shard.readyCountAtPriorityLocked(false, bestPriority, candidatePredicates[providerIndex])
+			weights[providerIndex] = shard.readyCountAtPriorityLocked(false, bestPriority, predicate)
 		}
 		totalWeight += weights[providerIndex]
 		segmentEnds[providerIndex] = totalWeight
 	}
 	if totalWeight == 0 {
-		return nil, "", s.mixedUnavailableErrorLocked(normalized, model, tried)
+		return nil, "", s.mixedUnavailableErrorLocked(normalized, model, predicate)
 	}
 
 	startSlot := s.mixedCursors[cursorKey] % totalWeight
@@ -439,7 +491,7 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 		}
 	}
 	if startProviderIndex < 0 {
-		return nil, "", s.mixedUnavailableErrorLocked(normalized, model, tried)
+		return nil, "", s.mixedUnavailableErrorLocked(normalized, model, predicate)
 	}
 
 	slot := startSlot
@@ -456,18 +508,18 @@ func (s *authScheduler) pickMixedWithStrategy(ctx context.Context, providers []s
 		if shard == nil {
 			continue
 		}
-		picked := shard.pickReadyAtPriorityLocked(false, bestPriority, schedulerStrategyRoundRobin, candidatePredicates[providerIndex])
+		picked := shard.pickReadyAtPriorityLocked(false, bestPriority, schedulerStrategyRoundRobin, predicate)
 		if picked == nil {
 			continue
 		}
 		s.mixedCursors[cursorKey] = slot + 1
 		return picked, providerKey, nil
 	}
-	return nil, "", s.mixedUnavailableErrorLocked(normalized, model, tried)
+	return nil, "", s.mixedUnavailableErrorLocked(normalized, model, predicate)
 }
 
 // mixedUnavailableErrorLocked synthesizes the mixed-provider cooldown or unavailable error.
-func (s *authScheduler) mixedUnavailableErrorLocked(providers []string, model string, tried map[string]struct{}) error {
+func (s *authScheduler) mixedUnavailableErrorLocked(providers []string, model string, predicate func(*scheduledAuth) bool) error {
 	now := time.Now()
 	total := 0
 	cooldownCount := 0
@@ -481,7 +533,6 @@ func (s *authScheduler) mixedUnavailableErrorLocked(providers []string, model st
 		if shard == nil {
 			continue
 		}
-		predicate := combineScheduledPredicates(triedPredicate(tried), s.scopedPoolPredicateLocked(providerKey, shard))
 		localTotal, localCooldownCount, localEarliest := shard.availabilitySummaryLocked(predicate)
 		total += localTotal
 		cooldownCount += localCooldownCount
@@ -502,17 +553,24 @@ func (s *authScheduler) mixedUnavailableErrorLocked(providers []string, model st
 	return &Error{Code: "auth_unavailable", Message: "no auth available"}
 }
 
-// triedPredicate builds a filter that excludes auths already attempted for the current request.
-func triedPredicate(tried map[string]struct{}) func(*scheduledAuth) bool {
-	if len(tried) == 0 {
-		return func(entry *scheduledAuth) bool { return entry != nil && entry.auth != nil }
-	}
+// scheduledAuthPredicate filters request-ineligible auths before scheduler state advances.
+func scheduledAuthPredicate(eligibility authSelectionEligibility, tried map[string]struct{}, pinnedAuthID string, requirePositiveWeight bool) func(*scheduledAuth) bool {
 	return func(entry *scheduledAuth) bool {
-		if entry == nil || entry.auth == nil {
+		if entry == nil || entry.auth == nil || !eligibility.allows(entry.auth) {
 			return false
 		}
-		_, ok := tried[entry.auth.ID]
-		return !ok
+		if requirePositiveWeight && (entry.meta == nil || entry.meta.weight <= 0) {
+			return false
+		}
+		if pinnedAuthID != "" && entry.auth.ID != pinnedAuthID {
+			return false
+		}
+		if len(tried) > 0 {
+			if _, ok := tried[entry.auth.ID]; ok {
+				return false
+			}
+		}
+		return true
 	}
 }
 
@@ -533,6 +591,49 @@ func combineScheduledPredicates(predicates ...func(*scheduledAuth) bool) func(*s
 			}
 		}
 		return true
+	}
+}
+
+func (s *authScheduler) scopedPoolPredicateLocked(providerKey string, shard *modelScheduler) func(*scheduledAuth) bool {
+	if s == nil || s.scopedPool == nil || shard == nil {
+		return nil
+	}
+	filtered := s.scopedPool.FilterCandidates(providerKey, shard.authsLocked())
+	if len(filtered) == 0 {
+		return func(*scheduledAuth) bool { return false }
+	}
+	allowed := make(map[string]struct{}, len(filtered))
+	for _, auth := range filtered {
+		if auth != nil {
+			allowed[auth.ID] = struct{}{}
+		}
+	}
+	return func(entry *scheduledAuth) bool {
+		if entry == nil || entry.auth == nil {
+			return false
+		}
+		_, ok := allowed[entry.auth.ID]
+		return ok
+	}
+}
+
+func (s *authScheduler) scopedPoolMixedPredicateLocked(providers []string) func(*scheduledAuth) bool {
+	if s == nil || s.scopedPool == nil || len(providers) == 0 {
+		return nil
+	}
+	allowedProviders := make(map[string]struct{}, len(providers))
+	for _, provider := range providers {
+		allowedProviders[strings.ToLower(strings.TrimSpace(provider))] = struct{}{}
+	}
+	return func(entry *scheduledAuth) bool {
+		if entry == nil || entry.auth == nil {
+			return false
+		}
+		providerKey := strings.ToLower(strings.TrimSpace(entry.meta.providerKey))
+		if _, ok := allowedProviders[providerKey]; !ok {
+			return false
+		}
+		return len(s.scopedPool.FilterCandidates(providerKey, []*Auth{entry.auth})) > 0
 	}
 }
 
@@ -564,34 +665,6 @@ func containsProvider(providers []string, provider string) bool {
 	return false
 }
 
-func (s *authScheduler) scopedPoolPredicateLocked(providerKey string, shard *modelScheduler) func(*scheduledAuth) bool {
-	if s == nil || s.scopedPool == nil || shard == nil {
-		return nil
-	}
-	candidates := shard.authsLocked()
-	if len(candidates) == 0 {
-		return nil
-	}
-	filtered := s.scopedPool.FilterCandidates(providerKey, candidates)
-	if len(filtered) == 0 {
-		return func(*scheduledAuth) bool { return false }
-	}
-	allowed := make(map[string]struct{}, len(filtered))
-	for _, auth := range filtered {
-		if auth == nil {
-			continue
-		}
-		allowed[auth.ID] = struct{}{}
-	}
-	return func(entry *scheduledAuth) bool {
-		if entry == nil || entry.auth == nil {
-			return false
-		}
-		_, ok := allowed[entry.auth.ID]
-		return ok
-	}
-}
-
 // upsertAuthLocked updates one auth in-place while the scheduler mutex is held.
 func (s *authScheduler) upsertAuthLocked(auth *Auth, now time.Time) {
 	if auth == nil {
@@ -607,12 +680,9 @@ func (s *authScheduler) upsertAuthLocked(auth *Auth, now time.Time) {
 		return
 	}
 	if auth.Disabled {
-		if previousProvider := s.authProviders[authID]; previousProvider != "" {
-			if previousState := s.providers[previousProvider]; previousState != nil {
-				previousState.removeAuthLocked(authID)
-			}
-			delete(s.authProviders, authID)
-		}
+		// Keep disabled credentials visible to the scoped-pool management snapshot
+		// while removing them from request scheduling.
+		s.removeScheduledAuthLocked(authID)
 		return
 	}
 	if previousProvider := s.authProviders[authID]; previousProvider != "" && previousProvider != providerKey {
@@ -630,8 +700,15 @@ func (s *authScheduler) removeAuthLocked(authID string) {
 	if authID == "" {
 		return
 	}
+	s.removeScheduledAuthLocked(authID)
 	if s.scopedPool != nil {
 		s.scopedPool.RemoveAuth(authID)
+	}
+}
+
+func (s *authScheduler) removeScheduledAuthLocked(authID string) {
+	if authID == "" {
+		return
 	}
 	if providerKey := s.authProviders[authID]; providerKey != "" {
 		if providerState := s.providers[providerKey]; providerState != nil {
@@ -665,6 +742,7 @@ func buildScheduledAuthMeta(auth *Auth) *scheduledAuthMeta {
 		auth:              auth,
 		providerKey:       providerKey,
 		priority:          authPriority(auth),
+		weight:            authWeight(auth),
 		websocketEnabled:  authWebsocketsEnabled(auth),
 		supportedModelSet: supportedModelSetForAuth(auth.ID),
 	}
@@ -817,20 +895,6 @@ func (m *modelScheduler) removeEntryLocked(authID string) {
 	m.rebuildIndexesLocked()
 }
 
-func (m *modelScheduler) authsLocked() []*Auth {
-	if m == nil || len(m.entries) == 0 {
-		return nil
-	}
-	out := make([]*Auth, 0, len(m.entries))
-	for _, entry := range m.entries {
-		if entry == nil || entry.auth == nil {
-			continue
-		}
-		out = append(out, entry.auth)
-	}
-	return out
-}
-
 // promoteExpiredLocked reevaluates blocked auths whose retry time has elapsed.
 func (m *modelScheduler) promoteExpiredLocked(now time.Time) {
 	if m == nil || len(m.blocked) == 0 {
@@ -925,9 +989,12 @@ func (m *modelScheduler) pickReadyAtPriorityLocked(preferWebsocket bool, priorit
 		view = &bucket.ws
 	}
 	var picked *scheduledAuth
-	if strategy == schedulerStrategyFillFirst {
+	switch strategy {
+	case schedulerStrategyFillFirst:
 		picked = view.pickFirst(predicate)
-	} else {
+	case schedulerStrategyWeightedRoundRobin:
+		picked = view.pickWeighted(predicate)
+	default:
 		picked = view.pickRoundRobin(predicate)
 	}
 	if picked == nil || picked.auth == nil {
@@ -945,15 +1012,12 @@ func (m *modelScheduler) readyCountAtPriorityLocked(preferWebsocket bool, priori
 		return 0
 	}
 	view := &bucket.all
-	if preferWebsocket && len(bucket.ws.flat) > 0 {
+	if preferWebsocket && bucket.ws.pickFirst(predicate) != nil {
 		view = &bucket.ws
-	}
-	if predicate == nil {
-		return len(view.flat)
 	}
 	count := 0
 	for _, entry := range view.flat {
-		if predicate(entry) {
+		if predicate == nil || predicate(entry) {
 			count++
 		}
 	}
@@ -1119,4 +1183,72 @@ func (v *readyView) pickRoundRobin(predicate func(*scheduledAuth) bool) *schedul
 		return entry
 	}
 	return nil
+}
+
+// pickWeighted returns the next ready entry using smooth weighted round-robin.
+func (v *readyView) pickWeighted(predicate func(*scheduledAuth) bool) *scheduledAuth {
+	if v == nil || len(v.flat) == 0 {
+		return nil
+	}
+	v.weightedState.prepare(scheduledWeightVectorMatching(v.flat, predicate))
+	return pickSmoothWeightedScheduled(v.flat, v.weightedState.current, predicate)
+}
+
+func scheduledWeightVector(entries []*scheduledAuth) map[string]int64 {
+	return scheduledWeightVectorMatching(entries, nil)
+}
+
+func scheduledWeightVectorMatching(entries []*scheduledAuth, predicate func(*scheduledAuth) bool) map[string]int64 {
+	weights := make(map[string]int64, len(entries))
+	for _, entry := range entries {
+		if entry == nil || entry.auth == nil || entry.meta == nil || entry.meta.weight <= 0 {
+			continue
+		}
+		if predicate != nil && !predicate(entry) {
+			continue
+		}
+		weights[entry.auth.ID] = entry.meta.weight
+	}
+	return weights
+}
+
+func pickSmoothWeightedScheduled(entries []*scheduledAuth, current map[string]int64, predicate func(*scheduledAuth) bool) *scheduledAuth {
+	active := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		if entry == nil || entry.auth == nil || entry.meta == nil || entry.meta.weight <= 0 {
+			continue
+		}
+		if predicate != nil && !predicate(entry) {
+			continue
+		}
+		active[entry.auth.ID] = struct{}{}
+	}
+	for authID := range current {
+		if _, ok := active[authID]; !ok {
+			delete(current, authID)
+		}
+	}
+
+	var picked *scheduledAuth
+	var pickedCurrent int64
+	var totalWeight int64
+	for _, entry := range entries {
+		if entry == nil || entry.auth == nil || entry.meta == nil || entry.meta.weight <= 0 {
+			continue
+		}
+		if predicate != nil && !predicate(entry) {
+			continue
+		}
+		current[entry.auth.ID] = saturatingAddInt64(current[entry.auth.ID], entry.meta.weight)
+		totalWeight = saturatingAddInt64(totalWeight, entry.meta.weight)
+		if picked == nil || current[entry.auth.ID] > pickedCurrent {
+			picked = entry
+			pickedCurrent = current[entry.auth.ID]
+		}
+	}
+	if picked == nil {
+		return nil
+	}
+	current[picked.auth.ID] = saturatingAddInt64(current[picked.auth.ID], -totalWeight)
+	return picked
 }

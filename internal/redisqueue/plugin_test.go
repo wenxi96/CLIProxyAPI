@@ -19,6 +19,11 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 	withEnabledQueue(t, func() {
 		ctx := internallogging.WithRequestID(context.Background(), "ctx-request-id")
 		ctx = internallogging.WithEndpoint(ctx, "POST /v1/chat/completions")
+		ctx = internallogging.WithClientRequestMetadata(ctx, internallogging.ClientRequestMetadata{
+			ClientIP:      "192.0.2.10",
+			XForwardedFor: "203.0.113.5, 198.51.100.8",
+			UserAgent:     "test-client/1.0",
+		})
 		ctx = internallogging.WithResponseStatusHolder(ctx)
 		internallogging.SetResponseStatus(ctx, http.StatusOK)
 		responseHeaders := http.Header{}
@@ -76,10 +81,16 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 		requireMissingField(t, payload, "api_key")
 		requireStringField(t, payload, "api_key_hash", internalusage.APIKeyHash("test-key"))
 		requireStringField(t, payload, "request_id", "ctx-request-id")
+		requireStringField(t, payload, "client_ip", "192.0.2.10")
+		requireStringField(t, payload, "x_forwarded_for", "203.0.113.5, 198.51.100.8")
+		requireStringField(t, payload, "user_agent", "test-client/1.0")
 		requireStringField(t, payload, "reasoning_effort", "medium")
 		requireStringField(t, payload, "service_tier", "auto")
 		requireMissingField(t, payload, "request_service_tier")
 		requireStringField(t, payload, "response_service_tier", "default")
+		requireIntField(t, payload, "accounting_version", coreusage.TokenAccountingSchemaVersion)
+		requireTokenBreakdown(t, payload, coreusage.TokenAccountingQualityComplete, 30)
+		requireTokensBoolField(t, payload, "cache_read_tokens_present", true)
 		requireHeaderField(t, payload, "response_headers", "X-Upstream-Request-Id", []string{"upstream-req-1"})
 		requireHeaderField(t, payload, "response_headers", "Retry-After", []string{"30"})
 		requireMissingHeaderField(t, payload, "response_headers", "Authorization")
@@ -150,6 +161,38 @@ func TestUsageQueuePluginPreservesExplicitProviderZeroUsage(t *testing.T) {
 	})
 }
 
+func TestUsageQueuePluginNormalizesDirectSDKUsageByProvider(t *testing.T) {
+	tests := []struct {
+		provider  string
+		wantTotal int
+	}{
+		{provider: "openai", wantTotal: 130},
+		{provider: "gemini", wantTotal: 142},
+	}
+	for _, tt := range tests {
+		t.Run(tt.provider, func(t *testing.T) {
+			withEnabledQueue(t, func() {
+				ctx := internallogging.WithResponseStatusHolder(context.Background())
+				internallogging.SetResponseStatus(ctx, http.StatusOK)
+
+				(&usageQueuePlugin{}).HandleUsage(ctx, coreusage.Record{
+					Provider: tt.provider,
+					Model:    "direct-sdk-model",
+					Detail: coreusage.Detail{
+						InputTokens:     100,
+						OutputTokens:    30,
+						ReasoningTokens: 12,
+					},
+				})
+
+				payload := popSinglePayload(t)
+				requireIntField(t, requireTokensPayload(t, payload), "total_tokens", tt.wantTotal)
+				requireTokenBreakdown(t, payload, coreusage.TokenAccountingQualityComplete, int64(tt.wantTotal))
+			})
+		})
+	}
+}
+
 func TestUsageQueuePluginPayloadIncludesGenerateFalse(t *testing.T) {
 	withEnabledQueue(t, func() {
 		ctx := internallogging.WithResponseStatusHolder(context.Background())
@@ -187,6 +230,28 @@ func TestUsageQueuePluginPayloadDefaultsGenerateTrueWhenOmitted(t *testing.T) {
 
 		payload := popSinglePayload(t)
 		requireBoolField(t, payload, "generate", true)
+	})
+}
+
+func TestUsageQueuePluginPreservesLegacyCachedOnlyUsage(t *testing.T) {
+	withEnabledQueue(t, func() {
+		ctx := internallogging.WithResponseStatusHolder(context.Background())
+		internallogging.SetResponseStatus(ctx, http.StatusOK)
+
+		(&usageQueuePlugin{}).HandleUsage(ctx, coreusage.Record{
+			Provider: "openai",
+			Model:    "gpt-5.4",
+			Detail: coreusage.Detail{
+				CachedTokens: 13,
+			},
+		})
+
+		payload := popSinglePayload(t)
+		requireTokensBoolField(t, payload, "cache_read_tokens_present", true)
+		tokens := requireTokensPayload(t, payload)
+		requireIntField(t, tokens, "cache_read_tokens", 13)
+		requireIntField(t, tokens, "total_tokens", 13)
+		requireTokenBreakdown(t, payload, coreusage.TokenAccountingQualityUnclassified, 13)
 	})
 }
 
@@ -483,6 +548,38 @@ func requireStringField(t *testing.T, payload map[string]json.RawMessage, key, w
 	}
 }
 
+func requireIntField(t *testing.T, payload map[string]json.RawMessage, key string, want int) {
+	t.Helper()
+
+	raw, ok := payload[key]
+	if !ok {
+		t.Fatalf("payload missing %q", key)
+	}
+	var got int
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal %q: %v", key, err)
+	}
+	if got != want {
+		t.Fatalf("%s = %d, want %d", key, got, want)
+	}
+}
+
+func requireTokenBreakdown(t *testing.T, payload map[string]json.RawMessage, quality coreusage.TokenAccountingQuality, total int64) {
+	t.Helper()
+
+	raw, ok := payload["token_breakdown"]
+	if !ok {
+		t.Fatal("payload missing token_breakdown")
+	}
+	var breakdown coreusage.TokenBreakdown
+	if err := json.Unmarshal(raw, &breakdown); err != nil {
+		t.Fatalf("unmarshal token_breakdown: %v", err)
+	}
+	if !breakdown.Valid() || breakdown.Quality != quality || breakdown.TotalTokens != total {
+		t.Fatalf("token_breakdown = %+v, want quality=%s total=%d", breakdown, quality, total)
+	}
+}
+
 func requireMissingField(t *testing.T, payload map[string]json.RawMessage, key string) {
 	t.Helper()
 
@@ -511,6 +608,24 @@ func requireBoolField(t *testing.T, payload map[string]json.RawMessage, key stri
 	if got != want {
 		t.Fatalf("%s = %t, want %t", key, got, want)
 	}
+}
+
+func requireTokensPayload(t *testing.T, payload map[string]json.RawMessage) map[string]json.RawMessage {
+	t.Helper()
+	raw, ok := payload["tokens"]
+	if !ok {
+		t.Fatal("payload missing tokens")
+	}
+	var tokens map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &tokens); err != nil {
+		t.Fatalf("unmarshal tokens: %v", err)
+	}
+	return tokens
+}
+
+func requireTokensBoolField(t *testing.T, payload map[string]json.RawMessage, key string, want bool) {
+	t.Helper()
+	requireBoolField(t, requireTokensPayload(t, payload), key, want)
 }
 
 func requireFailField(t *testing.T, payload map[string]json.RawMessage, wantStatus int, wantBody string) {
