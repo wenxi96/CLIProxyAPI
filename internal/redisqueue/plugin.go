@@ -44,7 +44,11 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 		serviceTier = coreusage.ServiceTierFromContext(ctx)
 	}
 	responseServiceTier := strings.TrimSpace(record.ResponseServiceTier)
-
+	clientRequestMetadata := internallogging.GetClientRequestMetadata(ctx)
+	usageDetail := coreusage.EnsureTokenBreakdownForProvider(record.Detail, record.Provider, record.ExecutorType)
+	if strings.TrimSpace(detail.ClientIP) == "" {
+		detail.ClientIP = strings.TrimSpace(clientRequestMetadata.ClientIP)
+	}
 	failed := detail.Failed
 	fail := resolveFail(ctx, record, failed)
 
@@ -54,11 +58,16 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 
 	payload, err := json.Marshal(queuedUsageDetail{
 		RequestDetail:       detail,
+		Tokens:              queueTokenStats(detail.Tokens, usageDetail),
 		APIKeyHash:          internalusage.APIKeyHash(record.APIKey),
 		Alias:               detail.ModelAlias,
 		TTFTMs:              normaliseDurationMillis(record.TTFT),
 		Fail:                fail,
 		ResponseHeaders:     sanitizeResponseHeaders(record.ResponseHeaders),
+		AccountingVersion:   coreusage.TokenAccountingSchemaVersion,
+		TokenBreakdown:      usageDetail.TokenBreakdown,
+		XForwardedFor:       clientRequestMetadata.XForwardedFor,
+		UserAgent:           clientRequestMetadata.UserAgent,
 		ReasoningEffort:     reasoningEffort,
 		ServiceTier:         serviceTier,
 		ResponseServiceTier: responseServiceTier,
@@ -71,14 +80,53 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 
 type queuedUsageDetail struct {
 	internalusage.RequestDetail
-	APIKeyHash          string      `json:"api_key_hash,omitempty"`
-	Alias               string      `json:"alias,omitempty"`
-	TTFTMs              int64       `json:"ttft_ms"`
-	Fail                failDetail  `json:"fail"`
-	ResponseHeaders     http.Header `json:"response_headers,omitempty"`
-	ReasoningEffort     string      `json:"reasoning_effort"`
-	ServiceTier         string      `json:"service_tier"`
-	ResponseServiceTier string      `json:"response_service_tier,omitempty"`
+	Tokens              tokenStats               `json:"tokens"`
+	APIKeyHash          string                   `json:"api_key_hash,omitempty"`
+	Alias               string                   `json:"alias,omitempty"`
+	TTFTMs              int64                    `json:"ttft_ms"`
+	Fail                failDetail               `json:"fail"`
+	ResponseHeaders     http.Header              `json:"response_headers,omitempty"`
+	ReasoningEffort     string                   `json:"reasoning_effort"`
+	ServiceTier         string                   `json:"service_tier"`
+	ResponseServiceTier string                   `json:"response_service_tier,omitempty"`
+	AccountingVersion   int                      `json:"accounting_version"`
+	TokenBreakdown      coreusage.TokenBreakdown `json:"token_breakdown"`
+	XForwardedFor       string                   `json:"x_forwarded_for,omitempty"`
+	UserAgent           string                   `json:"user_agent,omitempty"`
+}
+
+type tokenStats struct {
+	InputTokens            int64  `json:"input_tokens"`
+	OutputTokens           int64  `json:"output_tokens"`
+	ReasoningTokens        int64  `json:"reasoning_tokens"`
+	CachedTokens           int64  `json:"cached_tokens"`
+	CacheReadTokens        int64  `json:"cache_read_tokens"`
+	CacheReadTokensPresent bool   `json:"cache_read_tokens_present"`
+	CacheCreationTokens    int64  `json:"cache_creation_tokens"`
+	TotalTokens            int64  `json:"total_tokens"`
+	ReportedTotalTokens    int64  `json:"reported_total_tokens"`
+	ComputedTotalTokens    int64  `json:"computed_total_tokens"`
+	TokenUsageSource       string `json:"token_usage_source"`
+	CacheSplitStatus       string `json:"cache_split_status"`
+	ReasoningCostMode      string `json:"reasoning_cost_mode"`
+}
+
+func queueTokenStats(tokens internalusage.RequestTokenStats, detail coreusage.Detail) tokenStats {
+	return tokenStats{
+		InputTokens:            detail.InputTokens,
+		OutputTokens:           detail.OutputTokens,
+		ReasoningTokens:        detail.ReasoningTokens,
+		CachedTokens:           detail.CachedTokens,
+		CacheReadTokens:        detail.CacheReadTokens,
+		CacheReadTokensPresent: true,
+		CacheCreationTokens:    detail.CacheCreationTokens,
+		TotalTokens:            detail.TotalTokens,
+		ReportedTotalTokens:    tokens.ReportedTotalTokens,
+		ComputedTotalTokens:    tokens.ComputedTotalTokens,
+		TokenUsageSource:       tokens.TokenUsageSource,
+		CacheSplitStatus:       tokens.CacheSplitStatus,
+		ReasoningCostMode:      tokens.ReasoningCostMode,
+	}
 }
 
 type failDetail struct {
