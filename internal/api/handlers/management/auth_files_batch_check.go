@@ -768,7 +768,7 @@ func (h *Handler) newBatchCheckQuotaService() *authquota.Service {
 			return h.cfg
 		},
 		TransportProvider: func(auth *coreauth.Auth, _ *config.Config) http.RoundTripper {
-			return h.apiCallTransport(auth)
+			return h.apiCallTransport(auth, "")
 		},
 		APICallExecutor: h.batchCheckQuotaAPICallExecutor(),
 	})

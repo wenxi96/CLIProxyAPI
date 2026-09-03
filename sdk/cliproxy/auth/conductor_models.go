@@ -7,6 +7,7 @@ import (
 	"time"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -182,6 +183,24 @@ func (m *Manager) executionModelCandidates(auth *Auth, routeModel string) []stri
 	return []string{resolved}
 }
 
+// ResolveExecutionModel returns the credential-aware upstream model used by
+// normal execution. It strips auth prefixes, applies configured aliases, and
+// prefers Home-dispatched upstream models when present.
+func (m *Manager) ResolveExecutionModel(auth *Auth, routeModel string) string {
+	routeModel = strings.TrimSpace(routeModel)
+	if m == nil {
+		return routeModel
+	}
+	candidates := m.executionModelCandidates(auth, routeModel)
+	if len(candidates) == 0 {
+		return routeModel
+	}
+	if resolved := strings.TrimSpace(candidates[0]); resolved != "" {
+		return resolved
+	}
+	return routeModel
+}
+
 func (m *Manager) selectionModelForAuth(auth *Auth, routeModel string) string {
 	requestedModel := rewriteModelForAuth(routeModel, auth)
 	if strings.TrimSpace(requestedModel) == "" {
@@ -196,6 +215,53 @@ func (m *Manager) selectionModelForAuth(auth *Auth, routeModel string) string {
 
 func (m *Manager) selectionModelKeyForAuth(auth *Auth, routeModel string) string {
 	return canonicalModelKey(m.selectionModelForAuth(auth, routeModel))
+}
+
+func (m *Manager) clientModelProjectionForAuth(auth *Auth, routeModel string, now time.Time) registry.ClientModelProjection {
+	targetModel := strings.TrimSpace(routeModel)
+	if targetModel == "" {
+		return registry.ClientModelProjection{}
+	}
+	if auth == nil {
+		return registry.ClientModelProjection{ModelID: targetModel}
+	}
+
+	targetKey := ""
+	if m != nil {
+		targetKey = m.selectionModelKeyForAuth(auth, targetModel)
+	}
+	if targetKey == "" {
+		targetKey = canonicalModelKey(targetModel)
+	}
+
+	state := existingModelState(auth, targetKey)
+	isSuspended := auth.Disabled || auth.Status == StatusDisabled
+	if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now) {
+		isSuspended = true
+	}
+	isQuotaExceeded := false
+	var suspendReason string
+	if state != nil {
+		if state.Status == StatusDisabled || state.Unavailable || (!state.NextRetryAfter.IsZero() && state.NextRetryAfter.After(now)) {
+			isSuspended = true
+		}
+		if state.Quota.Exceeded && (state.Quota.NextRecoverAt.IsZero() || state.Quota.NextRecoverAt.After(now)) {
+			isQuotaExceeded = true
+		}
+		if isSuspended {
+			suspendReason = cooldownReason(state.StatusMessage, state.Quota, state.LastError)
+		}
+	}
+	if isSuspended && suspendReason == "" {
+		suspendReason = cooldownReason(auth.StatusMessage, auth.Quota, auth.LastError)
+	}
+
+	return registry.ClientModelProjection{
+		ModelID:       targetModel,
+		Suspended:     isSuspended,
+		SuspendReason: suspendReason,
+		QuotaExceeded: isQuotaExceeded,
+	}
 }
 
 func (m *Manager) stateModelForExecution(auth *Auth, routeModel, upstreamModel string, pooled bool) string {

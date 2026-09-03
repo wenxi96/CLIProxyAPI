@@ -50,12 +50,22 @@ type Result struct {
 	Provider string
 	// Model is the upstream model identifier used for the request.
 	Model string
+	// RouteModel is the requested logical route model before alias resolution.
+	RouteModel string
 	// Success marks whether the execution succeeded.
 	Success bool
 	// RetryAfter carries a provider supplied retry hint (e.g. 429 retryDelay).
 	RetryAfter *time.Duration
+	// CredentialScope indicates that the failure affects the whole credential across models (e.g. Anthropic 5h/7d unified limits).
+	CredentialScope bool
 	// Error describes the failure when Success is false.
 	Error *Error
+	// Options carries execution request options (headers, metadata, etc.) for result tracking.
+	Options cliproxyexecutor.Options
+	// SkipQuotaObservation reports that this result must not replace the last
+	// observed watermark. Count-tokens requests reuse the credential but are not
+	// generation traffic; their response headers are not a generation snapshot.
+	SkipQuotaObservation bool
 }
 
 // Selector chooses an auth candidate for execution.
@@ -109,8 +119,10 @@ type Manager struct {
 	selector                  Selector
 	hook                      Hook
 	mu                        sync.RWMutex
+	selectorMu                sync.Mutex
 	configCooldownMu          sync.Mutex
 	auths                     map[string]*Auth
+	authEpochs                map[string]uint64
 	scheduler                 *authScheduler
 	// pluginScheduler runs outside m.mu before falling back to native selection.
 	pluginScheduler PluginScheduler
@@ -192,6 +204,7 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 		selector:              selector,
 		hook:                  hook,
 		auths:                 make(map[string]*Auth),
+		authEpochs:            make(map[string]uint64),
 		homeRuntimeAuths:      make(map[string]map[string]*Auth),
 		homeRuntimeAuthOwners: make(map[string]map[string]*HomeDispatchSelection),
 		homeSessionSelections: make(map[string]map[homeSessionSelectionKey]*HomeDispatchSelection),

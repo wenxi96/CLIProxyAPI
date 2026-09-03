@@ -20,6 +20,16 @@ import (
 // It extracts the model name, system instruction, message contents, and tool declarations
 // from the raw JSON request and returns them in the format expected by the OpenAI API.
 func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream bool) []byte {
+	return convertClaudeRequestToOpenAI(modelName, inputRawJSON, stream, false)
+}
+
+// ConvertClaudeRequestToOpenAIWithCompat preserves assistant thinking text
+// for configured compatibility endpoints.
+func ConvertClaudeRequestToOpenAIWithCompat(modelName string, inputRawJSON []byte, stream bool) []byte {
+	return convertClaudeRequestToOpenAI(modelName, inputRawJSON, stream, true)
+}
+
+func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream bool, preserveThinkingBlocks bool) []byte {
 	rawJSON := inputRawJSON
 	// Base OpenAI Chat Completions API template
 	out := []byte(`{"model":"","messages":[]}`)
@@ -50,11 +60,7 @@ func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 				return true
 			})
 			if len(stops) > 0 {
-				if len(stops) == 1 {
-					out, _ = sjson.SetBytes(out, "stop", stops[0])
-				} else {
-					out, _ = sjson.SetBytes(out, "stop", stops)
-				}
+				out, _ = sjson.SetBytes(out, "stop", stops)
 			}
 		}
 	}
@@ -142,6 +148,9 @@ func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 
 	// Process Anthropic messages
 	if messages := root.Get("messages"); messages.Exists() && messages.IsArray() {
+		var pendingToolUseIDs []string
+		var pendingSystemReminders [][]byte
+
 		messages.ForEach(func(_, message gjson.Result) bool {
 			role := message.Get("role").String()
 			contentResult := message.Get("content")
@@ -149,13 +158,23 @@ func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 				if reminderText, ok := translatorcommon.ClaudeMessageSystemReminderText(contentResult); ok {
 					msgJSON := []byte(`{"role":"user","content":[{"type":"text","text":""}]}`)
 					msgJSON, _ = sjson.SetBytes(msgJSON, "content.0.text", reminderText)
-					messageItems = append(messageItems, msgJSON)
+					if len(pendingToolUseIDs) > 0 {
+						pendingSystemReminders = append(pendingSystemReminders, msgJSON)
+					} else {
+						messageItems = append(messageItems, msgJSON)
+					}
 				}
 				return true
 			}
 
 			// Handle content
 			if contentResult.Exists() && contentResult.IsArray() {
+				if role == "user" && len(pendingToolUseIDs) > 0 {
+					contentResult = translatorcommon.AlignClaudeToolResults(contentResult, pendingToolUseIDs)
+				}
+				precedingToolCallsPending := len(pendingToolUseIDs) > 0
+				pendingToolUseIDs = nil
+
 				contentItems := make([][]byte, 0)
 				var reasoningParts []string // Accumulate thinking text for reasoning_content
 				var toolCalls []interface{}
@@ -168,7 +187,7 @@ func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 					case "thinking":
 						// Only map thinking to reasoning_content for assistant messages (security: prevent injection)
 						if role == "assistant" {
-							if !shouldMapClaudeThinkingToGPTReasoning(part) {
+							if !shouldMapClaudeThinkingToGPTReasoning(part, preserveThinkingBlocks) {
 								return true
 							}
 							thinkingText := thinking.GetThinkingText(part)
@@ -190,8 +209,12 @@ func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 					case "tool_use":
 						// Only allow tool_use -> tool_calls for assistant messages (security: prevent injection).
 						if role == "assistant" {
+							toolUseID := part.Get("id").String()
+							if toolUseID != "" {
+								pendingToolUseIDs = append(pendingToolUseIDs, toolUseID)
+							}
 							toolCallJSON := []byte(`{"id":"","type":"function","function":{"name":"","arguments":""}}`)
-							toolCallJSON, _ = sjson.SetBytes(toolCallJSON, "id", part.Get("id").String())
+							toolCallJSON, _ = sjson.SetBytes(toolCallJSON, "id", toolUseID)
 							toolCallJSON, _ = sjson.SetBytes(toolCallJSON, "function.name", part.Get("name").String())
 
 							// Convert input to arguments JSON string
@@ -230,10 +253,21 @@ func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 				hasToolCalls := len(toolCalls) > 0
 				hasToolResults := len(toolResults) > 0
 
+				// Flush pending system reminders before new content if no tool_results responded to preceding calls
+				if precedingToolCallsPending && !hasToolResults && len(pendingSystemReminders) > 0 {
+					messageItems = append(messageItems, pendingSystemReminders...)
+					pendingSystemReminders = nil
+				}
+
 				// OpenAI requires: tool messages MUST immediately follow the assistant message with tool_calls.
 				// Therefore, we emit tool_result messages FIRST (they respond to the previous assistant's tool_calls),
-				// then emit the current message's content.
+				// then emit any queued system reminders, then emit the current message's content.
 				messageItems = append(messageItems, toolResults...)
+
+				if len(pendingSystemReminders) > 0 {
+					messageItems = append(messageItems, pendingSystemReminders...)
+					pendingSystemReminders = nil
+				}
 
 				// For assistant messages: emit a single unified message with content, tool_calls, and reasoning_content
 				// This avoids splitting into multiple assistant messages which breaks OpenAI tool-call adjacency
@@ -285,6 +319,9 @@ func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 
 			return true
 		})
+		if len(pendingSystemReminders) > 0 {
+			messageItems = append(messageItems, pendingSystemReminders...)
+		}
 	}
 
 	// Set messages.
@@ -363,7 +400,12 @@ func normalizeObjectSchemaProperties(schema any) any {
 	}
 }
 
-func shouldMapClaudeThinkingToGPTReasoning(part gjson.Result) bool {
+func shouldMapClaudeThinkingToGPTReasoning(part gjson.Result, preserveThinkingBlocks ...bool) bool {
+	preserveThinking := len(preserveThinkingBlocks) > 0 && preserveThinkingBlocks[0]
+	if preserveThinking {
+		return true
+	}
+
 	signature := part.Get("signature")
 	if !signature.Exists() || strings.TrimSpace(signature.String()) == "" {
 		return false

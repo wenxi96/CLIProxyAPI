@@ -141,8 +141,11 @@ type HomeDispatchSelection struct {
 	Executor ProviderExecutor
 	Provider string
 
+	authMu           sync.RWMutex
 	scope            *executionregistry.Scope
 	accountedModel   string
+	requestRetry     int
+	hasRequestRetry  bool
 	resources        *executionResources
 	attemptCancels   *attemptCancels
 	once             sync.Once
@@ -249,9 +252,40 @@ func (s *HomeDispatchSelection) EndWithRelease(reason string) *executionregistry
 	return s.scope.EndWithRelease("")
 }
 
+// ReplaceAuth updates the selection after Home returns refreshed credentials.
+func (s *HomeDispatchSelection) ReplaceAuth(auth *Auth) {
+	if s == nil || auth == nil {
+		return
+	}
+	updated := auth.Clone()
+	s.authMu.Lock()
+	defer s.authMu.Unlock()
+	preserveHomeRoutingAttributes(updated, s.Auth)
+	s.Auth = updated
+}
+
+func preserveHomeRoutingAttributes(updated, previous *Auth) {
+	if updated == nil || previous == nil {
+		return
+	}
+	if updated.Attributes == nil {
+		updated.Attributes = make(map[string]string)
+	}
+	for _, key := range []string{homeUpstreamModelAttributeKey, homeForceMappingAttributeKey, homeOriginalAliasAttributeKey} {
+		if value := strings.TrimSpace(previous.Attributes[key]); value != "" {
+			updated.Attributes[key] = value
+		}
+	}
+}
+
 // CloneAuth returns a standalone auth copy without the selection handle.
 func (s *HomeDispatchSelection) CloneAuth() *Auth {
-	if s == nil || s.Auth == nil {
+	if s == nil {
+		return nil
+	}
+	s.authMu.RLock()
+	defer s.authMu.RUnlock()
+	if s.Auth == nil {
 		return nil
 	}
 	return s.Auth.Clone()

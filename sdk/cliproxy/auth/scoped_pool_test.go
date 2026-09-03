@@ -263,3 +263,58 @@ func TestAuthSchedulerRebuild_RemovesScopedPoolStaleAuths(t *testing.T) {
 		t.Fatalf("expected stale auth %s to be removed from scoped-pool snapshot", codexB.ID)
 	}
 }
+
+func TestAuthSchedulerRemovalTombstone_RemovesScopedPoolAuth(t *testing.T) {
+	scheduler := newAuthScheduler(nil)
+	scheduler.setScopedPoolConfig("round-robin", internalconfig.RoutingScopedPoolConfig{
+		Providers: map[string]internalconfig.RoutingScopedPoolProviderConfig{
+			"codex": {Enabled: true, Limit: 1},
+		},
+	})
+
+	codexA := testScopedPoolAuth("codex-tombstone-a", "codex", 2)
+	codexB := testScopedPoolAuth("codex-tombstone-b", "codex", 1)
+	scheduler.rebuild([]*Auth{codexA, codexB})
+
+	scheduler.RecordRemovalTombstone(codexA.ID, 1)
+
+	snapshot := scheduler.scopedPoolSnapshot()
+	if _, exists := snapshot.Auths[codexA.ID]; exists {
+		t.Fatalf("expected tombstoned auth %s to be removed from scoped-pool snapshot", codexA.ID)
+	}
+	filtered := scheduler.scopedPool.FilterCandidates("codex", []*Auth{codexB})
+	if len(filtered) != 1 || filtered[0].ID != codexB.ID {
+		t.Fatalf("expected replacement auth %s to remain schedulable, got %+v", codexB.ID, filtered)
+	}
+}
+
+func TestAuthSchedulerStaleSnapshot_DoesNotRepopulateScopedPool(t *testing.T) {
+	scheduler := newAuthScheduler(nil)
+	scheduler.setScopedPoolConfig("round-robin", internalconfig.RoutingScopedPoolConfig{
+		Providers: map[string]internalconfig.RoutingScopedPoolProviderConfig{
+			"codex": {Enabled: true, Limit: 1},
+		},
+	})
+
+	auth := testScopedPoolAuth("codex-stale-snapshot", "codex", 1)
+	auth.RegistrationEpoch = 2
+	auth.Generation = 4
+	scheduler.upsertAuth(auth)
+	scheduler.RecordRemovalTombstone(auth.ID, 3)
+
+	stale := auth.Clone()
+	stale.RegistrationEpoch = 2
+	stale.Generation = 999
+	scheduler.upsertAuth(stale)
+
+	snapshot := scheduler.scopedPoolSnapshot()
+	if _, exists := snapshot.Auths[auth.ID]; exists {
+		t.Fatalf("expected stale snapshot %s not to repopulate scoped-pool state", auth.ID)
+	}
+
+	scheduler.rebuild([]*Auth{stale})
+	snapshot = scheduler.scopedPoolSnapshot()
+	if _, exists := snapshot.Auths[auth.ID]; exists {
+		t.Fatalf("expected stale rebuild snapshot %s not to repopulate scoped-pool state", auth.ID)
+	}
+}
