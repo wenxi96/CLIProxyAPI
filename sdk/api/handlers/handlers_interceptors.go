@@ -32,6 +32,25 @@ type streamInterceptorDetector interface {
 	HasStreamInterceptors() bool
 }
 
+// streamChunkRequestBodyPolicy reports whether payload stream-chunk interceptors
+// still require OriginalRequest/RequestBody (legacy schema_version < 3).
+type streamChunkRequestBodyPolicy interface {
+	StreamChunkPayloadIncludesRequestBody() bool
+}
+
+// streamChunkPayloadIncludesRequestBody returns true when at least one active
+// stream interceptor needs per-chunk request bodies. Evaluated per call so
+// mid-stream plugin reloads stay correct. Unknown hosts default to true.
+func streamChunkPayloadIncludesRequestBody(host PluginInterceptorHost) bool {
+	if host == nil {
+		return false
+	}
+	if policy, ok := host.(streamChunkRequestBodyPolicy); ok {
+		return policy.StreamChunkPayloadIncludesRequestBody()
+	}
+	return true
+}
+
 type requestInterceptorDetector interface {
 	HasRequestInterceptors() bool
 }
@@ -42,6 +61,28 @@ type requestLifecycleHost interface {
 
 type requestLifecycleSkipHost interface {
 	CompleteRequestExcept(context.Context, pluginapi.RequestCompletion, string)
+}
+
+type webSocketResponseObserverHost interface {
+	ObserveWebSocketResponseEvent(context.Context, pluginapi.WebSocketResponseEvent)
+}
+
+type webSocketResponseObserverSkipHost interface {
+	ObserveWebSocketResponseEventExcept(context.Context, pluginapi.WebSocketResponseEvent, string)
+}
+
+type webSocketResponseObserverDetector interface {
+	HasWebSocketResponseObservers() bool
+}
+
+func webSocketResponseObserversEnabled(host PluginInterceptorHost) bool {
+	if host == nil {
+		return false
+	}
+	if detector, ok := host.(webSocketResponseObserverDetector); ok {
+		return detector.HasWebSocketResponseObservers()
+	}
+	return true
 }
 
 type requestLifecycleTracker struct {
@@ -406,7 +447,7 @@ func interceptStreamChunk(ctx context.Context, host PluginInterceptorHost, req p
 
 func (h *BaseAPIHandler) applyRequestInterceptorsBeforeAuth(ctx context.Context, handlerType, requestedModel, requestID string, req coreexecutor.Request, opts coreexecutor.Options, skipPluginID string) (coreexecutor.Request, coreexecutor.Options, *interfaces.ErrorMessage) {
 	host := h.interceptorHost()
-	if host == nil {
+	if !requestInterceptorsEnabled(host) {
 		return req, opts, nil
 	}
 	resp := interceptRequestBeforeAuth(ctx, host, pluginapi.RequestInterceptRequest{
@@ -441,6 +482,47 @@ func (h *BaseAPIHandler) requestAfterAuthInterceptor(capture *requestAfterAuthCa
 			capture.record(req, resp)
 		}
 		return resp
+	}
+}
+
+func (h *BaseAPIHandler) webSocketResponseObserver(requestID, skipPluginID string) coreexecutor.WebSocketResponseObserver {
+	host := h.interceptorHost()
+	if !webSocketResponseObserversEnabled(host) {
+		return nil
+	}
+	observerHost, ok := host.(webSocketResponseObserverHost)
+	if !ok {
+		return nil
+	}
+	skipHost, _ := host.(webSocketResponseObserverSkipHost)
+	return func(ctx context.Context, ev coreexecutor.WebSocketResponseEvent) {
+		traceID := ev.TraceID
+		if traceID == "" {
+			traceID = logging.GetRequestID(ctx)
+		}
+		reqID := ev.RequestID
+		if reqID == "" {
+			reqID = requestID
+		}
+		pluginEvent := pluginapi.WebSocketResponseEvent{
+			RequestID:      reqID,
+			TraceID:        traceID,
+			SourceFormat:   ev.SourceFormat,
+			Model:          ev.Model,
+			RequestedModel: ev.RequestedModel,
+			Provider:       ev.Provider,
+			AuthID:         ev.AuthID,
+			AuthLabel:      ev.AuthLabel,
+			AuthType:       ev.AuthType,
+			EventType:      ev.EventType,
+			Payload:        ev.Payload,
+			Metadata:       ev.Metadata,
+		}
+		if skipPluginID != "" && skipHost != nil {
+			skipHost.ObserveWebSocketResponseEventExcept(ctx, pluginEvent, skipPluginID)
+			return
+		}
+		observerHost.ObserveWebSocketResponseEvent(ctx, pluginEvent)
 	}
 }
 

@@ -80,7 +80,8 @@ func (m *Manager) StopAutoRefresh() {
 		cancel()
 	}
 	// Stop selector if it implements StoppableSelector (e.g., SessionAffinitySelector)
-	if stoppable, ok := m.selector.(StoppableSelector); ok {
+	sel := m.Selector()
+	if stoppable, ok := sel.(StoppableSelector); ok && stoppable != nil {
 		stoppable.Stop()
 	}
 }
@@ -331,6 +332,8 @@ func (m *Manager) markRefreshPending(id string, now time.Time) bool {
 		return false
 	}
 	auth.NextRefreshAfter = now.Add(refreshPendingBackoff)
+	auth.Generation++
+	auth.UpdatedAt = now
 	m.auths[id] = auth
 	m.mu.Unlock()
 
@@ -377,10 +380,35 @@ func clearUnauthorizedModelStates(auth *Auth, now time.Time) []string {
 	return resumed
 }
 
-// tryRefreshAfterUnauthorized refreshes OAuth credentials once after a 401 so the
-// current auth can be retried before fallback/suspend.
+// RefreshHomeSelectionAfterUnauthorized only reuses a newer snapshot already
+// installed by Home. It never refreshes or mutates Home-owned credentials.
+func (m *Manager) RefreshHomeSelectionAfterUnauthorized(_ context.Context, selection *HomeDispatchSelection, failedAuth *Auth) (*Auth, bool, error) {
+	if m == nil || selection == nil {
+		return nil, false, nil
+	}
+	current := selection.CloneAuth()
+	if failedAuth == nil {
+		failedAuth = current
+	}
+	if current != nil && failedAuth != nil && current.ID == failedAuth.ID {
+		currentToken := authAccessToken(current)
+		failedToken := authAccessToken(failedAuth)
+		if currentToken != "" && failedToken != "" && currentToken != failedToken {
+			return current, true, nil
+		}
+	}
+	return current, false, nil
+}
+
+// tryRefreshAfterUnauthorized refreshes local OAuth credentials once after a
+// 401 so the current auth can be retried before fallback/suspend.
 func (m *Manager) tryRefreshAfterUnauthorized(ctx context.Context, auth *Auth, execErr error, alreadyTried bool) (*Auth, bool) {
 	if m == nil || auth == nil || alreadyTried || execErr == nil {
+		return auth, false
+	}
+	// Request-scoped failures describe this request, not stale credentials.
+	// Refreshing would turn a direct error response into an implicit retry.
+	if isRequestScopedError(execErr) {
 		return auth, false
 	}
 	if !isUnauthorizedError(execErr) || !authHasRefreshCredential(auth) {
@@ -427,7 +455,9 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 	auth := m.auths[id]
 	var exec ProviderExecutor
 	if auth != nil {
-		exec = m.executors[auth.Provider]
+		// Use the same effective provider key as request execution so OpenAI-compat
+		// auths registered under namespaced keys still resolve for refresh.
+		exec = m.executors[executorKeyFromAuth(auth)]
 	}
 	m.mu.RUnlock()
 	if auth == nil || exec == nil {
@@ -454,6 +484,8 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 		shouldReschedule := false
 		m.mu.Lock()
 		if current := m.auths[id]; current != nil {
+			current.Generation++
+			current.UpdatedAt = now
 			current.LastError = refreshErrorFromError(err)
 			if unauthorized {
 				current.NextRefreshAfter = time.Time{}
@@ -492,13 +524,25 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
 		updated.Status = StatusActive
 	}
 	updated.UpdatedAt = now
-	modelsToResume := clearUnauthorizedModelStates(updated, now)
+	_ = clearUnauthorizedModelStates(updated, now)
 	if m.shouldRefresh(updated, now) {
 		updated.NextRefreshAfter = now.Add(refreshIneffectiveBackoff)
 	}
 	saved, errUpdate := m.Update(ctx, updated)
-	for _, model := range modelsToResume {
-		registry.GetGlobalRegistry().ResumeClientModel(id, model)
+	targetAuth := saved
+	if targetAuth == nil {
+		targetAuth = updated
+	}
+	supportedModels, regEpoch := registry.GetGlobalRegistry().GetModelsAndEpochForClient(id)
+	projections := make([]registry.ClientModelProjection, 0, len(supportedModels))
+	for _, sm := range supportedModels {
+		if sm == nil || strings.TrimSpace(sm.ID) == "" {
+			continue
+		}
+		projections = append(projections, m.clientModelProjectionForAuth(targetAuth, sm.ID, now))
+	}
+	if targetAuth != nil && len(projections) > 0 {
+		registry.GetGlobalRegistry().ApplyClientModelProjections(id, regEpoch, targetAuth.Generation, projections)
 	}
 	if errUpdate != nil {
 		log.Debugf("persist refreshed auth %s (%s) failed: %v", auth.Provider, auth.ID, errUpdate)

@@ -52,6 +52,7 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 			Alias:               "client-gpt",
 			APIKey:              "test-key",
 			AuthIndex:           "0",
+			AccessTokenSHA256:   "token-version-hash",
 			AuthType:            "apikey",
 			Source:              "user@example.com",
 			ReasoningEffort:     "medium",
@@ -77,6 +78,7 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 		requireStringField(t, payload, "endpoint", "POST /v1/chat/completions")
 		requireStringField(t, payload, "auth_type", "apikey")
 		requireStringField(t, payload, "model_alias", "client-gpt")
+		requireStringField(t, payload, "access_token_sha256", "token-version-hash")
 		requireMissingField(t, payload, "user_api_key")
 		requireMissingField(t, payload, "api_key")
 		requireStringField(t, payload, "api_key_hash", internalusage.APIKeyHash("test-key"))
@@ -109,6 +111,7 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
 		requireMissingHeaderField(t, payload, "response_headers", "Tracestate")
 		requireBoolField(t, payload, "failed", false)
 		requireBoolField(t, payload, "generate", true)
+		requireBoolField(t, payload, "stream", false)
 		requireFailField(t, payload, http.StatusOK, "")
 		data, errMarshal := json.Marshal(payload)
 		if errMarshal != nil {
@@ -231,6 +234,30 @@ func TestUsageQueuePluginPayloadDefaultsGenerateTrueWhenOmitted(t *testing.T) {
 		payload := popSinglePayload(t)
 		requireBoolField(t, payload, "generate", true)
 	})
+}
+
+func TestUsageQueuePluginPublishesStreamFlag(t *testing.T) {
+	for _, stream := range []bool{true, false} {
+		t.Run(map[bool]string{true: "stream_true", false: "stream_false"}[stream], func(t *testing.T) {
+			withEnabledQueue(t, func() {
+				ctx := internallogging.WithResponseStatusHolder(context.Background())
+				internallogging.SetResponseStatus(ctx, http.StatusOK)
+
+				(&usageQueuePlugin{}).HandleUsage(ctx, coreusage.Record{
+					Provider: "openai",
+					Model:    "gpt-5.4",
+					Stream:   stream,
+					Detail: coreusage.Detail{
+						InputTokens: 1,
+						TotalTokens: 1,
+					},
+				})
+
+				payload := popSinglePayload(t)
+				requireBoolField(t, payload, "stream", stream)
+			})
+		})
+	}
 }
 
 func TestUsageQueuePluginPreservesLegacyCachedOnlyUsage(t *testing.T) {

@@ -37,6 +37,7 @@ docs/*
 AGENTS.md
 CLAUDE.md
 GEMINI.md
+AGENTS.override.md
 
 # Tooling metadata
 .vscode/*
@@ -67,6 +68,7 @@ GEMINI.md
 
 # Local build/test scratch (Go cache, throwaway binaries, etc.)
 .tmp/
+.pi
 .opencode/*
 .playwright-mcp/
 .idea/*
@@ -74,11 +76,19 @@ GEMINI.md
 .bmad/*
 _bmad/*
 _bmad-output/*
+.gocache/
+.gitnexus/
 
 # macOS
 .DS_Store
 ._*
-.gocache/
 
 # codegraph 本地索引缓存
 .codegraph/
+
+# docker
+docker-compose.override.yml
+
+
+# Local LLM Wiki vault
+.llm-wiki

@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strings"
 	"sync"
@@ -33,12 +34,20 @@ const (
 	scheduledStateDisabled
 )
 
+// scheduledGenerationMeta records the latest generation and timestamp processed for an auth ID.
+type scheduledGenerationMeta struct {
+	epoch      uint64
+	generation uint64
+	updatedAt  time.Time
+}
+
 // authScheduler keeps the incremental provider/model scheduling state used by Manager.
 type authScheduler struct {
 	mu                  sync.Mutex
 	strategy            schedulerStrategy
 	providers           map[string]*providerScheduler
 	authProviders       map[string]string
+	authGenerations     map[string]scheduledGenerationMeta
 	mixedCursors        map[string]int
 	mixedWeightedStates map[string]*smoothWeightedState
 	scopedPool          *ScopedPoolManager
@@ -101,7 +110,7 @@ type readyBucket struct {
 // readyView holds the selection order for flat round-robin traversal.
 type readyView struct {
 	flat          []*scheduledAuth
-	cursor        int
+	lastPicked    string
 	weightedState smoothWeightedState
 }
 
@@ -109,7 +118,7 @@ type readyView struct {
 type cooldownQueue []*scheduledAuth
 
 type readyViewCursorState struct {
-	cursor        int
+	lastPicked    string
 	weightedState smoothWeightedState
 }
 
@@ -119,7 +128,7 @@ type readyBucketCursorState struct {
 }
 
 func snapshotReadyViewCursors(view readyView) readyViewCursorState {
-	state := readyViewCursorState{cursor: view.cursor}
+	state := readyViewCursorState{lastPicked: view.lastPicked}
 	if len(view.weightedState.current) > 0 {
 		state.weightedState.current = make(map[string]int64, len(view.weightedState.current))
 		for authID, current := range view.weightedState.current {
@@ -139,26 +148,21 @@ func restoreReadyViewCursors(view *readyView, state readyViewCursorState) {
 	if view == nil {
 		return
 	}
-	if len(view.flat) > 0 {
-		view.cursor = normalizeCursor(state.cursor, len(view.flat))
-	}
+	view.lastPicked = state.lastPicked
 	weights := scheduledWeightVector(view.flat)
-	if len(state.weightedState.current) == 0 || !weightVectorsEqual(state.weightedState.weights, weights) {
+	if len(state.weightedState.current) == 0 || weightsConfigChanged(state.weightedState.weights, weights) {
 		return
 	}
-	view.weightedState.current = state.weightedState.current
+	current := make(map[string]int64, len(view.flat))
+	for _, entry := range view.flat {
+		if entry != nil && entry.auth != nil {
+			if val, ok := state.weightedState.current[entry.auth.ID]; ok {
+				current[entry.auth.ID] = val
+			}
+		}
+	}
+	view.weightedState.current = current
 	view.weightedState.weights = weights
-}
-
-func normalizeCursor(cursor, size int) int {
-	if size <= 0 || cursor <= 0 {
-		return 0
-	}
-	cursor = cursor % size
-	if cursor < 0 {
-		cursor += size
-	}
-	return cursor
 }
 
 // newAuthScheduler constructs an empty scheduler configured for the supplied selector strategy.
@@ -167,6 +171,7 @@ func newAuthScheduler(selector Selector) *authScheduler {
 		strategy:            selectorStrategy(selector),
 		providers:           make(map[string]*providerScheduler),
 		authProviders:       make(map[string]string),
+		authGenerations:     make(map[string]scheduledGenerationMeta),
 		mixedCursors:        make(map[string]int),
 		mixedWeightedStates: make(map[string]*smoothWeightedState),
 		scopedPool:          newScopedPoolManager(),
@@ -250,13 +255,27 @@ func (s *authScheduler) rebuild(auths []*Auth) {
 	defer s.mu.Unlock()
 	s.providers = make(map[string]*providerScheduler)
 	s.authProviders = make(map[string]string)
+	if s.authGenerations == nil {
+		s.authGenerations = make(map[string]scheduledGenerationMeta)
+	}
 	s.mixedCursors = make(map[string]int)
 	s.mixedWeightedStates = make(map[string]*smoothWeightedState)
+	acceptedAuths := make([]*Auth, 0, len(auths))
+	for _, auth := range auths {
+		if auth == nil {
+			continue
+		}
+		authID := strings.TrimSpace(auth.ID)
+		if authID == "" || s.isStaleScheduledAuth(authID, auth.RegistrationEpoch, auth.Generation, auth.UpdatedAt) {
+			continue
+		}
+		acceptedAuths = append(acceptedAuths, auth)
+	}
 	if s.scopedPool != nil {
-		s.scopedPool.Rebuild(auths)
+		s.scopedPool.Rebuild(acceptedAuths)
 	}
 	now := time.Now()
-	for _, auth := range auths {
+	for _, auth := range acceptedAuths {
 		s.upsertAuthLocked(auth, now)
 	}
 }
@@ -271,6 +290,42 @@ func (s *authScheduler) upsertAuth(auth *Auth) {
 	s.upsertAuthLocked(auth, time.Now())
 }
 
+// RecordRemovalTombstone records a removal tombstone with the specified epoch and cleans up scheduler state.
+func (s *authScheduler) RecordRemovalTombstone(authID string, tombstoneEpoch uint64) {
+	if s == nil {
+		return
+	}
+	authID = strings.TrimSpace(authID)
+	if authID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.recordRemovalTombstoneLocked(authID, tombstoneEpoch)
+}
+
+func (s *authScheduler) recordRemovalTombstoneLocked(authID string, tombstoneEpoch uint64) {
+	if authID == "" {
+		return
+	}
+	if s.authGenerations == nil {
+		s.authGenerations = make(map[string]scheduledGenerationMeta)
+	}
+	now := time.Now()
+	if existing, exists := s.authGenerations[authID]; exists && tombstoneEpoch < existing.epoch {
+		return
+	}
+	s.authGenerations[authID] = scheduledGenerationMeta{
+		epoch:      tombstoneEpoch,
+		generation: 0,
+		updatedAt:  now,
+	}
+	s.removeAuthFromProvidersLocked(authID)
+	if s.scopedPool != nil {
+		s.scopedPool.RemoveAuth(authID)
+	}
+}
+
 // removeAuth deletes one auth from every scheduler shard that references it.
 func (s *authScheduler) removeAuth(authID string) {
 	if s == nil {
@@ -283,6 +338,26 @@ func (s *authScheduler) removeAuth(authID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.removeAuthLocked(authID)
+}
+
+// ResetAuthGeneration clears recorded generation/tombstone metadata for authID.
+func (s *authScheduler) ResetAuthGeneration(authID string) {
+	if s == nil {
+		return
+	}
+	authID = strings.TrimSpace(authID)
+	if authID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.resetAuthGenerationLocked(authID)
+}
+
+func (s *authScheduler) resetAuthGenerationLocked(authID string) {
+	if s.authGenerations != nil {
+		delete(s.authGenerations, authID)
+	}
 }
 
 // pickSingle returns the next auth for a single provider/model request using scheduler state.
@@ -524,6 +599,15 @@ func (s *authScheduler) mixedUnavailableErrorLocked(providers []string, model st
 	total := 0
 	cooldownCount := 0
 	earliest := time.Time{}
+
+	var latestModelTime time.Time
+	var latestModelAuthID string
+	var latestModelErr error
+
+	var latestAuthTime time.Time
+	var latestAuthID string
+	var latestAuthErr error
+
 	for _, providerKey := range providers {
 		providerState := s.providers[providerKey]
 		if providerState == nil {
@@ -539,18 +623,41 @@ func (s *authScheduler) mixedUnavailableErrorLocked(providers []string, model st
 		if !localEarliest.IsZero() && (earliest.IsZero() || localEarliest.Before(earliest)) {
 			earliest = localEarliest
 		}
+		candModelErr, candModelTime, candModelAuthID, candAuthErr, candAuthTime, candAuthAuthID := shard.candidateErrorsLocked(model, predicate)
+		if candModelErr != nil {
+			if latestModelErr == nil || candModelTime.After(latestModelTime) || (candModelTime.Equal(latestModelTime) && candModelAuthID > latestModelAuthID) {
+				latestModelTime = candModelTime
+				latestModelAuthID = candModelAuthID
+				latestModelErr = candModelErr
+			}
+		}
+		if candAuthErr != nil {
+			if latestAuthErr == nil || candAuthTime.After(latestAuthTime) || (candAuthTime.Equal(latestAuthTime) && candAuthAuthID > latestAuthID) {
+				latestAuthTime = candAuthTime
+				latestAuthID = candAuthAuthID
+				latestAuthErr = candAuthErr
+			}
+		}
 	}
+
+	var lastCandidateErr error
+	if latestModelErr != nil {
+		lastCandidateErr = latestModelErr
+	} else {
+		lastCandidateErr = latestAuthErr
+	}
+
 	if total == 0 {
-		return &Error{Code: "auth_not_found", Message: "no auth available"}
+		return WithCause(&Error{Code: "auth_not_found", Message: "no auth available"}, lastCandidateErr)
 	}
 	if cooldownCount == total && !earliest.IsZero() {
 		resetIn := earliest.Sub(now)
 		if resetIn < 0 {
 			resetIn = 0
 		}
-		return newModelCooldownError(model, "", resetIn)
+		return newModelCooldownErrorWithCause(model, "", resetIn, lastCandidateErr)
 	}
-	return &Error{Code: "auth_unavailable", Message: "no auth available"}
+	return WithCause(&Error{Code: "auth_unavailable", Message: "no auth available"}, lastCandidateErr)
 }
 
 // scheduledAuthPredicate filters request-ineligible auths before scheduler state advances.
@@ -665,24 +772,55 @@ func containsProvider(providers []string, provider string) bool {
 	return false
 }
 
+func (s *authScheduler) isStaleScheduledAuth(authID string, incomingEpoch, incomingGen uint64, incomingUpdatedAt time.Time) bool {
+	if s.authGenerations == nil {
+		s.authGenerations = make(map[string]scheduledGenerationMeta)
+	}
+	if existing, ok := s.authGenerations[authID]; ok {
+		if existing.epoch > incomingEpoch {
+			return true
+		}
+		if existing.epoch == incomingEpoch {
+			if existing.generation > incomingGen {
+				return true
+			}
+			if existing.generation == incomingGen && existing.updatedAt.After(incomingUpdatedAt) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // upsertAuthLocked updates one auth in-place while the scheduler mutex is held.
 func (s *authScheduler) upsertAuthLocked(auth *Auth, now time.Time) {
 	if auth == nil {
 		return
 	}
+	authID := strings.TrimSpace(auth.ID)
+	if authID == "" {
+		return
+	}
+
+	if s.isStaleScheduledAuth(authID, auth.RegistrationEpoch, auth.Generation, auth.UpdatedAt) {
+		return
+	}
 	if s.scopedPool != nil {
 		s.scopedPool.SyncAuth(auth)
 	}
-	authID := strings.TrimSpace(auth.ID)
+	s.authGenerations[authID] = scheduledGenerationMeta{
+		epoch:      auth.RegistrationEpoch,
+		generation: auth.Generation,
+		updatedAt:  auth.UpdatedAt,
+	}
+
 	providerKey := executorKeyFromAuth(auth)
-	if authID == "" || providerKey == "" {
+	if providerKey == "" {
 		s.removeAuthLocked(authID)
 		return
 	}
-	if auth.Disabled {
-		// Keep disabled credentials visible to the scoped-pool management snapshot
-		// while removing them from request scheduling.
-		s.removeScheduledAuthLocked(authID)
+	if auth.Disabled || auth.Status == StatusDisabled {
+		s.removeAuthFromProvidersLocked(authID)
 		return
 	}
 	if previousProvider := s.authProviders[authID]; previousProvider != "" && previousProvider != providerKey {
@@ -690,9 +828,19 @@ func (s *authScheduler) upsertAuthLocked(auth *Auth, now time.Time) {
 			previousState.removeAuthLocked(authID)
 		}
 	}
+
 	meta := buildScheduledAuthMeta(auth)
 	s.authProviders[authID] = providerKey
 	s.ensureProviderLocked(providerKey).upsertAuthLocked(meta, now)
+}
+
+func (s *authScheduler) removeAuthFromProvidersLocked(authID string) {
+	if providerKey := s.authProviders[authID]; providerKey != "" {
+		if providerState := s.providers[providerKey]; providerState != nil {
+			providerState.removeAuthLocked(authID)
+		}
+		delete(s.authProviders, authID)
+	}
 }
 
 // removeAuthLocked removes one auth from the scheduler while the scheduler mutex is held.
@@ -700,21 +848,22 @@ func (s *authScheduler) removeAuthLocked(authID string) {
 	if authID == "" {
 		return
 	}
-	s.removeScheduledAuthLocked(authID)
+	if s.authGenerations == nil {
+		s.authGenerations = make(map[string]scheduledGenerationMeta)
+	}
+	now := time.Now()
+	epoch := uint64(1)
+	if existing, ok := s.authGenerations[authID]; ok {
+		epoch = existing.epoch + 1
+	}
+	s.authGenerations[authID] = scheduledGenerationMeta{
+		epoch:      epoch,
+		generation: 0,
+		updatedAt:  now,
+	}
+	s.removeAuthFromProvidersLocked(authID)
 	if s.scopedPool != nil {
 		s.scopedPool.RemoveAuth(authID)
-	}
-}
-
-func (s *authScheduler) removeScheduledAuthLocked(authID string) {
-	if authID == "" {
-		return
-	}
-	if providerKey := s.authProviders[authID]; providerKey != "" {
-		if providerState := s.providers[providerKey]; providerState != nil {
-			providerState.removeAuthLocked(authID)
-		}
-		delete(s.authProviders, authID)
 	}
 }
 
@@ -738,8 +887,12 @@ func (s *authScheduler) ensureProviderLocked(providerKey string) *providerSchedu
 // buildScheduledAuthMeta extracts the scheduling metadata needed for shard bookkeeping.
 func buildScheduledAuthMeta(auth *Auth) *scheduledAuthMeta {
 	providerKey := executorKeyFromAuth(auth)
+	var clonedAuth *Auth
+	if auth != nil {
+		clonedAuth = auth.Clone()
+	}
 	return &scheduledAuthMeta{
-		auth:              auth,
+		auth:              clonedAuth,
 		providerKey:       providerKey,
 		priority:          authPriority(auth),
 		weight:            authWeight(auth),
@@ -1028,8 +1181,9 @@ func (m *modelScheduler) readyCountAtPriorityLocked(preferWebsocket bool, priori
 func (m *modelScheduler) unavailableErrorLocked(provider, model string, predicate func(*scheduledAuth) bool) error {
 	now := time.Now()
 	total, cooldownCount, earliest := m.availabilitySummaryLocked(predicate)
+	lastCandidateErr, _, _ := m.latestCandidateErrorWithTimeLocked(model, predicate)
 	if total == 0 {
-		return &Error{Code: "auth_not_found", Message: "no auth available"}
+		return WithCause(&Error{Code: "auth_not_found", Message: "no auth available"}, lastCandidateErr)
 	}
 	if cooldownCount == total && !earliest.IsZero() {
 		providerForError := provider
@@ -1040,9 +1194,87 @@ func (m *modelScheduler) unavailableErrorLocked(provider, model string, predicat
 		if resetIn < 0 {
 			resetIn = 0
 		}
-		return newModelCooldownError(model, providerForError, resetIn)
+		return newModelCooldownErrorWithCause(model, providerForError, resetIn, lastCandidateErr)
 	}
-	return &Error{Code: "auth_unavailable", Message: "no auth available"}
+	return WithCause(&Error{Code: "auth_unavailable", Message: "no auth available"}, lastCandidateErr)
+}
+
+func (m *modelScheduler) latestCandidateErrorWithTimeLocked(model string, predicate func(*scheduledAuth) bool) (error, time.Time, string) {
+	modelErr, modelTime, modelAuthID, authErr, authTime, authAuthID := m.candidateErrorsLocked(model, predicate)
+	if modelErr != nil {
+		return modelErr, modelTime, modelAuthID
+	}
+	return authErr, authTime, authAuthID
+}
+
+func (m *modelScheduler) candidateErrorsLocked(model string, predicate func(*scheduledAuth) bool) (modelErr error, modelTime time.Time, modelAuthID string, authErr error, authTime time.Time, authAuthID string) {
+	if m == nil {
+		return nil, time.Time{}, "", nil, time.Time{}, ""
+	}
+	modelKey := canonicalModelKey(model)
+	for _, entry := range m.entries {
+		if predicate != nil && !predicate(entry) {
+			continue
+		}
+		if entry == nil || entry.auth == nil {
+			continue
+		}
+		auth := entry.auth
+		var curModelErr error
+		var curModelTime time.Time
+		if len(auth.ModelStates) > 0 {
+			if state, ok := auth.ModelStates[model]; ok && state != nil {
+				if state.LastError != nil {
+					curModelErr = state.LastError
+					curModelTime = state.UpdatedAt
+				} else if strings.TrimSpace(state.StatusMessage) != "" {
+					curModelErr = errors.New(state.StatusMessage)
+					curModelTime = state.UpdatedAt
+				}
+			} else if state, ok := auth.ModelStates[modelKey]; ok && state != nil {
+				if state.LastError != nil {
+					curModelErr = state.LastError
+					curModelTime = state.UpdatedAt
+				} else if strings.TrimSpace(state.StatusMessage) != "" {
+					curModelErr = errors.New(state.StatusMessage)
+					curModelTime = state.UpdatedAt
+				}
+			}
+		}
+
+		if curModelErr != nil {
+			if curModelTime.IsZero() {
+				curModelTime = auth.UpdatedAt
+			}
+			if modelErr == nil || curModelTime.After(modelTime) || (curModelTime.Equal(modelTime) && auth.ID > modelAuthID) {
+				modelTime = curModelTime
+				modelAuthID = auth.ID
+				modelErr = curModelErr
+			}
+		} else {
+			var curAuthErr error
+			var curAuthTime time.Time
+			if auth.LastError != nil {
+				curAuthErr = auth.LastError
+				curAuthTime = auth.UpdatedAt
+			} else if strings.TrimSpace(auth.StatusMessage) != "" {
+				curAuthErr = errors.New(auth.StatusMessage)
+				curAuthTime = auth.UpdatedAt
+			}
+			if curAuthErr != nil {
+				if curAuthTime.IsZero() {
+					curAuthTime = auth.UpdatedAt
+				}
+				if authErr == nil || curAuthTime.After(authTime) || (curAuthTime.Equal(authTime) && auth.ID > authAuthID) {
+					authTime = curAuthTime
+					authAuthID = auth.ID
+					authErr = curAuthErr
+				}
+			}
+		}
+	}
+
+	return modelErr, modelTime, modelAuthID, authErr, authTime, authAuthID
 }
 
 // availabilitySummaryLocked summarizes total candidates, cooldown count, and earliest retry time.
@@ -1169,20 +1401,35 @@ func (v *readyView) pickRoundRobin(predicate func(*scheduledAuth) bool) *schedul
 	if len(v.flat) == 0 {
 		return nil
 	}
-	start := 0
-	if len(v.flat) > 0 {
-		start = v.cursor % len(v.flat)
-	}
+	start := scheduledSuccessorIndex(v.flat, v.lastPicked)
 	for offset := 0; offset < len(v.flat); offset++ {
 		index := (start + offset) % len(v.flat)
 		entry := v.flat[index]
+		if entry == nil || entry.auth == nil {
+			continue
+		}
 		if predicate != nil && !predicate(entry) {
 			continue
 		}
-		v.cursor = index + 1
+		v.lastPicked = entry.auth.ID
 		return entry
 	}
 	return nil
+}
+
+// scheduledSuccessorIndex returns the index of the first scheduled candidate ordered after
+// lastID, wrapping to the start of the ring. Candidates in readyView arrive sorted by auth ID.
+func scheduledSuccessorIndex(entries []*scheduledAuth, lastID string) int {
+	if lastID == "" {
+		return 0
+	}
+	index := sort.Search(len(entries), func(i int) bool {
+		return entries[i].auth.ID > lastID
+	})
+	if index >= len(entries) {
+		return 0
+	}
+	return index
 }
 
 // pickWeighted returns the next ready entry using smooth weighted round-robin.
@@ -1213,22 +1460,6 @@ func scheduledWeightVectorMatching(entries []*scheduledAuth, predicate func(*sch
 }
 
 func pickSmoothWeightedScheduled(entries []*scheduledAuth, current map[string]int64, predicate func(*scheduledAuth) bool) *scheduledAuth {
-	active := make(map[string]struct{}, len(entries))
-	for _, entry := range entries {
-		if entry == nil || entry.auth == nil || entry.meta == nil || entry.meta.weight <= 0 {
-			continue
-		}
-		if predicate != nil && !predicate(entry) {
-			continue
-		}
-		active[entry.auth.ID] = struct{}{}
-	}
-	for authID := range current {
-		if _, ok := active[authID]; !ok {
-			delete(current, authID)
-		}
-	}
-
 	var picked *scheduledAuth
 	var pickedCurrent int64
 	var totalWeight int64

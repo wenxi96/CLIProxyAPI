@@ -79,6 +79,64 @@ func TestXAIWebsocketsRequiredUpstreamRejectsCompactionHTTPFallback(t *testing.T
 	}
 }
 
+func TestXAIWebsocketMissingRequiredSessionDoesNotMarkUpstreamAttempt(t *testing.T) {
+	exec := NewXAIWebsocketsExecutor(&config.Config{})
+	exec.store = &codexWebsocketSessionStore{sessions: make(map[string]*codexWebsocketSession)}
+	auth := &cliproxyauth.Auth{
+		ID:       "xai-required-session",
+		Provider: "xai",
+		Attributes: map[string]string{
+			"api_key": "xai-key",
+		},
+	}
+	ctx := cliproxyexecutor.WithUpstreamAttemptTracker(
+		cliproxyexecutor.WithRequiredUpstreamWebsocket(context.Background()),
+	)
+	_, errExecute := exec.ExecuteStream(ctx, auth, cliproxyexecutor.Request{
+		Model:   "grok-4",
+		Payload: []byte(`{"model":"grok-4","previous_response_id":"resp-1","input":[{"type":"message","role":"user","content":"hello"}]}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse,
+		Metadata: map[string]any{
+			cliproxyexecutor.ExecutionSessionMetadataKey: "missing-xai-session",
+		},
+	})
+	if !cliproxyexecutor.IsUpstreamWebsocketReplayRequired(errExecute) {
+		t.Fatalf("ExecuteStream() error = %T %v, want replay-required", errExecute, errExecute)
+	}
+	if cliproxyexecutor.UpstreamAttempted(ctx) {
+		t.Fatal("missing retained websocket connection was marked as an upstream attempt")
+	}
+}
+
+func TestXAIWebsocketSuccessfulHandshakeDoesNotMarkRequestAttempt(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, errUpgrade := upgrader.Upgrade(w, r, nil)
+		if errUpgrade != nil {
+			t.Errorf("upgrade websocket: %v", errUpgrade)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		_, _, _ = conn.ReadMessage()
+	}))
+	defer server.Close()
+
+	exec := NewXAIWebsocketsExecutor(&config.Config{})
+	ctx := cliproxyexecutor.WithUpstreamAttemptTracker(context.Background())
+	conn, closer, resp, errDial := exec.dialXAIWebsocket(ctx, &cliproxyauth.Auth{}, strings.Replace(server.URL, "http", "ws", 1), http.Header{})
+	if errDial != nil || conn == nil {
+		t.Fatalf("dialXAIWebsocket() = (%p, %v), want successful connection", conn, errDial)
+	}
+	if resp != nil && resp.Body != nil {
+		defer func() { _ = resp.Body.Close() }()
+	}
+	defer func() { _ = closer.Close() }()
+	if cliproxyexecutor.UpstreamAttempted(ctx) {
+		t.Fatal("successful handshake was marked before an upstream request was sent")
+	}
+}
+
 func TestMapXAIWebsocketWriteErrorStopsRetryForMessageTooBig(t *testing.T) {
 	networkWriteErr := errors.New("write: broken pipe")
 	tests := []struct {
@@ -268,11 +326,16 @@ func TestXAIWebsocketsExecuteStreamSendsResponseCreateWithPreviousResponseID(t *
 			cliproxyexecutor.ExecutionSessionMetadataKey: "execution-session-1",
 		},
 	}
-	ctx := cliproxyexecutor.WithDownstreamWebsocket(context.Background())
+	ctx := cliproxyexecutor.WithUpstreamAttemptTracker(
+		cliproxyexecutor.WithDownstreamWebsocket(context.Background()),
+	)
 
 	result, err := exec.ExecuteStream(ctx, auth, req, opts)
 	if err != nil {
 		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+	if !cliproxyexecutor.UpstreamAttempted(ctx) {
+		t.Fatal("websocket write did not mark an upstream attempt")
 	}
 
 	select {
@@ -1569,9 +1632,13 @@ func TestXAIWebsocketsExecuteStreamHandshakeFreeUsageExhaustedSetsRetryAfter(t *
 		ResponseFormat: sdktranslator.FormatOpenAIResponse,
 	}
 
-	_, err := exec.ExecuteStream(context.Background(), auth, req, opts)
+	ctx := cliproxyexecutor.WithUpstreamAttemptTracker(context.Background())
+	_, err := exec.ExecuteStream(ctx, auth, req, opts)
 	if err == nil {
 		t.Fatal("ExecuteStream() error = nil, want handshake rejection")
+	}
+	if !cliproxyexecutor.UpstreamAttempted(ctx) {
+		t.Fatal("429 websocket handshake was not marked as an upstream attempt")
 	}
 	status, ok := err.(interface{ StatusCode() int })
 	if !ok || status.StatusCode() != http.StatusTooManyRequests {
@@ -1609,6 +1676,43 @@ func TestParseXAIWebsocketErrorFreeUsageExhaustedSetsRetryAfter(t *testing.T) {
 	}
 	if got := parsed.Get("error.code").String(); got != "subscription:free-usage-exhausted" {
 		t.Fatalf("error code = %q, want free-usage-exhausted; payload=%s", got, err)
+	}
+}
+
+func TestParseXAIWebsocketErrorBadCredentialsRemapsToUnauthorized(t *testing.T) {
+	payload := []byte(`{"type":"error","status":403,"headers":{"x-request-id":"req-bad-credentials"},"error":{"code":"unauthenticated:bad-credentials","message":"The OAuth2 access token could not be validated."}}`)
+	err, ok := parseXAIWebsocketError(payload)
+	if !ok {
+		t.Fatal("expected xAI websocket error")
+	}
+
+	status, okStatus := err.(interface{ StatusCode() int })
+	if !okStatus || status.StatusCode() != http.StatusUnauthorized {
+		t.Fatalf("status = %#v, want 401", err)
+	}
+	headerSource, okHeaders := err.(interface{ Headers() http.Header })
+	if !okHeaders {
+		t.Fatalf("expected websocket error to preserve headers, got %#v", err)
+	}
+	if got := headerSource.Headers().Get("x-request-id"); got != "req-bad-credentials" {
+		t.Fatalf("x-request-id = %q, want req-bad-credentials", got)
+	}
+	parsed := gjson.Parse(err.Error())
+	if got := parsed.Get("error.code").String(); got != "unauthenticated:bad-credentials" {
+		t.Fatalf("error code = %q, want unauthenticated:bad-credentials; payload=%s", got, err)
+	}
+}
+
+func TestParseXAIWebsocketBareErrorBadCredentialsRemapsToUnauthorized(t *testing.T) {
+	payload := []byte(`{"status":403,"error":{"code":"unauthenticated:bad-credentials","message":"The OAuth2 access token could not be validated."}}`)
+	err, ok := parseXAIWebsocketError(payload)
+	if !ok {
+		t.Fatal("expected bare xAI websocket error")
+	}
+
+	status, okStatus := err.(interface{ StatusCode() int })
+	if !okStatus || status.StatusCode() != http.StatusUnauthorized {
+		t.Fatalf("status = %#v, want 401", err)
 	}
 }
 

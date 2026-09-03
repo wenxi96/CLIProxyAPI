@@ -9,6 +9,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/cache"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	internalsignature "github.com/router-for-me/CLIProxyAPI/v7/internal/signature"
 	log "github.com/sirupsen/logrus"
 	"github.com/sirupsen/logrus/hooks/test"
 	"github.com/tidwall/gjson"
@@ -153,31 +154,98 @@ func TestConvertClaudeRequestToAntigravity_ConvertsMessageSystemRoleToUserConten
 	}
 
 	contents := gjson.Get(outputStr, "request.contents").Array()
-	if len(contents) != 3 {
-		t.Fatalf("Expected the user and message-level system turns in request.contents, got %d: %s", len(contents), gjson.Get(outputStr, "request.contents").Raw)
+	if len(contents) != 1 {
+		t.Fatalf("Expected consecutive user and message-level system turns to be merged into a single user turn, got %d: %s", len(contents), gjson.Get(outputStr, "request.contents").Raw)
 	}
 	if got := contents[0].Get("role").String(); got != "user" {
 		t.Fatalf("Expected first content role user, got %q", got)
 	}
-	if got := contents[1].Get("role").String(); got != "user" {
-		t.Fatalf("Expected message-level system content to be downgraded to user role, got %q", got)
+	parts := contents[0].Get("parts").Array()
+	if len(parts) != 3 {
+		t.Fatalf("Expected 3 parts in merged user content, got %d: %s", len(parts), contents[0].Get("parts").Raw)
 	}
-	if got := contents[1].Get("parts.0.text").String(); got != "<system-reminder>\nString mid-conversation rule\n</system-reminder>" {
+	if got := parts[0].Get("text").String(); got != "Hello" {
+		t.Fatalf("Unexpected initial user prompt text: %q", got)
+	}
+	if got := parts[1].Get("text").String(); got != "<system-reminder>\nString mid-conversation rule\n</system-reminder>" {
 		t.Fatalf("Unexpected string message-level system content text: %q", got)
 	}
-	if got := contents[2].Get("role").String(); got != "user" {
-		t.Fatalf("Expected array message-level system content to be downgraded to user role, got %q", got)
-	}
-	if got := contents[2].Get("parts.0.text").String(); got != "<system-reminder>\nArray mid-conversation rule\n</system-reminder>" {
+	if got := parts[2].Get("text").String(); got != "<system-reminder>\nArray mid-conversation rule\n</system-reminder>" {
 		t.Fatalf("Unexpected array message-level system content text: %q", got)
 	}
 
-	parts := gjson.Get(outputStr, "request.systemInstruction.parts").Array()
-	if len(parts) != 1 {
-		t.Fatalf("Expected only top-level system parts, got %d: %s", len(parts), gjson.Get(outputStr, "request.systemInstruction.parts").Raw)
+	systemInstructionParts := gjson.Get(outputStr, "request.systemInstruction.parts").Array()
+	if len(systemInstructionParts) != 1 {
+		t.Fatalf("Expected only top-level system parts, got %d: %s", len(systemInstructionParts), gjson.Get(outputStr, "request.systemInstruction.parts").Raw)
 	}
-	if got := parts[0].Get("text").String(); got != "Top-level rules" {
+	if got := systemInstructionParts[0].Get("text").String(); got != "Top-level rules" {
 		t.Fatalf("Unexpected first system part: %q", got)
+	}
+}
+
+func TestConvertClaudeRequestToAntigravity_PreservesToolPairingWithInterveningSystemMessage(t *testing.T) {
+	inputJSON := []byte(`{
+		"model": "gemini-3.5-flash",
+		"messages": [
+			{
+				"role": "user",
+				"content": [{"type": "text", "text": "Run two tools"}]
+			},
+			{
+				"role": "assistant",
+				"content": [
+					{"type": "tool_use", "id": "toolu_1", "name": "tool_one", "input": {"a": 1}},
+					{"type": "tool_use", "id": "toolu_2", "name": "tool_two", "input": {"b": 2}}
+				]
+			},
+			{
+				"role": "system",
+				"content": "Context reminder between tool_use and tool_result"
+			},
+			{
+				"role": "user",
+				"content": [
+					{"type": "tool_result", "tool_use_id": "toolu_2", "content": "result 2"},
+					{"type": "tool_result", "tool_use_id": "toolu_1", "content": "result 1"}
+				]
+			}
+		]
+	}`)
+
+	output := ConvertClaudeRequestToAntigravity("gemini-3.5-flash", inputJSON, false)
+
+	if errPairing := internalsignature.ValidateGeminiFunctionCallPairing(output); errPairing != nil {
+		t.Fatalf("ValidateGeminiFunctionCallPairing failed: %v\noutput: %s", errPairing, output)
+	}
+
+	contents := gjson.GetBytes(output, "request.contents").Array()
+	if len(contents) != 3 {
+		t.Fatalf("expected 3 merged contents (user, model, user), got %d: %s", len(contents), output)
+	}
+
+	// First turn: user
+	if contents[0].Get("role").String() != "user" {
+		t.Fatalf("expected turn 0 role user, got %s", contents[0].Get("role").String())
+	}
+	// Second turn: model (2 function calls)
+	if contents[1].Get("role").String() != "model" {
+		t.Fatalf("expected turn 1 role model, got %s", contents[1].Get("role").String())
+	}
+	// Third turn: user (1 system reminder + 2 aligned function responses)
+	if contents[2].Get("role").String() != "user" {
+		t.Fatalf("expected turn 2 role user, got %s", contents[2].Get("role").String())
+	}
+
+	// Verify response ordering matches call ordering
+	parts := contents[2].Get("parts").Array()
+	var respIDs []string
+	for _, p := range parts {
+		if id := p.Get("functionResponse.id").String(); id != "" {
+			respIDs = append(respIDs, id)
+		}
+	}
+	if len(respIDs) != 2 {
+		t.Fatalf("expected 2 responses, got %v", respIDs)
 	}
 }
 
@@ -2007,6 +2075,53 @@ func TestConvertClaudeRequestToAntigravity_ReorderParallelFunctionCalls(t *testi
 	}
 }
 
+func TestConvertClaudeRequestToAntigravity_AlignsPermutedParallelToolResultsWithMixedText(t *testing.T) {
+	inputJSON := []byte(`{
+		"model":"gemini-3.7-flash-high",
+		"messages":[
+			{"role":"assistant","content":[
+				{"type":"tool_use","id":"call_1620603","name":"Read","input":{"file_path":"/tmp/1"}},
+				{"type":"tool_use","id":"call_1620604","name":"Read","input":{"file_path":"/tmp/2"}},
+				{"type":"tool_use","id":"call_1620605","name":"Read","input":{"file_path":"/tmp/3"}},
+				{"type":"tool_use","id":"call_1620606","name":"Read","input":{"file_path":"/tmp/4"}},
+				{"type":"tool_use","id":"call_1620607","name":"Read","input":{"file_path":"/tmp/5"}},
+				{"type":"tool_use","id":"call_1620608","name":"Read","input":{"file_path":"/tmp/6"}}
+			]},
+			{"role":"user","content":[
+				{"type":"text","text":"Tool results follow."},
+				{"type":"tool_result","tool_use_id":"call_1620608","content":"six"},
+				{"type":"tool_result","tool_use_id":"call_1620605","content":"three"},
+				{"type":"tool_result","tool_use_id":"call_1620603","content":"one"},
+				{"type":"text","text":"Continue after reading."},
+				{"type":"tool_result","tool_use_id":"call_1620607","content":"five"},
+				{"type":"tool_result","tool_use_id":"call_1620604","content":"two"},
+				{"type":"tool_result","tool_use_id":"call_1620606","content":"four"}
+			]}
+		]
+	}`)
+
+	output := ConvertClaudeRequestToAntigravity("gemini-3.7-flash-high", inputJSON, false)
+	parts := gjson.GetBytes(output, "request.contents.1.parts").Array()
+	if len(parts) != 8 {
+		t.Fatalf("parts = %d, want six responses followed by two text parts; output=%s", len(parts), output)
+	}
+	for index := 0; index < 6; index++ {
+		wantID := fmt.Sprintf("call_162060%d", index+3)
+		if gotID := parts[index].Get("functionResponse.id").String(); gotID != wantID {
+			t.Fatalf("functionResponse[%d].id = %q, want %q; output=%s", index, gotID, wantID, output)
+		}
+	}
+	if got := parts[6].Get("text").String(); got != "Tool results follow." {
+		t.Fatalf("first trailing text = %q; output=%s", got, output)
+	}
+	if got := parts[7].Get("text").String(); got != "Continue after reading." {
+		t.Fatalf("second trailing text = %q; output=%s", got, output)
+	}
+	if errPairing := internalsignature.ValidateGeminiFunctionCallPairing(output); errPairing != nil {
+		t.Fatalf("translated parallel tool history is invalid: %v; output=%s", errPairing, output)
+	}
+}
+
 func TestConvertClaudeRequestToAntigravity_ReorderThinkingAndTextBeforeFunctionCall(t *testing.T) {
 	cache.ClearSignatureCache("")
 
@@ -3363,5 +3478,61 @@ func TestConvertClaudeRequestToAntigravity_ToolAndThinking_NoExistingSystem(t *t
 	}
 	if !found {
 		t.Errorf("Interleaved thinking hint should be in created systemInstruction, got: %v", sysInstruction.Raw)
+	}
+}
+
+// TestConvertClaudeRequestToAntigravityStripsPropertyNames covers the reported ingress route: a
+// Claude Messages request carrying MCP-style tool schemas. The private Gemini backend rejects the
+// standard JSON Schema keyword "propertyNames" with an unknown-field 400 before inference, so it
+// must not survive translation. Both reported nestings are exercised, including the one where the
+// keyword sits inside a property that is itself named "properties".
+func TestConvertClaudeRequestToAntigravityStripsPropertyNames(t *testing.T) {
+	inputJSON := []byte(`{
+		"model": "claude-sonnet-4-5",
+		"messages": [{"role": "user", "content": "hi"}],
+		"tools": [
+			{
+				"name": "notion-create-pages",
+				"input_schema": {
+					"type": "object",
+					"properties": {
+						"records": {
+							"type": "array",
+							"items": {
+								"type": "object",
+								"properties": {"name": {"type": "string"}},
+								"propertyNames": {"type": "string"}
+							}
+						}
+					}
+				}
+			},
+			{
+				"name": "notion-update-page",
+				"input_schema": {
+					"type": "object",
+					"properties": {
+						"properties": {"type": "object", "propertyNames": {"type": "string"}}
+					}
+				}
+			}
+		]
+	}`)
+
+	output := ConvertClaudeRequestToAntigravity("claude-sonnet-4-5", inputJSON, false)
+
+	decls := gjson.GetBytes(output, "request.tools.0.functionDeclarations")
+	if !decls.IsArray() || len(decls.Array()) != 2 {
+		t.Fatalf("expected two function declarations, got: %s", decls.Raw)
+	}
+	if strings.Contains(decls.Raw, `"propertyNames"`) {
+		t.Errorf("propertyNames survived translation: %s", decls.Raw)
+	}
+	// The declarations must still be usable, not emptied out by the cleaning.
+	if !decls.Get("0.parametersJsonSchema.properties.records.items.properties.name").Exists() {
+		t.Errorf("array item property was lost: %s", decls.Get("0").Raw)
+	}
+	if !decls.Get("1.parametersJsonSchema.properties.properties").Exists() {
+		t.Errorf("property named properties was lost: %s", decls.Get("1").Raw)
 	}
 }
