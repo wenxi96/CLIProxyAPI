@@ -116,7 +116,7 @@ func (e *CodexExecutor) executeOpenAIImage(ctx context.Context, auth *cliproxyau
 	if errCache != nil {
 		return resp, errCache
 	}
-	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
+	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg, opts.Headers)
 	applyModelHeaderOverrides(httpReq.Header, mainModel)
 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
 	recordCodexOpenAIImageRequest(ctx, e.cfg, e.Identifier(), auth, url, httpReq.Header.Clone(), body)
@@ -212,7 +212,7 @@ func (e *CodexExecutor) executeOpenAIImageStream(ctx context.Context, auth *clip
 	if errCache != nil {
 		return nil, errCache
 	}
-	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
+	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg, opts.Headers)
 	applyModelHeaderOverrides(httpReq.Header, mainModel)
 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
 	recordCodexOpenAIImageRequest(ctx, e.cfg, e.Identifier(), auth, url, httpReq.Header.Clone(), body)

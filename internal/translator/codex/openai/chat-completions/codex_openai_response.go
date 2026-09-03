@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/common"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -122,12 +123,12 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 		}
 	}
 
-	if dataType == "response.reasoning_summary_text.delta" {
+	if dataType == "response.reasoning_summary_text.delta" || dataType == "response.reasoning_text.delta" {
 		if deltaResult := rootResult.Get("delta"); deltaResult.Exists() {
 			template, _ = sjson.SetBytes(template, "choices.0.delta.role", "assistant")
 			template, _ = sjson.SetBytes(template, "choices.0.delta.reasoning_content", deltaResult.String())
 		}
-	} else if dataType == "response.reasoning_summary_text.done" {
+	} else if dataType == "response.reasoning_summary_text.done" || dataType == "response.reasoning_text.done" {
 		template, _ = sjson.SetBytes(template, "choices.0.delta.role", "assistant")
 		template, _ = sjson.SetBytes(template, "choices.0.delta.reasoning_content", "\n\n")
 	} else if dataType == "response.output_text.delta" {
@@ -448,6 +449,17 @@ func ConvertCodexResponseToOpenAINonStream(_ context.Context, _ string, original
 						}
 					}
 				}
+				// Extract reasoning content from content
+				if contentResult := outputItem.Get("content"); contentResult.IsArray() {
+					contentArray := contentResult.Array()
+					for _, contentItem := range contentArray {
+						if contentItem.Get("type").String() == "reasoning_text" {
+							if text := contentItem.Get("text").String(); text != "" {
+								reasoningText += text
+							}
+						}
+					}
+				}
 			case "message":
 				// Extract message content
 				if contentResult := outputItem.Get("content"); contentResult.IsArray() {
@@ -508,18 +520,12 @@ func ConvertCodexResponseToOpenAINonStream(_ context.Context, _ string, original
 
 		// Add tool calls if any
 		if len(toolCalls) > 0 {
-			template, _ = sjson.SetRawBytes(template, "choices.0.message.tool_calls", []byte(`[]`))
-			for _, toolCall := range toolCalls {
-				template, _ = sjson.SetRawBytes(template, "choices.0.message.tool_calls.-1", toolCall)
-			}
+			template, _ = sjson.SetRawBytes(template, "choices.0.message.tool_calls", translatorcommon.JoinRawArray(toolCalls))
 		}
 
 		// Add images if any
 		if len(images) > 0 {
-			template, _ = sjson.SetRawBytes(template, "choices.0.message.images", []byte(`[]`))
-			for _, image := range images {
-				template, _ = sjson.SetRawBytes(template, "choices.0.message.images.-1", image)
-			}
+			template, _ = sjson.SetRawBytes(template, "choices.0.message.images", translatorcommon.JoinRawArray(images))
 		}
 	}
 
@@ -574,13 +580,19 @@ func registerToolCallState(p *ConvertCliToOpenAIParams, eventResult, itemResult 
 
 func findToolCallState(p *ConvertCliToOpenAIParams, eventResult, itemResult gjson.Result) *toolCallStreamState {
 	if itemID := eventResult.Get("item_id").String(); itemID != "" {
-		return p.toolCallStates["item:"+itemID]
+		if state := p.toolCallStates["item:"+itemID]; state != nil {
+			return state
+		}
 	}
 	if itemID := itemResult.Get("id").String(); itemID != "" {
-		return p.toolCallStates["item:"+itemID]
+		if state := p.toolCallStates["item:"+itemID]; state != nil {
+			return state
+		}
 	}
 	if outputIndex := eventResult.Get("output_index"); outputIndex.Exists() {
-		return p.toolCallStates["output:"+outputIndex.Raw]
+		if state := p.toolCallStates["output:"+outputIndex.Raw]; state != nil {
+			return state
+		}
 	}
 	return p.currentToolCall
 }

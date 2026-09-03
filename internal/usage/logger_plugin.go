@@ -94,24 +94,26 @@ type modelStats struct {
 
 // RequestDetail stores the canonical request context and token facts for a single request.
 type RequestDetail struct {
-	RequestID        string            `json:"request_id"`
-	ClientIP         string            `json:"client_ip"`
-	Timestamp        time.Time         `json:"timestamp"`
-	Endpoint         string            `json:"endpoint"`
-	Model            string            `json:"model"`
-	Provider         string            `json:"provider"`
-	ExecutorType     string            `json:"executor_type"`
-	AuthType         string            `json:"auth_type"`
-	ModelAlias       string            `json:"model_alias"`
-	Source           string            `json:"source"`
-	AuthIndex        string            `json:"auth_index"`
-	DetailRole       string            `json:"detail_role"`
-	DetailSequence   string            `json:"detail_sequence,omitempty"`
-	Failed           bool              `json:"failed"`
-	Generate         *bool             `json:"generate,omitempty"`
-	LatencyMs        int64             `json:"latency_ms"`
-	EstimatedCostUSD *float64          `json:"estimated_cost_usd"`
-	Tokens           RequestTokenStats `json:"tokens"`
+	RequestID         string            `json:"request_id"`
+	AccessTokenSHA256 string            `json:"access_token_sha256,omitempty"`
+	ClientIP          string            `json:"client_ip"`
+	Timestamp         time.Time         `json:"timestamp"`
+	Endpoint          string            `json:"endpoint"`
+	Model             string            `json:"model"`
+	Provider          string            `json:"provider"`
+	ExecutorType      string            `json:"executor_type"`
+	AuthType          string            `json:"auth_type"`
+	ModelAlias        string            `json:"model_alias"`
+	Source            string            `json:"source"`
+	AuthIndex         string            `json:"auth_index"`
+	DetailRole        string            `json:"detail_role"`
+	DetailSequence    string            `json:"detail_sequence,omitempty"`
+	Failed            bool              `json:"failed"`
+	Generate          *bool             `json:"generate,omitempty"`
+	Stream            bool              `json:"stream"`
+	LatencyMs         int64             `json:"latency_ms"`
+	EstimatedCostUSD  *float64          `json:"estimated_cost_usd"`
+	Tokens            RequestTokenStats `json:"tokens"`
 }
 
 // TokenStats captures aggregate token usage counters.

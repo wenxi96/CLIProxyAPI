@@ -68,6 +68,66 @@ func TestAntigravityClaudeNonStreamPreservesFilteredStreamUsage(t *testing.T) {
 	}
 }
 
+func TestAntigravityStreamCancellationPublishesTerminalUsageFailure(t *testing.T) {
+	const model = "antigravity-stream-cancellation-usage-test"
+	records := make(chan usage.Record, 2)
+	usage.RegisterNamedPlugin("antigravity-stream-cancellation-usage-test", antigravityUsageCapturePlugin{records: records})
+	streamStarted := make(chan struct{})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"partial\"}]}}]}}\n\n"))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		close(streamStarted)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	exec := NewAntigravityExecutor(&config.Config{RequestRetry: 1})
+	auth := &cliproxyauth.Auth{
+		ID:       "antigravity-stream-cancellation-auth",
+		Provider: "antigravity",
+		Attributes: map[string]string{
+			"base_url": server.URL,
+		},
+		Metadata: map[string]any{
+			"access_token": "token",
+			"project_id":   "project-1",
+			"expired":      time.Now().Add(time.Hour).Format(time.RFC3339),
+		},
+	}
+	payload := []byte(`{"model":"` + model + `","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`)
+	ctx, cancel := context.WithCancel(context.Background())
+	result, errExecute := exec.ExecuteStream(ctx, auth, cliproxyexecutor.Request{
+		Model:   model,
+		Payload: payload,
+	}, cliproxyexecutor.Options{
+		SourceFormat:    sdktranslator.FormatClaude,
+		ResponseFormat:  sdktranslator.FormatClaude,
+		OriginalRequest: payload,
+		Stream:          true,
+	})
+	if errExecute != nil {
+		t.Fatalf("ExecuteStream() error = %v", errExecute)
+	}
+
+	select {
+	case <-streamStarted:
+	case <-time.After(time.Second):
+		t.Fatal("upstream stream did not start")
+	}
+	cancel()
+	for range result.Chunks {
+	}
+
+	record := waitForAntigravityUsageRecord(t, records, model)
+	if !record.Failed {
+		t.Fatalf("usage record failed = false, want canceled stream failure: %+v", record)
+	}
+}
+
 type antigravityUsageCapturePlugin struct {
 	records chan<- usage.Record
 }

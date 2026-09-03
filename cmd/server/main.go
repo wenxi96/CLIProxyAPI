@@ -54,9 +54,7 @@ func applyHomeRuntimeDefaults(parsed *config.Config, homeCfg config.HomeConfig) 
 		parsed = &config.Config{}
 	}
 	parsed.Home = homeCfg
-	if parsed.Port == 0 {
-		parsed.Port = 8317
-	}
+	parsed.Port = config.NormalizeHomePort(parsed.Port)
 	parsed.UsageStatisticsEnabled = true
 	return parsed
 }

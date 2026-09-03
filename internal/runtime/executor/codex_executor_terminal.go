@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -44,8 +46,39 @@ func collectCodexOutputItemDone(eventData []byte, outputItemsByIndex map[int64][
 	*outputItemsFallback = append(*outputItemsFallback, []byte(itemResult.Raw))
 }
 
+func hydrateCodexCompletedOutputItemIDs(eventData []byte, outputItems []gjson.Result, outputItemsByIndex map[int64][]byte) []byte {
+	patchedData := eventData
+	for outputIndex, outputItem := range outputItems {
+		itemData := []byte(outputItem.Raw)
+		itemID := gjson.GetBytes(itemData, "id")
+		if itemID.Exists() && itemID.Type != gjson.Null && (itemID.Type != gjson.String || strings.TrimSpace(itemID.String()) != "") {
+			continue
+		}
+
+		completedItem, ok := outputItemsByIndex[int64(outputIndex)]
+		if !ok {
+			continue
+		}
+		completedID := gjson.GetBytes(completedItem, "id")
+		if completedID.Type != gjson.String || strings.TrimSpace(completedID.String()) == "" {
+			continue
+		}
+
+		updatedData, errSet := sjson.SetRawBytes(patchedData, "response.output."+strconv.Itoa(outputIndex)+".id", []byte(completedID.Raw))
+		if errSet != nil {
+			continue
+		}
+		patchedData = updatedData
+	}
+	return patchedData
+}
+
 func patchCodexCompletedOutput(eventData []byte, outputItemsByIndex map[int64][]byte, outputItemsFallback [][]byte) []byte {
 	outputResult := gjson.GetBytes(eventData, "response.output")
+	if outputResult.Exists() && outputResult.IsArray() && len(outputResult.Array()) > 0 {
+		return hydrateCodexCompletedOutputItemIDs(eventData, outputResult.Array(), outputItemsByIndex)
+	}
+
 	shouldPatchOutput := (!outputResult.Exists() || !outputResult.IsArray() || len(outputResult.Array()) == 0) && (len(outputItemsByIndex) > 0 || len(outputItemsFallback) > 0)
 	if !shouldPatchOutput {
 		return eventData
@@ -128,6 +161,8 @@ func codexTerminalFailureStatus(body []byte) int {
 	errorType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.type").String()))
 	errorCode := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.code").String()))
 	switch {
+	case errorCode == "cyber_policy":
+		return http.StatusBadRequest
 	case errorType == "invalid_request_error", errorType == "bad_request_error":
 		return http.StatusBadRequest
 	case errorType == "authentication_error", errorCode == "invalid_api_key", errorCode == "unauthorized":
@@ -370,4 +405,57 @@ func parseCodexRetryAfter(statusCode int, errorBody []byte, now time.Time) *time
 		return &retryAfter
 	}
 	return nil
+}
+
+// codexBootstrapMaxBufferedEvents bounds how many handshake metadata events may be held
+// back while probing for an upstream rejection embedded in an HTTP 200 stream. The websocket
+// transport prefixes response events with codex.response.metadata and codex.rate_limits frames,
+// so the limit must comfortably exceed the four handshake frames observed in practice. Once the
+// limit is reached the stream is released and the original unbuffered semantics apply.
+const codexBootstrapMaxBufferedEvents = 16
+
+// isCodexHandshakeMetadataEvent reports whether an event carries no generated output and is
+// therefore safe to hold back before the downstream response headers are committed. Keeping a type
+// allow-list rather than a fixed event count matters for the websocket transport, where the
+// handshake frames arrive before response.created and would otherwise exhaust a small counter
+// before the rejection event is seen.
+func isCodexHandshakeMetadataEvent(eventType string) bool {
+	switch eventType {
+	case "response.created", "response.in_progress", "codex.rate_limits", "codex.response.metadata":
+		return true
+	default:
+		return false
+	}
+}
+
+// observeCodexTokenEvent inspects a stream payload and marks TTFT on the first substantive token event.
+func observeCodexTokenEvent(reporter *helps.UsageReporter, payload []byte) {
+	helps.ObserveResponsesTokenEvent(reporter, payload)
+}
+
+// newCodexBootstrapOverloadErr reports a buffered overload rejection with its real status.
+//
+// The status is deliberately produced here instead of in codexTerminalFailureStatus: that mapping
+// is shared with the unbuffered path, where the rejection is delivered in-stream and a status
+// change would alter cooldown classification and retry-after parsing for everyone. Keeping 503
+// scoped to this path means disabling the feature restores the previous behaviour exactly.
+func newCodexBootstrapOverloadErr(body []byte) statusErr {
+	return newCodexStatusErr(http.StatusServiceUnavailable, body)
+}
+
+// isCodexOverloadBootstrapFailure reports whether a terminal failure delivered inside an HTTP 200
+// stream is a transient capacity rejection that a different credential may be able to serve.
+// Only these failures justify replacing the whole attempt during bootstrap; every other terminal
+// failure keeps the original in-stream delivery semantics so downstream behaviour is unchanged.
+func isCodexOverloadBootstrapFailure(body []byte) bool {
+	errorType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.type").String()))
+	errorCode := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "error.code").String()))
+	switch {
+	case errorType == "service_unavailable_error", errorCode == "server_is_overloaded":
+		return true
+	case errorType == "rate_limit_error", errorCode == "rate_limit_exceeded":
+		return true
+	default:
+		return false
+	}
 }

@@ -26,10 +26,11 @@ import (
 // The function performs the following transformations:
 // 1. Sets up a template with the model name and empty instructions field
 // 2. Processes system messages and converts them to developer input content
-// 3. Transforms message contents (text, image, tool_use, tool_result) to appropriate formats
+// 3. Transforms message contents (text, image, document, tool_use, tool_result) to appropriate formats
 // 4. Converts tools declarations to the expected format
 // 5. Adds additional configuration parameters for the Codex API
 // 6. Maps Claude thinking configuration to Codex reasoning settings
+// 7. Maps Claude output_config format to Codex text format
 //
 // Parameters:
 //   - modelName: The name of the model to use for the request
@@ -38,7 +39,17 @@ import (
 //
 // Returns:
 //   - []byte: The transformed request data in internal client format
-func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) []byte {
+func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, stream bool) []byte {
+	return convertClaudeRequestToCodex(modelName, inputRawJSON, stream, false)
+}
+
+// ConvertClaudeRequestToCodexWithCompat preserves assistant thinking blocks with
+// empty signatures for configured compatibility endpoints.
+func ConvertClaudeRequestToCodexWithCompat(modelName string, inputRawJSON []byte, stream bool) []byte {
+	return convertClaudeRequestToCodex(modelName, inputRawJSON, stream, true)
+}
+
+func convertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool, preserveEmptyThinkingBlocks bool) []byte {
 	rawJSON := inputRawJSON
 
 	template := []byte(`{"model":"","instructions":"","input":[]}`)
@@ -86,6 +97,8 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 	messagesResult := rootResult.Get("messages")
 	if messagesResult.IsArray() {
 		messageResults := messagesResult.Array()
+		var pendingToolUseIDs []string
+		var pendingSystemReminders [][]byte
 
 		for i := 0; i < len(messageResults); i++ {
 			messageResult := messageResults[i]
@@ -94,12 +107,20 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 				if reminderText, ok := translatorcommon.ClaudeMessageSystemReminderText(messageResult.Get("content")); ok {
 					message := []byte(`{"type":"message","role":"user","content":[{"type":"input_text","text":""}]}`)
 					message, _ = sjson.SetBytes(message, "content.0.text", reminderText)
-					inputItems = append(inputItems, message)
+					if len(pendingToolUseIDs) > 0 {
+						pendingSystemReminders = append(pendingSystemReminders, message)
+					} else {
+						inputItems = append(inputItems, message)
+					}
 				}
 				continue
 			}
 
 			messageContentsResult := messageResult.Get("content")
+			if messageRole == "user" && len(pendingToolUseIDs) > 0 && messageContentsResult.IsArray() {
+				messageContentsResult = translatorcommon.AlignClaudeToolResults(messageContentsResult, pendingToolUseIDs)
+			}
+			pendingToolUseIDs = nil
 			contentItems := make([][]byte, 0, 4)
 
 			flushMessage := func() {
@@ -129,6 +150,12 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 				contentItems = append(contentItems, content)
 			}
 
+			appendDocumentContent := func(dataURL string) {
+				content := []byte(`{"type":"input_file","file_data":"","filename":"document.pdf"}`)
+				content, _ = sjson.SetBytes(content, "file_data", dataURL)
+				contentItems = append(contentItems, content)
+			}
+
 			appendReasoningContent := func(part gjson.Result) {
 				if messageRole != "assistant" {
 					return
@@ -137,13 +164,17 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 				rawSignature := part.Get("signature").String()
 				signature, ok := sigcompat.CompatibleSignatureForProvider(sigcompat.SignatureProviderGPT, rawSignature)
 				if !ok {
-					if !codexClaudeTargetAcceptsGrokSignature(modelName) {
-						return
+					if preserveEmptyThinkingBlocks && strings.TrimSpace(rawSignature) == "" {
+						signature = rawSignature
+					} else {
+						if !codexClaudeTargetAcceptsGrokSignature(modelName) {
+							return
+						}
+						if _, err := sigcompat.InspectGrokEncryptedContent(rawSignature); err != nil {
+							return
+						}
+						signature = rawSignature
 					}
-					if _, err := sigcompat.InspectGrokEncryptedContent(rawSignature); err != nil {
-						return
-					}
-					signature = rawSignature
 				}
 
 				flushMessage()
@@ -160,10 +191,18 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 
 					switch contentType {
 					case "text":
+						if len(pendingSystemReminders) > 0 {
+							inputItems = append(inputItems, pendingSystemReminders...)
+							pendingSystemReminders = nil
+						}
 						appendTextContent(messageContentResult.Get("text").String())
 					case "thinking":
 						appendReasoningContent(messageContentResult)
 					case "image":
+						if len(pendingSystemReminders) > 0 {
+							inputItems = append(inputItems, pendingSystemReminders...)
+							pendingSystemReminders = nil
+						}
 						sourceResult := messageContentResult.Get("source")
 						if sourceResult.Exists() {
 							data := sourceResult.Get("data").String()
@@ -182,8 +221,31 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 								appendImageContent(dataURL)
 							}
 						}
+					case "document":
+						if len(pendingSystemReminders) > 0 {
+							inputItems = append(inputItems, pendingSystemReminders...)
+							pendingSystemReminders = nil
+						}
+						sourceResult := messageContentResult.Get("source")
+						if sourceResult.Get("type").String() != "base64" {
+							continue
+						}
+						mediaType := strings.TrimSpace(sourceResult.Get("media_type").String())
+						if !strings.EqualFold(mediaType, "application/pdf") {
+							continue
+						}
+						data := sourceResult.Get("data").String()
+						if data == "" {
+							data = sourceResult.Get("base64").String()
+						}
+						if data != "" {
+							appendDocumentContent(fmt.Sprintf("data:%s;base64,%s", mediaType, data))
+						}
 					case "tool_use":
 						flushMessage()
+						if id := messageContentResult.Get("id").String(); id != "" {
+							pendingToolUseIDs = append(pendingToolUseIDs, id)
+						}
 						functionCallMessage := []byte(`{"type":"function_call"}`)
 						functionCallMessage, _ = sjson.SetBytes(functionCallMessage, "call_id", shortenCodexCallIDIfNeeded(messageContentResult.Get("id").String()))
 						{
@@ -249,12 +311,23 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 					}
 				}
 				flushMessage()
+				if len(pendingSystemReminders) > 0 {
+					inputItems = append(inputItems, pendingSystemReminders...)
+					pendingSystemReminders = nil
+				}
 			} else if messageContentsResult.Type == gjson.String {
 				appendTextContent(messageContentsResult.String())
 				flushMessage()
+				if len(pendingSystemReminders) > 0 {
+					inputItems = append(inputItems, pendingSystemReminders...)
+					pendingSystemReminders = nil
+				}
 			}
 		}
 
+		if len(pendingSystemReminders) > 0 {
+			inputItems = append(inputItems, pendingSystemReminders...)
+		}
 	}
 
 	// Convert tools declarations to the expected format for the Codex API.
@@ -354,6 +427,24 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 	template, _ = sjson.SetBytes(template, "stream", true)
 	template, _ = sjson.SetBytes(template, "store", false)
 	template, _ = sjson.SetBytes(template, "include", []string{"reasoning.encrypted_content"})
+
+	// Map Claude output_config.format to Codex Responses text.format.
+	if format := rootResult.Get("output_config.format"); format.IsObject() && format.Get("type").String() == "json_schema" && format.Get("schema").IsObject() {
+		name := "cli_proxy_structured_output"
+		if n := format.Get("name").String(); n != "" {
+			name = n
+		}
+		strict := true
+		if s := format.Get("strict"); s.Exists() && s.Type == gjson.False {
+			strict = false
+		}
+		translatedFormat := []byte(`{"type":"json_schema","name":"","strict":true,"schema":{}}`)
+		translatedFormat, _ = sjson.SetBytes(translatedFormat, "name", name)
+		translatedFormat, _ = sjson.SetBytes(translatedFormat, "strict", strict)
+		translatedFormat, _ = sjson.SetRawBytes(translatedFormat, "schema", []byte(format.Get("schema").Raw))
+		template, _ = sjson.SetRawBytes(template, "text.format", translatedFormat)
+	}
+
 	if toolsResult.IsArray() {
 		template, _ = sjson.SetRawBytes(template, "tools", translatorcommon.JoinRawArray(toolItems))
 	}
