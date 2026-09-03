@@ -26,9 +26,7 @@ func (s *Service) newOpenAICompatibilityRegistrationCache() *openAICompatibility
 	if s == nil {
 		return nil
 	}
-	s.cfgMu.RLock()
-	cfg := s.cfg
-	s.cfgMu.RUnlock()
+	cfg := s.runtimeConfig()
 	if cfg == nil || len(cfg.OpenAICompatibility) == 0 {
 		return nil
 	}
@@ -182,7 +180,7 @@ func (s *Service) registerAvailableExecutors(ctx context.Context, opts executorR
 		s.registerExecutorsForAuths(baselineExecutorAuths(), opts.forceReplaceAuths)
 	}
 	if len(opts.auths) > 0 {
-		s.registerExecutorsForAuths(opts.auths, opts.forceReplaceAuths)
+		s.registerExecutorsForAuthsWithConfig(opts.auths, opts.forceReplaceAuths, opts.cfg)
 	}
 	if opts.includePlugins && s.pluginHost != nil {
 		registerPluginExecutors(s.pluginHost, s.coreManager)
@@ -217,6 +215,10 @@ func baselineExecutorAuths() []*coreauth.Auth {
 }
 
 func (s *Service) registerExecutorsForAuths(auths []*coreauth.Auth, forceReplace bool) {
+	s.registerExecutorsForAuthsWithConfig(auths, forceReplace, nil)
+}
+
+func (s *Service) registerExecutorsForAuthsWithConfig(auths []*coreauth.Auth, forceReplace bool, cfg *config.Config) {
 	reboundCodex := false
 	for _, auth := range auths {
 		if auth != nil && strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
@@ -225,17 +227,21 @@ func (s *Service) registerExecutorsForAuths(auths []*coreauth.Auth, forceReplace
 			}
 			reboundCodex = true
 		}
-		s.registerExecutorForAuth(auth, forceReplace)
+		s.registerExecutorForAuthWithConfig(auth, forceReplace, cfg)
 	}
 }
 
 func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
+	s.registerExecutorForAuthWithConfig(a, forceReplace, nil)
+}
+
+func (s *Service) registerExecutorForAuthWithConfig(a *coreauth.Auth, forceReplace bool, cfg *config.Config) {
 	if s == nil || s.coreManager == nil || a == nil {
 		return
 	}
-	s.cfgMu.RLock()
-	cfg := s.cfg
-	s.cfgMu.RUnlock()
+	if cfg == nil {
+		cfg = s.runtimeConfig()
+	}
 	if strings.EqualFold(strings.TrimSpace(a.Provider), "codex") {
 		if !forceReplace {
 			existingExecutor, hasExecutor := s.coreManager.Executor("codex")

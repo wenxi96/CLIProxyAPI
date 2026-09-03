@@ -226,6 +226,8 @@ func (s *Service) commitHomeConfig(lifetimeCtx, homeCtx context.Context, generat
 	}
 	work.config = commit.cfg
 	work.configCommit = commit
+	work.configCommit.prePublished = true
+	work.configCommit.preservePublishedOnCancellation = true
 	work.committed = true
 	return true
 }

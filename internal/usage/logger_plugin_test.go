@@ -428,11 +428,11 @@ func TestNormalizeRequestTokensRebuildsCanonicalMetadata(t *testing.T) {
 	if tokens.CacheSplitStatus != CacheSplitNone {
 		t.Fatalf("cache_split_status = %q, want %q", tokens.CacheSplitStatus, CacheSplitNone)
 	}
-	if tokens.ReasoningCostMode != ReasoningCostIncludedInOutput {
-		t.Fatalf("reasoning_cost_mode = %q, want %q", tokens.ReasoningCostMode, ReasoningCostIncludedInOutput)
+	if tokens.ReasoningCostMode != ReasoningCostSeparate {
+		t.Fatalf("reasoning_cost_mode = %q, want %q", tokens.ReasoningCostMode, ReasoningCostSeparate)
 	}
-	if tokens.TotalTokens != 15 {
-		t.Fatalf("total_tokens = %d, want reasoning included in output total 15", tokens.TotalTokens)
+	if tokens.TotalTokens != 18 {
+		t.Fatalf("total_tokens = %d, want separate reasoning total 18", tokens.TotalTokens)
 	}
 }
 

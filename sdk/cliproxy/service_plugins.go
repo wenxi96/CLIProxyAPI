@@ -39,6 +39,7 @@ type executorRegistrationOptions struct {
 	includePlugins    bool
 	forceReplaceAuths bool
 	auths             []*coreauth.Auth
+	cfg               *config.Config
 }
 
 var registerPluginExecutors = func(host *pluginhost.Host, manager *coreauth.Manager) {
@@ -91,6 +92,9 @@ func (s *Service) syncPluginRuntimeConfigForConfig(ctx context.Context, cfg *con
 		sdkAuth.RegisterPluginAuthParser(nil)
 		return false
 	}
+	if s.syncPluginRuntimeConfigForConfigFn != nil {
+		return s.syncPluginRuntimeConfigForConfigFn(ctx, cfg)
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -127,6 +131,13 @@ func (s *Service) syncPluginRuntimeConfigForConfig(ctx context.Context, cfg *con
 }
 
 func (s *Service) syncPluginModelRuntime(ctx context.Context) {
+	s.cfgMu.RLock()
+	cfg := s.cfg
+	s.cfgMu.RUnlock()
+	s.syncPluginModelRuntimeForConfig(ctx, cfg)
+}
+
+func (s *Service) syncPluginModelRuntimeForConfig(ctx context.Context, cfg *config.Config) {
 	if s == nil || s.pluginHost == nil || s.coreManager == nil {
 		return
 	}
@@ -137,14 +148,13 @@ func (s *Service) syncPluginModelRuntime(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
-	s.cfgMu.RLock()
-	homeEnabled := s.cfg != nil && s.cfg.Home.Enabled
-	s.cfgMu.RUnlock()
+	homeEnabled := cfg != nil && cfg.Home.Enabled
 	s.registerAvailableExecutors(ctx, executorRegistrationOptions{
 		includeBaseline:   homeEnabled,
 		includePlugins:    true,
 		forceReplaceAuths: false,
 		auths:             s.coreManager.List(),
+		cfg:               cfg,
 	})
 	s.refreshPluginModelRegistrations(ctx)
 	if ctx.Err() != nil {

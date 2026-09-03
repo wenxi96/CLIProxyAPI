@@ -29,6 +29,17 @@ func (m *Manager) SetRetryConfig(retry int, maxRetryInterval time.Duration, maxR
 	m.maxRetryInterval.Store(maxRetryInterval.Nanoseconds())
 }
 
+// RetrySettings returns the active request retry, max retry credentials and
+// max retry interval. It is a read-only accessor used by the runtime config
+// transaction compensation tests so they can assert rollback restored the
+// previous retry configuration.
+func (m *Manager) RetrySettings() (retry int, maxRetryCredentials int, maxRetryInterval time.Duration) {
+	if m == nil {
+		return 0, 0, 0
+	}
+	return int(m.requestRetry.Load()), int(m.maxRetryCredentials.Load()), time.Duration(m.maxRetryInterval.Load())
+}
+
 // RegisterExecutor registers a provider executor with the manager.
 func (m *Manager) RegisterExecutor(executor ProviderExecutor) {
 	if executor == nil {
@@ -62,6 +73,50 @@ func (m *Manager) UnregisterExecutor(provider string) {
 	m.mu.Lock()
 	delete(m.executors, provider)
 	m.mu.Unlock()
+}
+
+// SnapshotExecutors returns a shallow copy of the current provider executor
+// map. The runtime config transaction captures it before executor
+// registration so a later hook failure can restore the exact prior executor
+// set, including removing executors added by the failed apply. Re-applying the
+// previous config cannot remove additive baseline/auth-derived registrations,
+// so the transaction relies on this snapshot instead of re-application.
+func (m *Manager) SnapshotExecutors() map[string]ProviderExecutor {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	snapshot := make(map[string]ProviderExecutor, len(m.executors))
+	for provider, executor := range m.executors {
+		snapshot[provider] = executor
+	}
+	return snapshot
+}
+
+// RestoreExecutors replaces the executor map with the supplied snapshot. It
+// closes execution sessions for executors registered by a failed apply that
+// are absent from the snapshot, then re-installs the snapshot exactly.
+func (m *Manager) RestoreExecutors(snapshot map[string]ProviderExecutor) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	previous := m.executors
+	restored := make(map[string]ProviderExecutor, len(snapshot))
+	for provider, executor := range snapshot {
+		restored[provider] = executor
+	}
+	m.executors = restored
+	m.mu.Unlock()
+	for provider, executor := range previous {
+		if _, retained := snapshot[provider]; retained || executor == nil {
+			continue
+		}
+		if closer, ok := executor.(ExecutionSessionCloser); ok && closer != nil {
+			closer.CloseExecutionSession(CloseAllExecutionSessionsID)
+		}
+	}
 }
 
 // Register inserts a new auth entry into the manager.

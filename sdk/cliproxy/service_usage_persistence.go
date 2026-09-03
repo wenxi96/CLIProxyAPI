@@ -13,6 +13,12 @@ import (
 
 const usagePersistenceDisabledPollInterval = 5 * time.Second
 
+const (
+	usageRestoreStateReady       = "ready"
+	usageRestoreStateInProgress  = "restore_in_progress"
+	usageRestoreStateUnavailable = "restore_unavailable"
+)
+
 func usagePersistenceIntervalForConfig(cfg *config.Config) time.Duration {
 	if cfg == nil || cfg.UsageStatisticsPersistIntervalSeconds <= 0 {
 		return 0
@@ -29,8 +35,20 @@ func (s *Service) currentConfig() *config.Config {
 	return s.cfg
 }
 
+// runtimeConfig returns the candidate config only to internal staging-aware
+// helpers. Public readers continue to observe currentConfig until publication.
+func (s *Service) runtimeConfig() *config.Config {
+	if s == nil {
+		return nil
+	}
+	if candidate := s.runtimeConfigCandidate.Load(); candidate != nil {
+		return candidate
+	}
+	return s.currentConfig()
+}
+
 func (s *Service) usageStatisticsEnabled() bool {
-	cfg := s.currentConfig()
+	cfg := s.runtimeConfig()
 	return cfg != nil && cfg.UsageStatisticsEnabled
 }
 
@@ -40,11 +58,11 @@ func applyUsageStatisticsEnabled(enabled bool) {
 }
 
 func (s *Service) usagePersistenceInterval() time.Duration {
-	return usagePersistenceIntervalForConfig(s.currentConfig())
+	return usagePersistenceIntervalForConfig(s.runtimeConfig())
 }
 
 func (s *Service) usageStatisticsFilePath() string {
-	cfg := s.currentConfig()
+	cfg := s.runtimeConfig()
 	if cfg == nil {
 		return ""
 	}
@@ -59,38 +77,79 @@ func (s *Service) usageStatisticsStore() *internalusage.RequestStatistics {
 }
 
 func (s *Service) restoreUsageStatistics() {
-	if s == nil || !s.usageStatisticsEnabled() {
+	s.setUsageRestoreState(usageRestoreStateInProgress)
+	if err := s.restoreUsageStatisticsWithError(); err != nil {
+		applyUsageStatisticsEnabled(false)
+		internalusage.SetStatisticsReady(false)
+		s.setUsageRestoreState(usageRestoreStateUnavailable)
+		log.WithError(err).Warn("usage statistics restore unavailable")
 		return
+	}
+	applyUsageStatisticsEnabled(s.usageStatisticsEnabled())
+	internalusage.SetStatisticsReady(true)
+	s.setUsageRestoreState(usageRestoreStateReady)
+}
+
+func (s *Service) usageRestoreStatus() string {
+	if s == nil {
+		return usageRestoreStateUnavailable
+	}
+	s.usageRestoreMu.RLock()
+	state := s.usageRestoreState
+	s.usageRestoreMu.RUnlock()
+	if state == "" {
+		return usageRestoreStateReady
+	}
+	return state
+}
+
+func (s *Service) setUsageRestoreState(state string) {
+	if s == nil {
+		return
+	}
+	s.usageRestoreMu.Lock()
+	s.usageRestoreState = state
+	s.usageRestoreMu.Unlock()
+}
+
+func (s *Service) restoreUsageStatisticsWithError() error {
+	if s == nil || !s.usageStatisticsEnabled() {
+		return nil
 	}
 	path := s.usageStatisticsFilePath()
 	if strings.TrimSpace(path) == "" {
-		return
+		return nil
 	}
 	loaded, result, errRestore := internalusage.RestoreRequestStatistics(path, s.usageStatisticsStore())
 	if errRestore != nil {
-		log.WithError(errRestore).Warnf("failed to restore usage statistics from %s", path)
-		return
+		return errRestore
 	}
 	if loaded {
 		log.Infof("usage statistics restored from %s (added=%d skipped=%d)", path, result.Added, result.Skipped)
 	}
+	return nil
 }
 
 func (s *Service) persistUsageStatistics(reason string) {
+	if err := s.persistUsageStatisticsWithError(reason); err != nil {
+		log.WithError(err).Warnf("failed to persist usage statistics during %s", reason)
+	}
+}
+
+func (s *Service) persistUsageStatisticsWithError(reason string) error {
 	if s == nil {
-		return
+		return nil
 	}
 	path := s.usageStatisticsFilePath()
 	if strings.TrimSpace(path) == "" {
-		return
+		return nil
 	}
 	saved, errPersist := internalusage.PersistRequestStatistics(path, s.usageStatisticsStore())
 	if errPersist != nil {
-		log.WithError(errPersist).Warnf("failed to persist usage statistics during %s", reason)
-		return
+		return errPersist
 	}
 	if !saved {
-		return
+		return nil
 	}
 	switch reason {
 	case "shutdown":
@@ -98,6 +157,7 @@ func (s *Service) persistUsageStatistics(reason string) {
 	default:
 		log.Debugf("usage statistics persisted to %s (%s)", path, reason)
 	}
+	return nil
 }
 
 func (s *Service) nextUsagePersistenceWait() time.Duration {
@@ -160,22 +220,96 @@ func (s *Service) restartUsagePersistenceLoop() {
 }
 
 func (s *Service) applyUsagePersistenceConfigChange(previousEnabled bool, previousInterval time.Duration, newCfg *config.Config) {
-	if s == nil || newCfg == nil {
-		return
+	if err := s.applyUsagePersistenceConfigChangeWithError(previousEnabled, previousInterval, newCfg); err != nil {
+		log.WithError(err).Warn("usage persistence config transaction failed")
 	}
+}
 
+func (s *Service) applyUsagePersistenceConfigChangeWithError(previousEnabled bool, previousInterval time.Duration, newCfg *config.Config) error {
+	commit, rollback, errPrepare := s.prepareUsagePersistenceConfigChange(previousEnabled, previousInterval, newCfg)
+	if errPrepare != nil {
+		if rollback != nil {
+			rollback()
+		}
+		return errPrepare
+	}
+	if commit != nil {
+		commit()
+	}
+	return nil
+}
+
+// prepareUsagePersistenceConfigChange performs durable restore/persist work
+// without publishing usage flags or restarting the persistence loop. Those
+// visible transitions are returned as a commit closure for the config
+// publication barrier; rollback restores the exact pre-transaction state.
+func (s *Service) prepareUsagePersistenceConfigChange(previousEnabled bool, previousInterval time.Duration, newCfg *config.Config) (func(), func(), error) {
+	if s == nil || newCfg == nil {
+		return func() {}, func() {}, nil
+	}
 	currentEnabled := newCfg.UsageStatisticsEnabled
 	currentInterval := usagePersistenceIntervalForConfig(newCfg)
+	previousReady := internalusage.StatisticsReady()
+	previousRestoreState := s.usageRestoreStatus()
 
 	if previousEnabled && !currentEnabled {
-		s.persistUsageStatistics("disable")
+		if errPersist := s.persistUsageStatisticsWithError("disable"); errPersist != nil {
+			return nil, func() {
+				applyUsageStatisticsEnabled(previousEnabled)
+				internalusage.SetStatisticsReady(previousReady)
+				s.setUsageRestoreState(previousRestoreState)
+			}, errPersist
+		}
 	}
 	if !previousEnabled && currentEnabled {
-		s.restoreUsageStatistics()
+		s.setUsageRestoreState(usageRestoreStateInProgress)
+		if errRestore := s.restoreUsageStatisticsWithError(); errRestore != nil {
+			s.setUsageRestoreState(usageRestoreStateUnavailable)
+			return nil, func() {
+				applyUsageStatisticsEnabled(previousEnabled)
+				internalusage.SetStatisticsReady(previousReady)
+				s.setUsageRestoreState(previousRestoreState)
+			}, errRestore
+		}
 	}
-	if previousEnabled != currentEnabled || previousInterval != currentInterval {
-		s.restartUsagePersistenceLoop()
+
+	var commitOnce bool
+	var rollbackOnce bool
+	commit := func() {
+		if commitOnce {
+			return
+		}
+		commitOnce = true
+		if previousEnabled != currentEnabled {
+			applyUsageStatisticsEnabled(currentEnabled)
+		}
+		if !previousEnabled && currentEnabled {
+			internalusage.SetStatisticsReady(true)
+			s.setUsageRestoreState(usageRestoreStateReady)
+		}
+		if previousEnabled != currentEnabled || previousInterval != currentInterval {
+			s.restartUsagePersistenceLoop()
+		}
 	}
+	rollback := func() {
+		if rollbackOnce {
+			return
+		}
+		rollbackOnce = true
+		applyUsageStatisticsEnabled(previousEnabled)
+		internalusage.SetStatisticsReady(previousReady)
+		s.setUsageRestoreState(previousRestoreState)
+	}
+	return commit, rollback, nil
+}
+
+func restoreUsageRuntimeState(s *Service, commit configCommit) {
+	if s == nil {
+		return
+	}
+	applyUsageStatisticsEnabled(commit.previousUsageEnabled)
+	internalusage.SetStatisticsReady(commit.previousUsageReady)
+	s.setUsageRestoreState(commit.previousUsageRestoreState)
 }
 
 func (s *Service) stopUsagePersistenceLoop() {

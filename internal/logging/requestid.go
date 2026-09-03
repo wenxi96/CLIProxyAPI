@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 
 	"github.com/gin-gonic/gin"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
 
 // requestIDKey is the context key for storing/retrieving request IDs.
@@ -25,7 +26,13 @@ func GenerateRequestID() string {
 
 // WithRequestID returns a new context with the request ID attached.
 func WithRequestID(ctx context.Context, requestID string) context.Context {
-	return context.WithValue(ctx, requestIDKey{}, requestID)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx = context.WithValue(ctx, requestIDKey{}, requestID)
+	carrier, _ := coreusage.RecordContextCarrierFromContext(ctx)
+	carrier.RequestID = requestID
+	return coreusage.WithRecordContextCarrier(ctx, carrier)
 }
 
 // GetRequestID retrieves the request ID from the context.
@@ -36,6 +43,9 @@ func GetRequestID(ctx context.Context) string {
 	}
 	if id, ok := ctx.Value(requestIDKey{}).(string); ok {
 		return id
+	}
+	if carrier, ok := coreusage.RecordContextCarrierFromContext(ctx); ok {
+		return carrier.RequestID
 	}
 	return ""
 }

@@ -2,6 +2,7 @@ package management
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 	log "github.com/sirupsen/logrus"
@@ -243,7 +245,61 @@ func (h *Handler) GetUsageStatisticsEnabled(c *gin.Context) {
 	c.JSON(200, gin.H{"usage-statistics-enabled": h.cfg.UsageStatisticsEnabled})
 }
 func (h *Handler) PutUsageStatisticsEnabled(c *gin.Context) {
-	h.updateBoolField(c, func(v bool) { h.cfg.UsageStatisticsEnabled = v })
+	var body struct {
+		Value *bool `json:"value"`
+	}
+	if errBindJSON := c.ShouldBindJSON(&body); errBindJSON != nil || body.Value == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	if h == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "restore_unavailable"})
+		return
+	}
+
+	h.mu.Lock()
+	if h.cfg == nil {
+		h.mu.Unlock()
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "restore_unavailable"})
+		return
+	}
+	previous := h.cfg.CloneForRuntime()
+	candidate := h.cfg.CloneForRuntime()
+	candidate.UsageStatisticsEnabled = *body.Value
+	hook := h.configRuntimeTxnHook
+	h.mu.Unlock()
+
+	if hook != nil {
+		if errRuntime := hook(c.Request.Context(), candidate); errRuntime != nil {
+			if errors.Is(errRuntime, usage.ErrProjectionRebuildInProgress) {
+				c.JSON(http.StatusConflict, gin.H{"error": "restore_in_progress"})
+				return
+			}
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "restore_unavailable"})
+			return
+		}
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if errSave := config.SaveConfigPreserveComments(h.configFilePath, candidate); errSave != nil {
+		if hook != nil {
+			// Compensate the service-side transaction when file publication fails.
+			_ = hook(c.Request.Context(), previous)
+			h.cfg = previous
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save config: %v", errSave)})
+		return
+	}
+	h.cfg = candidate
+	if hook == nil {
+		h.reloadGeneration++
+		snapshot := configReloadSnapshot{cfg: candidate.CloneForRuntime(), generation: h.reloadGeneration}
+		h.mu.Unlock()
+		h.reloadConfigAfterManagementSave(c.Request.Context(), snapshot)
+		h.mu.Lock()
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
 // UsageStatisticsEnabled

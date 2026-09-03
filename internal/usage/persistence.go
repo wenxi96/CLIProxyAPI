@@ -103,6 +103,38 @@ func RestoreRequestStatistics(path string, stats *RequestStatistics) (loaded boo
 	if stats == nil {
 		return false, result, nil
 	}
+	if generation, generationErr := LoadProjectionGeneration(path); generationErr == nil {
+		currentSnapshot, _, _ := stats.SnapshotWithState()
+		if strings.EqualFold(SnapshotDigestV1(currentSnapshot), generation.Manifest.CanonicalDetailDigest) &&
+			currentSnapshot.TotalRequests > 0 && stats.hasIdentityMetadata(generation.Manifest.Generation) {
+			stats.MarkAllPersisted()
+			result.Skipped = int64(len(sortedSnapshotDetails(generation.Snapshot)))
+			return true, result, nil
+		}
+		// Normal v2 restart: directly hydrate the persisted projection sections
+		// instead of replaying canonical details. A hydrate failure means the
+		// checksum-valid generation is semantically invalid; it must NOT replay
+		// that same generation's canonical details. restoreProjectionGeneration
+		// falls back to the previous committed generation, or fails closed.
+		selectedGeneration, hydrated, hydrateResult, hydrateErr := stats.restoreProjectionGeneration(generation, path)
+		if hydrateErr != nil {
+			return false, hydrateResult, hydrateErr
+		}
+		if hydrated {
+			stats.MarkAllPersisted()
+			return true, hydrateResult, nil
+		}
+		// No v2 sections (legacy v1 generation): canonical-detail replay.
+		result, err = stats.MergeSnapshotWithIdentitySidecar(selectedGeneration.Snapshot, selectedGeneration.Sidecar)
+		if err != nil {
+			return false, result, err
+		}
+		stats.applyProjectionMetadata(selectedGeneration.Sidecar, selectedGeneration.Projection)
+		stats.MarkAllPersisted()
+		return true, result, nil
+	} else if !os.IsNotExist(generationErr) {
+		return false, result, generationErr
+	}
 	_, versionBefore, persistedBefore := stats.SnapshotWithState()
 	snapshot, errLoad := LoadSnapshotFile(path)
 	if errLoad != nil {
@@ -118,7 +150,10 @@ func RestoreRequestStatistics(path string, stats *RequestStatistics) (loaded boo
 			return false, result, errLoad
 		}
 	}
-	result = stats.MergeSnapshot(snapshot)
+	result, err = stats.MergeSnapshotLegacyWithError(snapshot)
+	if err != nil {
+		return false, result, err
+	}
 	if versionBefore == persistedBefore {
 		stats.MarkAllPersisted()
 	}
@@ -131,14 +166,27 @@ func PersistRequestStatistics(path string, stats *RequestStatistics) (bool, erro
 	if stats == nil {
 		return false, nil
 	}
-	snapshot, version, persistedVersion := stats.SnapshotWithState()
+	stats.persistenceMu.Lock()
+	defer stats.persistenceMu.Unlock()
+	stats.mu.RLock()
+	version := stats.changeCount
+	persistedVersion := stats.persistedCount
+	stats.mu.RUnlock()
 	if version == persistedVersion {
 		return false, nil
 	}
-	if err := SaveSnapshotFile(path, snapshot); err != nil {
+	captured := capturedProjectionGeneration{}
+	if err := saveProjectionGenerationWithCaptureResult(path, stats, nil, &captured); err != nil {
 		return false, err
 	}
-	stats.MarkPersisted(version)
+	// Commit the generation marker before refreshing the legacy snapshot file.
+	// Restore prefers the manifest-backed generation, so a failure here leaves
+	// the last complete legacy view stale rather than pairing new details with
+	// an older projection manifest.
+	if err := SaveSnapshotFile(path, captured.snapshot); err != nil {
+		return false, err
+	}
+	stats.MarkPersisted(captured.changeCount)
 	return true, nil
 }
 
@@ -154,7 +202,7 @@ func writeFileAtomic(path string, data []byte) error {
 		return fmt.Errorf("usage: create snapshot directory: %w", err)
 	}
 
-	tmpFile, err := os.CreateTemp(dir, "usage-statistics-*.tmp")
+	tmpFile, err := os.CreateTemp(dir, filepath.Base(target)+".tmp-*")
 	if err != nil {
 		return fmt.Errorf("usage: create temp snapshot file: %w", err)
 	}

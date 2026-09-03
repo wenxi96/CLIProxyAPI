@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	coreusage "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
 )
 
 type clientIPKey struct{}
@@ -27,7 +28,10 @@ func WithClientIP(ctx context.Context, clientIP string) context.Context {
 	if clientIP == "" {
 		return ctx
 	}
-	return context.WithValue(ctx, clientIPKey{}, clientIP)
+	ctx = context.WithValue(ctx, clientIPKey{}, clientIP)
+	carrier, _ := coreusage.RecordContextCarrierFromContext(ctx)
+	carrier.ClientIP = clientIP
+	return coreusage.WithRecordContextCarrier(ctx, carrier)
 }
 
 // ClientIPFromContext returns the immutable client IP snapshot, falling back to Gin when needed.
@@ -37,6 +41,11 @@ func ClientIPFromContext(ctx context.Context) string {
 	}
 	if clientIP, ok := ctx.Value(clientIPKey{}).(string); ok {
 		if trimmed := strings.TrimSpace(clientIP); trimmed != "" {
+			return trimmed
+		}
+	}
+	if carrier, ok := coreusage.RecordContextCarrierFromContext(ctx); ok {
+		if trimmed := strings.TrimSpace(carrier.ClientIP); trimmed != "" {
 			return trimmed
 		}
 	}

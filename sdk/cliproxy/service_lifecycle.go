@@ -11,6 +11,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	internalusage "github.com/router-for-me/CLIProxyAPI/v7/internal/usage"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -50,13 +51,16 @@ func (s *Service) Run(ctx context.Context) error {
 		s.homeMu.Unlock()
 	}()
 
+	// Keep usage ingestion behind the restore ready gate until the persisted
+	// generation has been validated and merged.
+	internalusage.SetStatisticsReady(false)
+	applyUsageStatisticsEnabled(false)
 	usage.StartDefault(ctx)
 	homeEnabled := s.cfg != nil && s.cfg.Home.Enabled
 	if homeEnabled {
 		forceHomeRuntimeConfig(s.cfg)
 	}
 	if s.cfg != nil {
-		applyUsageStatisticsEnabled(s.cfg.UsageStatisticsEnabled)
 		s.cfgMu.Lock()
 		s.oldConfigYaml, _ = yaml.Marshal(s.cfg)
 		s.cfgMu.Unlock()
@@ -124,7 +128,18 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 
 	// handlers no longer depend on legacy clients; pass nil slice initially
-	s.server = api.NewServer(s.cfg, s.coreManager, s.accessManager, s.configPath, s.serverOptions...)
+	serverOptions := append([]api.ServerOption(nil), s.serverOptions...)
+	serverOptions = append(serverOptions, api.WithConfigRuntimeTxnHook(func(runtimeCtx context.Context, candidate *config.Config) error {
+		commit := s.stageConfigUpdate(candidate)
+		if commit.cfg == nil || !s.applyConfigRuntime(runtimeCtx, commit, true) {
+			return fmt.Errorf("usage runtime restore unavailable")
+		}
+		return nil
+	}))
+	s.server = api.NewServer(s.cfg, s.coreManager, s.accessManager, s.configPath, serverOptions...)
+	if s.usageRestoreStatus() == usageRestoreStateUnavailable {
+		applyUsageStatisticsEnabled(false)
+	}
 	s.syncPluginRuntimeConfig(ctx)
 	if homeEnabled {
 		s.syncPluginModelRuntime(ctx)
@@ -336,8 +351,6 @@ func (s *Service) Shutdown(ctx context.Context) error {
 			}
 		}
 
-		s.persistUsageStatistics("shutdown")
-
 		if s.pluginHost != nil {
 			sdktranslator.SetPluginHooks(nil)
 			sdkAuth.RegisterPluginAuthParser(nil)
@@ -356,7 +369,34 @@ func (s *Service) Shutdown(ctx context.Context) error {
 			}
 		}
 
+		// Stop periodic persistence before draining accepted usage items so the
+		// final snapshot cannot race an in-flight periodic write.
+		s.stopUsagePersistenceLoop()
 		usage.StopDefault()
+		if errDrain := usage.WaitDefault(ctx); errDrain != nil {
+			log.WithFields(log.Fields{
+				"code":  "usage_manager_drain_timeout",
+				"error": errDrain,
+			}).Warn("usage manager did not drain before shutdown deadline")
+			if shutdownErr == nil {
+				shutdownErr = errDrain
+			}
+			// Keep the accepted item alive after the caller's shutdown deadline.
+			// Persisting before the manager reaches idle would publish a snapshot
+			// that silently omits an accepted record. The detached waiter lets the
+			// manager finish normally and persists only the complete snapshot when
+			// the service remains alive after returning the shutdown error.
+			go func() {
+				if errWait := usage.WaitDefault(context.Background()); errWait != nil {
+					log.WithError(errWait).Warn("usage manager failed to finish detached drain")
+					return
+				}
+				s.persistUsageStatistics("shutdown-drain")
+			}()
+		} else {
+			s.persistUsageStatistics("shutdown")
+		}
+
 	})
 	return shutdownErr
 }

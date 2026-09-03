@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1290,6 +1291,140 @@ func TestManagementUsageRequiresManagementAuthAndPopsArray(t *testing.T) {
 
 	if remaining := redisqueue.PopOldest(1); len(remaining) != 0 {
 		t.Fatalf("remaining queue = %q, want empty", remaining)
+	}
+}
+
+func TestManagementUsageProjectionRoutesAreRegisteredAndProtected(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+
+	server := newTestServer(t)
+	paths := []string{
+		"/v0/management/usage/summary?from=2026-08-10T00:00:00Z&to=2026-08-10T01:00:00Z&timezone=UTC",
+		"/v0/management/usage/catalog",
+		"/v0/management/usage/events?from=2026-08-10T00:00:00Z&to=2026-08-10T01:00:00Z&timezone=UTC",
+		"/v0/management/usage/events/export?from=2026-08-10T00:00:00Z&to=2026-08-10T01:00:00Z&timezone=UTC&format=json&export_schema_version=usage-events-v2",
+		"/v0/management/usage/events/export/estimate?from=2026-08-10T00:00:00Z&to=2026-08-10T01:00:00Z&timezone=UTC&format=json&export_schema_version=usage-events-v2",
+	}
+
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			missingKey := httptest.NewRecorder()
+			server.engine.ServeHTTP(missingKey, httptest.NewRequest(http.MethodGet, path, nil))
+			if missingKey.Code != http.StatusUnauthorized {
+				t.Fatalf("missing key status = %d, want %d body=%s", missingKey.Code, http.StatusUnauthorized, missingKey.Body.String())
+			}
+
+			authorizedRequest := httptest.NewRequest(http.MethodGet, path, nil)
+			authorizedRequest.Header.Set("Authorization", "Bearer test-management-key")
+			authorized := httptest.NewRecorder()
+			server.engine.ServeHTTP(authorized, authorizedRequest)
+			if authorized.Code != http.StatusOK {
+				t.Fatalf("authorized status = %d, want %d body=%s", authorized.Code, http.StatusOK, authorized.Body.String())
+			}
+
+			unsupportedRequest := httptest.NewRequest(http.MethodPost, path, nil)
+			unsupportedRequest.Header.Set("Authorization", "Bearer test-management-key")
+			unsupported := httptest.NewRecorder()
+			server.engine.ServeHTTP(unsupported, unsupportedRequest)
+			if unsupported.Code != http.StatusMethodNotAllowed || unsupported.Header().Get("Allow") != http.MethodGet {
+				t.Fatalf("unsupported method = status:%d allow:%q body=%s", unsupported.Code, unsupported.Header().Get("Allow"), unsupported.Body.String())
+			}
+		})
+	}
+}
+
+func TestManagementUsageExportRoutesRejectAllUnsupportedMethods(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+
+	server := newTestServer(t)
+	paths := []string{
+		"/v0/management/usage/events/export?from=2026-08-10T00:00:00Z&to=2026-08-10T01:00:00Z&timezone=UTC&format=json&export_schema_version=usage-events-v2",
+		"/v0/management/usage/events/export/estimate?from=2026-08-10T00:00:00Z&to=2026-08-10T01:00:00Z&timezone=UTC&format=json&export_schema_version=usage-events-v2",
+	}
+	methods := []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodHead, http.MethodConnect, http.MethodTrace}
+	for _, path := range paths {
+		for _, method := range methods {
+			t.Run(method+" "+path, func(t *testing.T) {
+				req := httptest.NewRequest(method, path, nil)
+				req.Header.Set("Authorization", "Bearer test-management-key")
+				rr := httptest.NewRecorder()
+				server.engine.ServeHTTP(rr, req)
+				if rr.Code != http.StatusMethodNotAllowed || rr.Header().Get("Allow") != http.MethodGet {
+					t.Fatalf("status=%d allow=%q body=%s", rr.Code, rr.Header().Get("Allow"), rr.Body.String())
+				}
+				if !strings.Contains(rr.Body.String(), `"code":"method_not_allowed"`) {
+					t.Fatalf("missing method_not_allowed body: %s", rr.Body.String())
+				}
+			})
+		}
+		optionsReq := httptest.NewRequest(http.MethodOptions, path, nil)
+		optionsReq.Header.Set("Authorization", "Bearer test-management-key")
+		optionsRR := httptest.NewRecorder()
+		server.engine.ServeHTTP(optionsRR, optionsReq)
+		if optionsRR.Code != http.StatusNoContent {
+			t.Fatalf("OPTIONS status = %d, want %d body=%s", optionsRR.Code, http.StatusNoContent, optionsRR.Body.String())
+		}
+	}
+}
+
+func TestManagementLegacyUsageExportImportRoutesRemainCompatible(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "test-management-key")
+
+	server := newTestServer(t)
+	authorized := func(method, path string, body io.Reader) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, body)
+		req.Header.Set("Authorization", "Bearer test-management-key")
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		rr := httptest.NewRecorder()
+		server.engine.ServeHTTP(rr, req)
+		return rr
+	}
+
+	export := authorized(http.MethodGet, "/v0/management/usage/export", nil)
+	if export.Code != http.StatusOK {
+		t.Fatalf("legacy export status = %d body=%s", export.Code, export.Body.String())
+	}
+	var exported map[string]json.RawMessage
+	if err := json.Unmarshal(export.Body.Bytes(), &exported); err != nil {
+		t.Fatalf("decode legacy export: %v", err)
+	}
+	if len(exported) != 3 {
+		t.Fatalf("legacy export fields = %#v", exported)
+	}
+	for _, key := range []string{"version", "exported_at", "usage"} {
+		if _, ok := exported[key]; !ok {
+			t.Fatalf("legacy export missing %q: %s", key, export.Body.String())
+		}
+	}
+	if strings.Contains(export.Body.String(), "export_snapshot_id") || strings.Contains(export.Body.String(), "record_type") {
+		t.Fatalf("legacy export leaked v2 fields: %s", export.Body.String())
+	}
+
+	for _, version := range []int{0, 1, 2} {
+		imported := authorized(http.MethodPost, "/v0/management/usage/import", strings.NewReader(fmt.Sprintf(`{"version":%d,"usage":{"apis":{}}}`, version)))
+		if imported.Code != http.StatusOK {
+			t.Fatalf("legacy import version=%d status = %d body=%s", version, imported.Code, imported.Body.String())
+		}
+		var result map[string]json.RawMessage
+		if err := json.Unmarshal(imported.Body.Bytes(), &result); err != nil {
+			t.Fatalf("decode legacy import version=%d: %v", version, err)
+		}
+		for _, key := range []string{"added", "skipped", "enriched", "total_requests", "failed_requests"} {
+			if _, ok := result[key]; !ok {
+				t.Fatalf("legacy import version=%d missing %q: %s", version, key, imported.Body.String())
+			}
+		}
+	}
+
+	malformed := authorized(http.MethodPost, "/v0/management/usage/import", strings.NewReader("{"))
+	if malformed.Code != http.StatusBadRequest || !strings.Contains(malformed.Body.String(), "invalid json") {
+		t.Fatalf("legacy malformed import status=%d body=%s", malformed.Code, malformed.Body.String())
+	}
+	unsupported := authorized(http.MethodPost, "/v0/management/usage/import", strings.NewReader(`{"version":99,"usage":{"apis":{}}}`))
+	if unsupported.Code != http.StatusBadRequest || !strings.Contains(unsupported.Body.String(), "unsupported version") {
+		t.Fatalf("legacy unsupported import status=%d body=%s", unsupported.Code, unsupported.Body.String())
 	}
 }
 

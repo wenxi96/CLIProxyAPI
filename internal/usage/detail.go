@@ -36,6 +36,7 @@ const (
 
 // CanonicalRequestDetail derives the persistent usage detail from a usage record.
 func CanonicalRequestDetail(ctx context.Context, record coreusage.Record) RequestDetail {
+	carrier, _ := coreusage.RecordContextCarrierFromContext(ctx)
 	timestamp := record.RequestedAt
 	if timestamp.IsZero() {
 		timestamp = time.Now()
@@ -46,28 +47,66 @@ func CanonicalRequestDetail(ctx context.Context, record coreusage.Record) Reques
 	}
 	alias := strings.TrimSpace(record.Alias)
 	if alias == "" {
+		alias = carrier.ModelAlias
+	}
+	if alias == "" {
 		alias = modelName
 	}
 	failed := record.Failed
-	if !failed {
+	if carrier.HasSuccess {
+		failed = !carrier.Success
+	} else if !failed {
 		failed = !resolveSuccess(ctx)
 	}
+	requestID := strings.TrimSpace(carrier.RequestID)
+	if requestID == "" {
+		requestID = strings.TrimSpace(logging.GetRequestID(ctx))
+	}
+	clientIP := strings.TrimSpace(carrier.ClientIP)
+	if clientIP == "" {
+		clientIP = logging.ClientIPFromContext(ctx)
+	}
+	endpoint := strings.TrimSpace(carrier.Endpoint)
+	if endpoint == "" {
+		endpoint = resolveEndpoint(ctx, record)
+	}
+	authType := defaultIfEmpty(record.AuthType, carrier.AuthType)
+	authIndex := strings.TrimSpace(record.AuthIndex)
+	if authIndex == "" {
+		authIndex = strings.TrimSpace(carrier.AuthIndex)
+	}
+	source := strings.TrimSpace(record.Source)
+	if source == "" {
+		source = strings.TrimSpace(carrier.Source)
+	}
+	detailRole := logging.GetUsageDetailRole(ctx)
+	if detailRole == "" {
+		detailRole = carrier.DetailRole
+	}
+	detailSequence := logging.GetUsageDetailSequence(ctx)
+	if detailSequence == "" {
+		detailSequence = carrier.DetailSequence
+	}
+	generate := record.Generate
+	if generate == nil {
+		generate = coreusage.GenerateFlag(coreusage.GenerateFromContext(ctx))
+	}
 	detail := RequestDetail{
-		RequestID:      strings.TrimSpace(logging.GetRequestID(ctx)),
-		ClientIP:       logging.ClientIPFromContext(ctx),
+		RequestID:      requestID,
+		ClientIP:       clientIP,
 		Timestamp:      timestamp,
-		Endpoint:       resolveEndpoint(ctx, record),
+		Endpoint:       endpoint,
 		Model:          modelName,
 		Provider:       defaultIfEmpty(record.Provider, "unknown"),
 		ExecutorType:   defaultIfEmpty(record.ExecutorType, "unknown"),
-		AuthType:       defaultIfEmpty(record.AuthType, "unknown"),
+		AuthType:       defaultIfEmpty(authType, "unknown"),
 		ModelAlias:     alias,
-		Source:         safeSourceIdentifier(record.Source, record.AuthIndex),
-		AuthIndex:      strings.TrimSpace(record.AuthIndex),
-		DetailRole:     normalizeDetailRole(logging.GetUsageDetailRole(ctx)),
-		DetailSequence: strings.TrimSpace(logging.GetUsageDetailSequence(ctx)),
+		Source:         safeSourceIdentifier(source, authIndex),
+		AuthIndex:      authIndex,
+		DetailRole:     normalizeDetailRole(detailRole),
+		DetailSequence: strings.TrimSpace(detailSequence),
 		Failed:         failed,
-		Generate:       coreusage.GenerateFlag(coreusage.GenerateEnabled(record.Generate)),
+		Generate:       generate,
 		LatencyMs:      normaliseLatency(record.Latency),
 		Tokens:         normaliseDetail(record.Detail, record.Provider),
 	}
@@ -115,6 +154,17 @@ func normalizeRequestDetail(detail RequestDetail, provider string) RequestDetail
 	return detail
 }
 
+// normalizeRequestDetailPreserveTimestamp applies canonical field
+// normalization without replacing a zero timestamp. Identity and sort
+// encodings use a fixed zero-time sentinel and must remain deterministic for
+// legacy payloads that omit timestamps.
+func normalizeRequestDetailPreserveTimestamp(detail RequestDetail, provider string) RequestDetail {
+	timestamp := detail.Timestamp
+	detail = normalizeRequestDetail(detail, provider)
+	detail.Timestamp = timestamp
+	return detail
+}
+
 func normalizeDetailRole(role string) string {
 	role = strings.TrimSpace(role)
 	if role == "" {
@@ -157,7 +207,13 @@ func normaliseRequestTokens(tokens RequestTokenStats, provider string) RequestTo
 	}
 
 	tokens.CacheSplitStatus = cacheSplitStatus(tokens)
-	tokens.ReasoningCostMode = reasoningCostMode(provider, tokens)
+	reasoningMode := strings.TrimSpace(tokens.ReasoningCostMode)
+	switch reasoningMode {
+	case ReasoningCostSeparate, ReasoningCostIncludedInOutput, ReasoningCostUnknown:
+		tokens.ReasoningCostMode = reasoningMode
+	default:
+		tokens.ReasoningCostMode = reasoningCostMode(provider, tokens)
+	}
 	tokens.ComputedTotalTokens = computedTotalTokens(tokens, provider)
 	if tokens.ReportedTotalTokens > 0 {
 		tokens.TotalTokens = tokens.ReportedTotalTokens
@@ -382,7 +438,9 @@ func shouldEnrichDetailWithGenerate(existing, incoming RequestDetail, incomingGe
 	incoming = normalizeRequestDetail(incoming, incoming.Provider)
 	sameGenerate := coreusage.GenerateEnabled(existing.Generate) == coreusage.GenerateEnabled(incoming.Generate)
 	if detailFactsHash(existing) == detailFactsHash(incoming) && sameGenerate {
-		return incoming.Failed && !existing.Failed || estimatedCostChanged(existing.EstimatedCostUSD, incoming.EstimatedCostUSD)
+		return incoming.Failed && !existing.Failed ||
+			estimatedCostChanged(existing.EstimatedCostUSD, incoming.EstimatedCostUSD) ||
+			canonicalDetailMetadataChanged(existing, incoming)
 	}
 	if !sameGenerate && incomingGenerateExplicit {
 		return true
@@ -390,7 +448,41 @@ func shouldEnrichDetailWithGenerate(existing, incoming RequestDetail, incomingGe
 	if !hasTokenFacts(existing.Tokens) && hasTokenFacts(incoming.Tokens) {
 		return true
 	}
-	return tokenFactScore(incoming.Tokens) > tokenFactScore(existing.Tokens)
+	return tokenFactScore(incoming.Tokens) > tokenFactScore(existing.Tokens) ||
+		tokenFactMagnitude(incoming.Tokens) > tokenFactMagnitude(existing.Tokens)
+}
+
+// canonicalDetailMetadataChanged identifies fields that alter the projection
+// pricing or event coordinates even when token facts are unchanged. A stable
+// event identity may span provider/model re-keying, so these updates must not
+// be treated as duplicate observations.
+func canonicalDetailMetadataChanged(existing, incoming RequestDetail) bool {
+	return existing.Endpoint != incoming.Endpoint ||
+		existing.Model != incoming.Model ||
+		existing.Provider != incoming.Provider ||
+		existing.ExecutorType != incoming.ExecutorType
+}
+
+func tokenFactMagnitude(tokens RequestTokenStats) int64 {
+	values := []int64{
+		tokens.InputTokens,
+		tokens.OutputTokens,
+		tokens.ReasoningTokens,
+		tokens.CachedTokens,
+		tokens.CacheReadTokens,
+		tokens.CacheCreationTokens,
+		tokens.TotalTokens,
+		tokens.ReportedTotalTokens,
+		tokens.ComputedTotalTokens,
+	}
+	var total int64
+	for _, value := range values {
+		if value <= 0 || total > int64(^uint64(0)>>1)-value {
+			continue
+		}
+		total += value
+	}
+	return total
 }
 
 func estimatedCostChanged(existing, incoming *float64) bool {
@@ -472,6 +564,12 @@ func cloneBoolPtr(value *bool) *bool {
 	}
 	cloned := *value
 	return &cloned
+}
+
+func cloneRequestDetail(detail RequestDetail) RequestDetail {
+	detail.EstimatedCostUSD = cloneFloat64Ptr(detail.EstimatedCostUSD)
+	detail.Generate = cloneBoolPtr(detail.Generate)
+	return detail
 }
 
 func safeAPIIdentifier(ctx context.Context, record coreusage.Record, detail RequestDetail) string {

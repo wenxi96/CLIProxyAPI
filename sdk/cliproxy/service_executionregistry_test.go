@@ -52,6 +52,10 @@ func TestConfigCommitDoesNotHoldCommitMutexDuringCooldownPersistence(t *testing.
 		AuthID: auth.ID, Provider: auth.Provider, Model: "grok-4", Success: false,
 		Error: &coreauth.Error{Message: "rate limited", HTTPStatus: http.StatusTooManyRequests},
 	})
+	beforeRollback, okBeforeRollback := manager.GetByID(auth.ID)
+	if !okBeforeRollback || beforeRollback == nil {
+		t.Fatal("auth cooldown snapshot missing before config update")
+	}
 	store := &blockingServiceCooldownStore{started: make(chan struct{})}
 	manager.SetCooldownStateStore(store)
 	service := &Service{cfg: &config.Config{}, coreManager: manager}
@@ -86,6 +90,23 @@ func TestConfigCommitDoesNotHoldCommitMutexDuringCooldownPersistence(t *testing.
 		}
 	case <-time.After(time.Second):
 		t.Fatal("config runtime apply did not honor cooldown persistence cancellation")
+	}
+	afterRollback, okAfterRollback := manager.GetByID(auth.ID)
+	if !okAfterRollback || afterRollback == nil {
+		t.Fatal("auth cooldown snapshot missing after config rollback")
+	}
+	if afterRollback.Unavailable != beforeRollback.Unavailable ||
+		!afterRollback.NextRetryAfter.Equal(beforeRollback.NextRetryAfter) ||
+		afterRollback.Status != beforeRollback.Status {
+		t.Fatalf("auth cooldown after rollback = %#v, want %#v", afterRollback, beforeRollback)
+	}
+	beforeModel := beforeRollback.ModelStates["grok-4"]
+	afterModel := afterRollback.ModelStates["grok-4"]
+	if beforeModel == nil || afterModel == nil ||
+		afterModel.Unavailable != beforeModel.Unavailable ||
+		!afterModel.NextRetryAfter.Equal(beforeModel.NextRetryAfter) ||
+		afterModel.Status != beforeModel.Status {
+		t.Fatalf("model cooldown after rollback = %#v, want %#v", afterModel, beforeModel)
 	}
 }
 

@@ -122,9 +122,11 @@ func recordUsageForServiceTest(t *testing.T, stats *internalusage.RequestStatist
 	t.Helper()
 
 	previousEnabled := internalusage.StatisticsEnabled()
+	previousReady := internalusage.StatisticsReady()
 	internalusage.SetStatisticsEnabled(true)
 	t.Cleanup(func() {
 		internalusage.SetStatisticsEnabled(previousEnabled)
+		internalusage.SetStatisticsReady(previousReady)
 	})
 
 	stats.Record(context.Background(), coreusage.Record{

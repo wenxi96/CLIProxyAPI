@@ -48,12 +48,36 @@ func (h *Handler) GetUsageStatistics(c *gin.Context) {
 // GetUsageAuthRequests returns paginated request details for one auth_index.
 func (h *Handler) GetUsageAuthRequests(c *gin.Context) {
 	if h == nil || h.usageStats == nil {
+		_, cursorPresent := c.GetQuery("cursor")
+		if strings.TrimSpace(c.Query("pagination_mode")) == "cursor_v1" || cursorPresent {
+			setUsageNoStore(c)
+			writeUsageProjectionError(c, usage.ErrProjectionUnavailable)
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": "usage statistics unavailable"})
 		return
 	}
 	authIndex := strings.TrimSpace(c.Param("auth_index"))
 	if authIndex == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "auth_index is required"})
+		return
+	}
+	paginationMode := strings.TrimSpace(c.Query("pagination_mode"))
+	cursorValue, cursorPresent := c.GetQuery("cursor")
+	if paginationMode == "cursor_v1" || cursorPresent {
+		if paginationMode != "" && paginationMode != "cursor_v1" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid pagination mode"})
+			return
+		}
+		if _, offsetPresent := c.GetQuery("offset"); offsetPresent || strings.TrimSpace(c.Query("to_exclusive")) != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "cursor mode cannot be combined with offset or to_exclusive"})
+			return
+		}
+		h.getUsageAuthRequestsCursor(c, authIndex, strings.TrimSpace(cursorValue))
+		return
+	}
+	if paginationMode != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid pagination mode"})
 		return
 	}
 
@@ -63,7 +87,21 @@ func (h *Handler) GetUsageAuthRequests(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, h.usageStats.ListAuthRequests(authIndex, filter))
+	page, errPage := h.usageStats.ListAuthRequestsWithError(authIndex, filter)
+	if errPage != nil {
+		setUsageNoStore(c)
+		writeUsageAuthCursorError(c, errPage)
+		return
+	}
+	if filter.ToExclusive {
+		setUsageNoStore(c)
+		c.JSON(http.StatusOK, struct {
+			usage.AuthRequestPage
+			PaginationMode string `json:"pagination_mode"`
+		}{AuthRequestPage: page, PaginationMode: "offset_v1_exclusive"})
+		return
+	}
+	c.JSON(http.StatusOK, page)
 }
 
 // ExportUsageStatistics returns a complete usage snapshot for backup/migration.
@@ -102,7 +140,12 @@ func (h *Handler) ImportUsageStatistics(c *gin.Context) {
 		return
 	}
 
-	result := h.usageStats.MergeSnapshot(payload.Usage)
+	result, mergeErr := h.usageStats.MergeSnapshotWithError(payload.Usage)
+	if mergeErr != nil {
+		status, code := usageImportErrorResponse(mergeErr)
+		c.JSON(status, gin.H{"error": code, "code": code})
+		return
+	}
 	snapshot := h.usageStats.Snapshot()
 	c.JSON(http.StatusOK, gin.H{
 		"added":           result.Added,
@@ -111,6 +154,20 @@ func (h *Handler) ImportUsageStatistics(c *gin.Context) {
 		"total_requests":  snapshot.TotalRequests,
 		"failed_requests": snapshot.FailureCount,
 	})
+}
+
+func usageImportErrorResponse(err error) (int, string) {
+	switch {
+	case errors.Is(err, usage.ErrProjectionRebuildInProgress):
+		return http.StatusConflict, "import_in_progress"
+	case errors.Is(err, usage.ErrProjectionUnavailable),
+		errors.Is(err, usage.ErrProjectionCASConflict),
+		errors.Is(err, usage.ErrMutationJournalFull),
+		errors.Is(err, usage.ErrMutationJournalBudget):
+		return http.StatusServiceUnavailable, "projection_unavailable"
+	default:
+		return http.StatusServiceUnavailable, "projection_unavailable"
+	}
 }
 
 // GetUsageQueue pops queued usage records from the usage queue.
@@ -195,6 +252,16 @@ func parseAuthRequestFilter(c *gin.Context) (usage.AuthRequestFilter, error) {
 			return filter, errors.New("to must be RFC3339 or unix seconds")
 		}
 		filter.To = &to
+	}
+	if rawToExclusive := strings.TrimSpace(c.Query("to_exclusive")); rawToExclusive != "" {
+		toExclusive, errToExclusive := strconv.ParseBool(rawToExclusive)
+		if errToExclusive != nil {
+			return filter, errors.New("to_exclusive must be true or false")
+		}
+		if toExclusive && filter.To == nil {
+			return filter, errors.New("to_exclusive requires to")
+		}
+		filter.ToExclusive = toExclusive
 	}
 
 	return filter, nil

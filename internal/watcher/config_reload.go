@@ -79,7 +79,11 @@ func (w *Watcher) reloadConfigIfChanged() {
 			log.WithError(errRead).Debug("failed to compute updated config hash after reload")
 		}
 		w.clientsMutex.Lock()
-		w.lastConfigHash = finalHash
+		if w.lastConfigHash == currentHash {
+			w.lastConfigHash = finalHash
+		} else {
+			log.Debugf("config reload result superseded; retaining last-good hash")
+		}
 		w.clientsMutex.Unlock()
 		w.persistConfigAsync()
 	}

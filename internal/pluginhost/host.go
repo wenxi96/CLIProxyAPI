@@ -203,7 +203,6 @@ func (h *Host) ApplyConfig(ctx context.Context, cfg *config.Config) {
 	if errContext := ctx.Err(); errContext != nil {
 		return
 	}
-
 	rc, errRuntimeConfig := runtimeConfigFromConfig(cfg)
 	if errRuntimeConfig != nil {
 		log.WithError(errRuntimeConfig).Error("failed to apply plugin runtime config")
@@ -369,6 +368,19 @@ func (h *Host) ApplyConfig(ctx context.Context, cfg *config.Config) {
 			log.Warnf("pluginhost: failed to clean old plugin files: %v", errCleanup)
 		}
 	}
+}
+
+// AppliedRuntimeConfig returns the most recent config applied via ApplyConfig.
+// It is a read-only accessor used by the runtime config transaction
+// compensation tests so they can assert a failed apply rolled the plugin host
+// back to the previous config rather than leaving the new config applied.
+func (h *Host) AppliedRuntimeConfig() *config.Config {
+	if h == nil {
+		return nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.runtimeConfig
 }
 
 func (h *Host) startPluginLoad(ctx context.Context, file pluginFile, item runtimeItemConfig, request *pluginLoadRequest) {

@@ -104,8 +104,12 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 	auths := h.authManager.List()
 	poolSnapshot := h.authManager.ScopedPoolSnapshot()
 	var authUsage map[string]usage.AuthUsageSnapshot
+	usageAvailability := "unavailable"
 	if h.usageStats != nil {
-		authUsage = h.usageStats.Snapshot().Auths
+		if projectionUsage, err := h.usageStats.QueryProjectionAuthUsage(); err == nil {
+			authUsage = projectionUsage
+			usageAvailability = "available"
+		}
 	}
 	files := make([]gin.H, 0, len(auths))
 	for _, auth := range auths {
@@ -113,6 +117,7 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 			continue
 		}
 		if entry := h.buildAuthFileEntryWithStatus(auth, poolSnapshot.Auths[auth.ID], authUsage); entry != nil {
+			entry["usage_availability"] = usageAvailability
 			files = append(files, entry)
 		}
 	}

@@ -26,6 +26,7 @@ type serverOptionConfig struct {
 	postAuthPersistHook   auth.PostAuthHook
 	pluginHost            *pluginhost.Host
 	configReloadHook      func(context.Context, *config.Config)
+	configRuntimeTxnHook  func(context.Context, *config.Config) error
 	exampleAPIKeySafeMode bool
 }
 
@@ -124,6 +125,13 @@ func WithPluginHost(host *pluginhost.Host) ServerOption {
 func WithConfigReloadHook(hook func(context.Context, *config.Config)) ServerOption {
 	return func(cfg *serverOptionConfig) {
 		cfg.configReloadHook = hook
+	}
+}
+
+// WithConfigRuntimeTxnHook registers the synchronous usage config transaction.
+func WithConfigRuntimeTxnHook(hook func(context.Context, *config.Config) error) ServerOption {
+	return func(cfg *serverOptionConfig) {
+		cfg.configRuntimeTxnHook = hook
 	}
 }
 

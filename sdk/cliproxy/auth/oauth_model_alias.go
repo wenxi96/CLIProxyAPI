@@ -92,6 +92,34 @@ func (m *Manager) SetOAuthModelAlias(aliases map[string][]internalconfig.OAuthMo
 	m.oauthModelAlias.Store(table)
 }
 
+// OAuthModelAliasUpstream reports the upstream model mapped to alias for the
+// given channel. It is a read-only accessor used by the runtime config
+// transaction compensation tests so they can assert rollback restored the
+// previous OAuth model alias table. ok is false when no mapping exists.
+func (m *Manager) OAuthModelAliasUpstream(channel, alias string) (upstream string, forceMapping, ok bool) {
+	if m == nil {
+		return "", false, false
+	}
+	table, _ := m.oauthModelAlias.Load().(*oauthModelAliasTable)
+	if table == nil || len(table.reverse) == 0 {
+		return "", false, false
+	}
+	channel = strings.ToLower(strings.TrimSpace(channel))
+	alias = strings.ToLower(strings.TrimSpace(alias))
+	if channel == "" || alias == "" {
+		return "", false, false
+	}
+	rev, exists := table.reverse[channel]
+	if !exists {
+		return "", false, false
+	}
+	entry, found := rev[alias]
+	if !found {
+		return "", false, false
+	}
+	return entry.upstreamModel, entry.forceMapping, true
+}
+
 // applyOAuthModelAlias resolves the upstream model from OAuth model alias.
 // If an alias exists, the returned model is the upstream model.
 func (m *Manager) applyOAuthModelAlias(auth *Auth, requestedModel string) string {

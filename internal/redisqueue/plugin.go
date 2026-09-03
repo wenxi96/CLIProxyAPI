@@ -45,6 +45,13 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
 	}
 	responseServiceTier := strings.TrimSpace(record.ResponseServiceTier)
 	clientRequestMetadata := internallogging.GetClientRequestMetadata(ctx)
+	carrier, _ := coreusage.RecordContextCarrierFromContext(ctx)
+	if clientRequestMetadata.XForwardedFor == "" {
+		clientRequestMetadata.XForwardedFor = carrier.XForwardedFor
+	}
+	if clientRequestMetadata.UserAgent == "" {
+		clientRequestMetadata.UserAgent = carrier.UserAgent
+	}
 	usageDetail := coreusage.EnsureTokenBreakdownForProvider(record.Detail, record.Provider, record.ExecutorType)
 	if strings.TrimSpace(detail.ClientIP) == "" {
 		detail.ClientIP = strings.TrimSpace(clientRequestMetadata.ClientIP)

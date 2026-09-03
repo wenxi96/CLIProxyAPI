@@ -6,6 +6,7 @@ package cliproxy
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
@@ -44,6 +45,10 @@ type Service struct {
 	executorRegistrationMu sync.Mutex
 	configSequence         uint64
 	appliedRoutingState    *routingRuntimeState
+	// runtimeConfigCandidate is visible only to internal staging-aware helpers
+	// while a RuntimeConfigTxn is applying. The published cfg pointer remains
+	// unchanged until the transaction publication barrier succeeds.
+	runtimeConfigCandidate atomic.Pointer[config.Config]
 
 	// configPath is the path to the configuration file.
 	configPath string
@@ -96,6 +101,10 @@ type Service struct {
 	// usageStats optionally overrides the shared usage statistics store for tests.
 	usageStats *internalusage.RequestStatistics
 
+	// usageRestoreState records the ready gate for startup/runtime restoration.
+	usageRestoreMu    sync.RWMutex
+	usageRestoreState string
+
 	// authManager handles legacy authentication operations.
 	authManager *sdkAuth.Manager
 
@@ -125,6 +134,14 @@ type Service struct {
 	homeConfigRuntimeHook        func()
 	applyPprofConfigContextFn    func(context.Context, *config.Config) bool
 	updateServerClientsContextFn func(context.Context, *config.Config) bool
+	// syncPluginRuntimeConfigForConfigFn overrides the plugin runtime hook for
+	// tests so they can observe plugin host config transitions without the full
+	// global plugin side-effect chain. When nil the real hook runs.
+	syncPluginRuntimeConfigForConfigFn func(context.Context, *config.Config) bool
+	// runtimeHookAfterExecutorsFn is a test seam invoked after executor
+	// registration. Returning false aborts the apply chain so the rollback
+	// compensates every prior hook including plugin and executor registration.
+	runtimeHookAfterExecutorsFn func() bool
 	homeSupervisor               *homeSubscriberSupervisor
 	homeMu                       sync.Mutex
 	homeGeneration               uint64

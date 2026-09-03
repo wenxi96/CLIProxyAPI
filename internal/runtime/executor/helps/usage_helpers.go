@@ -25,29 +25,34 @@ import (
 )
 
 type UsageReporter struct {
-	provider      string
-	executorType  string
-	model         string
-	alias         string
-	authID        string
-	authIndex     string
-	authType      string
-	apiKey        string
-	source        string
-	reasoning     string
-	serviceTier   string
-	generate      bool
-	requestedAt   time.Time
-	ttftMu        sync.RWMutex
-	ttft          time.Duration
-	ttftStart     time.Time
-	ttftSet       bool
-	publishMu     sync.Mutex
-	missingSent   bool
-	factsSent     bool
-	failureSent   bool
-	additionalSeq atomic.Uint64
+	provider               string
+	executorType           string
+	model                  string
+	alias                  string
+	authID                 string
+	authIndex              string
+	authType               string
+	apiKey                 string
+	source                 string
+	reasoning              string
+	serviceTier            string
+	generate               bool
+	admissionDiscriminator string
+	requestedAt            time.Time
+	ttftMu                 sync.RWMutex
+	ttft                   time.Duration
+	ttftStart              time.Time
+	ttftSet                bool
+	publishMu              sync.Mutex
+	missingSent            bool
+	factsSent              bool
+	failureSent            bool
+	additionalSeq          atomic.Uint64
 }
+
+const usagePublishAdmissionTimeout = 5 * time.Second
+
+var usageReporterSequence atomic.Uint64
 
 type usageExecutor interface {
 	Identifier() string
@@ -70,16 +75,17 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		alias = model
 	}
 	reporter := &UsageReporter{
-		provider:    provider,
-		model:       model,
-		alias:       strings.TrimSpace(alias),
-		requestedAt: time.Now(),
-		apiKey:      apiKey,
-		source:      resolveUsageSource(auth, apiKey),
-		authType:    resolveUsageAuthType(auth),
-		reasoning:   usage.ReasoningEffortFromContext(ctx),
-		serviceTier: usage.ServiceTierFromContext(ctx),
-		generate:    usage.GenerateFromContext(ctx),
+		provider:               provider,
+		model:                  model,
+		alias:                  strings.TrimSpace(alias),
+		requestedAt:            time.Now(),
+		apiKey:                 apiKey,
+		source:                 resolveUsageSource(auth, apiKey),
+		authType:               resolveUsageAuthType(auth),
+		reasoning:              usage.ReasoningEffortFromContext(ctx),
+		serviceTier:            usage.ServiceTierFromContext(ctx),
+		generate:               usage.GenerateFromContext(ctx),
+		admissionDiscriminator: fmt.Sprintf("usage-reporter:%d", usageReporterSequence.Add(1)),
 	}
 	if auth != nil {
 		reporter.authID = auth.ID
@@ -316,8 +322,37 @@ func (r *UsageReporter) claimPublish(detail usage.Detail, observed bool, failed 
 }
 
 func (r *UsageReporter) publishRecord(ctx context.Context, record usage.Record) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	record.ResponseHeaders = internallogging.GetResponseHeaders(ctx)
-	usage.PublishRecord(ctx, record)
+	carrier := usage.CaptureRecordContext(ctx, record)
+	carrier.RequestID = internallogging.GetRequestID(ctx)
+	carrier.Endpoint = internallogging.GetEndpoint(ctx)
+	carrier.DetailRole = internallogging.GetUsageDetailRole(ctx)
+	carrier.DetailSequence = internallogging.GetUsageDetailSequence(ctx)
+	metadata := internallogging.GetClientRequestMetadata(ctx)
+	carrier.ClientIP = metadata.ClientIP
+	carrier.XForwardedFor = metadata.XForwardedFor
+	carrier.UserAgent = metadata.UserAgent
+	carrier.AdmissionDiscriminator = r.admissionDiscriminator
+	if carrier.ClientIP == "" {
+		carrier.ClientIP = internallogging.ClientIPFromContext(ctx)
+	}
+	if status := internallogging.GetResponseStatus(ctx); status != 0 {
+		carrier.Success = status < 400
+		carrier.HasSuccess = true
+	}
+	record.ContextCarrier = &carrier
+	record.AdmissionDiscriminator = r.admissionDiscriminator
+	// Usage is finalized after request cancellation in several streaming paths;
+	// detach that cancellation but retain a bounded admission wait so a full
+	// manager queue cannot block request cleanup indefinitely.
+	publishCtx, cancelPublish := context.WithTimeout(context.WithoutCancel(ctx), usagePublishAdmissionTimeout)
+	defer cancelPublish()
+	if err := usage.PublishRecord(publishCtx, record); err != nil {
+		LogWithRequestID(ctx).WithError(err).Warn("usage record was not accepted by the manager")
+	}
 }
 
 func (r *UsageReporter) buildRecord(detail usage.Detail, failed bool, failures ...usage.Failure) usage.Record {
@@ -339,25 +374,26 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		detail = normalizeUsageBreakdown(detail, r.provider, r.executorType)
 	}
 	return usage.Record{
-		Provider:            r.provider,
-		ExecutorType:        r.executorType,
-		Model:               model,
-		Alias:               r.alias,
-		Source:              r.source,
-		APIKey:              r.apiKey,
-		AuthID:              r.authID,
-		AuthIndex:           r.authIndex,
-		AuthType:            r.authType,
-		ReasoningEffort:     r.reasoning,
-		ServiceTier:         r.serviceTier,
-		ResponseServiceTier: strings.TrimSpace(detail.ResponseServiceTier),
-		Generate:            usage.GenerateFlag(r.generate),
-		RequestedAt:         r.requestedAt,
-		Latency:             r.latency(),
-		TTFT:                r.ttftDuration(),
-		Failed:              failed,
-		Fail:                fail,
-		Detail:              detail,
+		Provider:               r.provider,
+		ExecutorType:           r.executorType,
+		Model:                  model,
+		Alias:                  r.alias,
+		Source:                 r.source,
+		APIKey:                 r.apiKey,
+		AuthID:                 r.authID,
+		AuthIndex:              r.authIndex,
+		AuthType:               r.authType,
+		ReasoningEffort:        r.reasoning,
+		ServiceTier:            r.serviceTier,
+		ResponseServiceTier:    strings.TrimSpace(detail.ResponseServiceTier),
+		Generate:               usage.GenerateFlag(r.generate),
+		AdmissionDiscriminator: r.admissionDiscriminator,
+		RequestedAt:            r.requestedAt,
+		Latency:                r.latency(),
+		TTFT:                   r.ttftDuration(),
+		Failed:                 failed,
+		Fail:                   fail,
+		Detail:                 detail,
 	}
 }
 

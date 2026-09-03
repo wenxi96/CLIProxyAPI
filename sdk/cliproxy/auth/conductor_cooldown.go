@@ -32,6 +32,13 @@ func SetTransientErrorCooldownSeconds(seconds int) {
 	transientErrorCooldownSeconds.Store(int64(seconds))
 }
 
+// TransientErrorCooldownSeconds returns the active transient error cooldown
+// seconds. It is a read-only accessor used by the runtime config transaction
+// compensation tests so they can assert rollback restored the previous value.
+func TransientErrorCooldownSeconds() int {
+	return int(transientErrorCooldownSeconds.Load())
+}
+
 func quotaCooldownDisabledForAuth(auth *Auth) bool {
 	return quotaCooldownDisabledForAuthWithConfig(auth, nil)
 }
@@ -186,6 +193,18 @@ func (m *Manager) ApplyConfigWithCooldownStateStore(ctx context.Context, cfg *in
 	}
 	m.cooldownStore = store
 	return true
+}
+
+// CooldownStateStore returns the active cooldown state store. It is a read-only
+// accessor used by the runtime config transaction compensation tests so they
+// can assert rollback restored the previous store.
+func (m *Manager) CooldownStateStore() CooldownStateStore {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.cooldownStore
 }
 
 // PersistCooldownStates writes the current cooldown snapshot using ctx.

@@ -31,6 +31,18 @@ type attemptInfo struct {
 	lastActivity time.Time // track last activity for cleanup
 }
 
+type usageStatistics interface {
+	Snapshot() usage.StatisticsSnapshot
+	ListAuthRequestsWithError(string, usage.AuthRequestFilter) (usage.AuthRequestPage, error)
+	MergeSnapshotWithError(usage.StatisticsSnapshot) (usage.MergeResult, error)
+	QueryProjectionAuthUsage() (map[string]usage.AuthUsageSnapshot, error)
+	ProjectionMetadata() (uint64, uint64, uint64, error)
+	QueryProjectionEvents(time.Time, time.Time, int, uint64, uint64, map[string][]string) (usage.ProjectionSnapshot, bool, uint64, uint64, string, error)
+	LookupEventDetails([]string) (map[string]usage.RequestDetail, error)
+	QueryProjectionCatalog() (usage.ProjectionSnapshot, error)
+	QueryProjectionSummaryView(time.Time, time.Time, time.Time) (usage.ProjectionSummaryView, error)
+}
+
 // attemptCleanupInterval controls how often stale IP entries are purged
 const attemptCleanupInterval = 1 * time.Hour
 
@@ -50,7 +62,7 @@ type Handler struct {
 	failedAttempts          map[string]*attemptInfo // keyed by client IP
 	batchCheckJobs          map[string]*authFileBatchCheckJob
 	authManager             *coreauth.Manager
-	usageStats              *usage.RequestStatistics
+	usageStats              usageStatistics
 	tokenStore              coreauth.Store
 	localPassword           string
 	allowRemoteOverride     bool
@@ -61,10 +73,17 @@ type Handler struct {
 	apiCallExecutor         func(context.Context, *coreauth.Auth, apiCallRequest) (apiCallResponse, error)
 	pluginHost              *pluginhost.Host
 	configReloadHook        func(context.Context, *config.Config)
+	configRuntimeTxnHook    func(context.Context, *config.Config) error
 	pluginStoreRegistryURL  string
 	pluginStoreHTTPClient   pluginstore.HTTPDoer
 	pluginReleaseCacheMu    sync.Mutex
 	pluginReleaseCache      map[string]pluginReleaseCacheEntry
+	usageNow                func() time.Time
+	usageTokenMu            sync.Mutex
+	usageTokenCodec         *usageTokenCodec
+	usageWindowAnchors      *usageWindowAnchorManager
+	usageTokenInitErr       error
+	usageExportSnapshots    *usageExportSnapshotManager
 }
 
 type configReloadSnapshot struct {
@@ -88,6 +107,7 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 		allowRemoteOverride: envSecret != "",
 		envSecret:           envSecret,
 	}
+	h.usageExportSnapshots = newUsageExportSnapshotManager(h.usageCurrentTime)
 	h.startAttemptCleanup()
 	return h
 }
@@ -148,7 +168,16 @@ func (h *Handler) SetAuthManager(manager *coreauth.Manager) {
 }
 
 // SetUsageStatistics allows replacing the usage statistics reference.
-func (h *Handler) SetUsageStatistics(stats *usage.RequestStatistics) { h.usageStats = stats }
+func (h *Handler) SetUsageStatistics(stats *usage.RequestStatistics) {
+	if h == nil {
+		return
+	}
+	if stats == nil {
+		h.usageStats = nil
+		return
+	}
+	h.usageStats = stats
+}
 
 // SetPluginHost updates the plugin host used by plugin-backed management endpoints.
 func (h *Handler) SetPluginHost(host *pluginhost.Host) {
@@ -167,6 +196,18 @@ func (h *Handler) SetConfigReloadHook(hook func(context.Context, *config.Config)
 	}
 	h.mu.Lock()
 	h.configReloadHook = hook
+	h.mu.Unlock()
+}
+
+// SetConfigRuntimeTxnHook installs the synchronous runtime transaction used by
+// the usage-statistics toggle. Other management config endpoints retain their
+// historical asynchronous reload path.
+func (h *Handler) SetConfigRuntimeTxnHook(hook func(context.Context, *config.Config) error) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.configRuntimeTxnHook = hook
 	h.mu.Unlock()
 }
 

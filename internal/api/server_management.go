@@ -95,6 +95,11 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.DELETE("/api-keys", s.mgmt.DeleteAPIKeys)
 		mgmt.GET("/api-key-usage", s.mgmt.GetAPIKeyUsage)
 		mgmt.GET("/usage", s.mgmt.GetUsageStatistics)
+		registerReadOnlyManagementRoute(mgmt, "/usage/summary", s.mgmt.GetUsageSummary)
+		registerReadOnlyManagementRoute(mgmt, "/usage/catalog", s.mgmt.GetUsageCatalog)
+		registerReadOnlyManagementRoute(mgmt, "/usage/events", s.mgmt.GetUsageEvents)
+		registerReadOnlyManagementRoute(mgmt, "/usage/events/export", s.mgmt.ExportUsageEvents)
+		registerReadOnlyManagementRoute(mgmt, "/usage/events/export/estimate", s.mgmt.EstimateUsageEventsExport)
 		mgmt.GET("/usage/auths/:auth_index/requests", s.mgmt.GetUsageAuthRequests)
 		mgmt.GET("/usage/export", s.mgmt.ExportUsageStatistics)
 		mgmt.POST("/usage/import", s.mgmt.ImportUsageStatistics)
@@ -197,6 +202,28 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/xai-auth-url", s.mgmt.RequestXAIToken)
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
 		mgmt.DELETE("/oauth-session", s.mgmt.CancelAuthSession)
+	}
+}
+
+func registerReadOnlyManagementRoute(group *gin.RouterGroup, path string, handler gin.HandlerFunc) {
+	group.GET(path, handler)
+	for _, method := range []string{
+		http.MethodPost,
+		http.MethodPut,
+		http.MethodPatch,
+		http.MethodDelete,
+		http.MethodHead,
+		http.MethodConnect,
+		http.MethodOptions,
+		http.MethodTrace,
+	} {
+		group.Handle(method, path, func(c *gin.Context) {
+			c.Header("Allow", http.MethodGet)
+			c.AbortWithStatusJSON(http.StatusMethodNotAllowed, gin.H{
+				"error": "method_not_allowed",
+				"code":  "method_not_allowed",
+			})
+		})
 	}
 }
 
