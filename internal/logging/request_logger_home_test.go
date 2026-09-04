@@ -467,3 +467,53 @@ func TestHomeStreamingLogWriterCloseReleasesResourcesWhenHomeUnavailable(t *test
 		t.Fatal("chunkChan not cleared after Close")
 	}
 }
+
+func TestHomeStreamingLogWriter_CloseTerminatesWhenClientUnhealthy(t *testing.T) {
+	original := currentHomeRequestLogClient
+	defer func() {
+		currentHomeRequestLogClient = original
+	}()
+
+	stub := &stubHomeRequestLogClient{heartbeatOK: true}
+	currentHomeRequestLogClient = func() homeRequestLogClient {
+		return stub
+	}
+
+	logsDir := t.TempDir()
+	logger := NewFileRequestLogger(true, logsDir, "", 0)
+	logger.SetHomeEnabled(true)
+
+	writer, errLog := logger.LogStreamingRequest(
+		"/v1/responses",
+		http.MethodPost,
+		map[string][]string{"Content-Type": {"application/json"}},
+		[]byte(`{"input":"hello"}`),
+		"stream-req-unhealthy",
+	)
+	if errLog != nil {
+		t.Fatalf("LogStreamingRequest error: %v", errLog)
+	}
+
+	hw, ok := writer.(*homeStreamingLogWriter)
+	if !ok {
+		t.Fatalf("expected *homeStreamingLogWriter, got %T", writer)
+	}
+
+	hw.WriteChunkAsync([]byte("chunk-1"))
+
+	// Mark the client unhealthy while the writer is active.
+	stub.heartbeatOK = false
+
+	done := make(chan struct{})
+	go func() {
+		_ = hw.Close()
+		<-hw.doneChan
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("homeStreamingLogWriter leaked writer goroutine after Close with unhealthy client")
+	}
+}
